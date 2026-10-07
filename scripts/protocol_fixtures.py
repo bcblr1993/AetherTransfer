@@ -5,6 +5,9 @@ import os
 from pathlib import Path
 import socket
 import ssl
+from socketserver import ThreadingMixIn
+from wsgiref.simple_server import WSGIServer, WSGIRequestHandler, ServerHandler
+from wsgiref.util import is_hop_by_hop
 import subprocess
 import tempfile
 import threading
@@ -23,7 +26,6 @@ from pyftpdlib.handlers import FTPHandler, TLS_FTPHandler
 from pyftpdlib.servers import FTPServer
 from wsgidav.wsgidav_app import WsgiDAVApp
 from cheroot.wsgi import Server as DAVServer
-from cheroot.ssl.builtin import BuiltinSSLAdapter
 from cheroot.server import HTTPConnection
 
 logging.disable(logging.CRITICAL)
@@ -36,18 +38,64 @@ class DAVConnection(HTTPConnection):
         except OSError: pass
         super().close()
 
-    def _close_kernel_socket(self):
-        # Complete TLS shutdown rather than closing TCP without close_notify.
-        if isinstance(self.socket, ssl.SSLSocket):
-            self.socket.settimeout(.25)
-            try:
-                transport = self.socket.unwrap()
-                try: transport.shutdown(socket.SHUT_RDWR)
-                except OSError: pass
-                transport.close()
-                return
-            except (OSError, ssl.SSLError): pass
-        super()._close_kernel_socket()
+class LimitedInput:
+    """WSGI request bodies end at Content-Length, not at a TLS socket EOF."""
+    def __init__(self, raw, length): self.raw, self.remaining = raw, length
+    def read(self, size=-1):
+        size = self.remaining if size is None or size < 0 else min(size, self.remaining)
+        if size == 0: return b''
+        data = self.raw.read(size)
+        if not data: raise ConnectionResetError('Incomplete fixture request body')
+        self.remaining -= len(data)
+        return data
+    def readline(self, size=-1):
+        size = self.remaining if size is None or size < 0 else min(size, self.remaining)
+        if size == 0: return b''
+        data = self.raw.readline(size)
+        if not data: raise ConnectionResetError('Incomplete fixture request body')
+        self.remaining -= len(data)
+        return data
+    def __iter__(self): return self
+    def __next__(self):
+        line = self.readline()
+        if not line: raise StopIteration
+        return line
+    def readlines(self, hint=-1): return list(self)
+
+class TLSWSGIHandler(WSGIRequestHandler):
+    def log_message(self, format, *args): pass
+    def get_environ(self):
+        env = super().get_environ(); env['HTTPS'] = 'on'; return env
+    def handle(self):
+        self.raw_requestline = self.rfile.readline(65537)
+        if len(self.raw_requestline) > 65536:
+            self.requestline = ''; self.request_version = ''; self.command = ''; self.send_error(414); return
+        if not self.parse_request(): return
+        body = LimitedInput(self.rfile, int(self.headers.get('Content-Length', '0')))
+        handler = ServerHandler(body, self.wfile, self.get_stderr(), self.get_environ(), multithread=True)
+        handler.request_handler = self; handler.run(self.server.get_app())
+
+class TLSWSGIServer(ThreadingMixIn, WSGIServer):
+    """Standard blocking TLS/WSGI fixture; HTTP/1.0 closes each challenge connection."""
+    daemon_threads = False
+    def __init__(self, address, app, certificate, key):
+        self.slots = threading.BoundedSemaphore(4)
+        super().__init__(address, TLSWSGIHandler); self.set_app(app)
+        context = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+        context.load_cert_chain(certificate, key)
+        self.socket = context.wrap_socket(self.socket, server_side=True, do_handshake_on_connect=False)
+    def get_request(self):
+        request, address = super().get_request(); request.settimeout(10); return request, address
+    def process_request(self, request, address):
+        self.slots.acquire()
+        try: super().process_request(request, address)
+        except BaseException: self.slots.release(); raise
+    def process_request_thread(self, request, address):
+        try: super().process_request_thread(request, address)
+        finally: self.slots.release()
+    def prepare(self): pass
+    def serve(self): self.serve_forever(poll_interval=.1)
+    def stop(self): self.shutdown(); self.server_close()
 
 class Authentication(paramiko.ServerInterface):
     accepted_key = None
@@ -171,15 +219,23 @@ with tempfile.TemporaryDirectory(prefix='aethertransfer-fixture-') as directory:
         })
         # Keep internal server exception evidence without logging requests or authentication.
         from wsgidav.error_printer import _logger
+        from wsgidav.request_server import _logger as request_logger
         logging.disable(logging.NOTSET)
         logging.getLogger().handlers = [logging.NullHandler()]
         logging.getLogger('pyftpdlib').disabled = True
         _logger.setLevel(logging.ERROR)
         _logger.propagate = False
         if not _logger.handlers: _logger.addHandler(logging.StreamHandler())
+        request_logger.setLevel(logging.ERROR)
+        request_logger.propagate = False
+        if not request_logger.handlers: request_logger.addHandler(logging.StreamHandler())
         def faults(environ, start_response):
             original_start = start_response
             def start_response(status, headers, exc_info=None):
+                if status.startswith('500 '):
+                    print('DAV failure:', environ['REQUEST_METHOD'], environ['PATH_INFO'],
+                          'length:', environ.get('CONTENT_LENGTH'),
+                          'unread:', getattr(environ['wsgi.input'], 'remaining', 0), file=sys.stderr, flush=True)
                 if status.startswith('401 '):
                     # WsgiDAV rejects authentication without consuming the request body.
                     # Cheroot only drains it when keeping the connection alive; closing an
@@ -190,8 +246,12 @@ with tempfile.TemporaryDirectory(prefix='aethertransfer-fixture-') as directory:
                         chunk = stream.read(min(remaining, 64 * 1024))
                         if not chunk: break  # A deliberately cancelled client may have closed.
                         remaining -= len(chunk)
-                    if environ['PATH_INFO'].startswith('/__aether_fixture_close_auth__'):
+                    if not tls and environ['PATH_INFO'].startswith('/__aether_fixture_close_auth__'):
                         headers = headers + [('Connection', 'close')]
+                if tls:
+                    # HTTP/1.0 transport owns connection closure; WSGI applications
+                    # must not forward hop-by-hop headers into the server handler.
+                    headers = [(name, value) for name, value in headers if not is_hop_by_hop(name)]
                 return original_start(status, headers, exc_info)
             # Independent fault responses verify that redirects and partial mutation failures cannot be reported as success.
             if environ['PATH_INFO'].rstrip('/') == '/__aether_fixture_redirect__':
@@ -221,10 +281,11 @@ with tempfile.TemporaryDirectory(prefix='aethertransfer-fixture-') as directory:
                     if hasattr(response, 'close'): response.close()
                 return [b'']
             return response
-        server = DAVServer(('127.0.0.1', 0), faults, numthreads=4)
-        server.ConnectionClass = DAVConnection
         if tls:
-            server.ssl_adapter = BuiltinSSLAdapter(str(cert_file), str(key_file))
+            server = TLSWSGIServer(('127.0.0.1', 0), faults, str(cert_file), str(key_file))
+        else:
+            server = DAVServer(('127.0.0.1', 0), faults, numthreads=4)
+            server.ConnectionClass = DAVConnection
         server.prepare()
         thread = threading.Thread(target=server.serve, daemon=True); thread.start()
         dav_servers.append(server); dav_threads.append(thread)

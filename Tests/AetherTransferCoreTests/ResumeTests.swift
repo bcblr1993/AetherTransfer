@@ -3,6 +3,33 @@ import XCTest
 @testable import AetherTransferCore
 
 @MainActor final class ResumeTests: XCTestCase {
+    func testAtomicLocalCommitRejectsConflictsAndRetainsPermissions() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("aethertransfer-commit-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: root, withIntermediateDirectories: false)
+        defer { try? FileManager.default.removeItem(at: root) }
+        let target = root.appendingPathComponent("target"), staging = root.appendingPathComponent("staging")
+        try Data("original".utf8).write(to: target)
+        try FileManager.default.setAttributes([.posixPermissions: 0o640], ofItemAtPath: target.path)
+        try Data("replacement".utf8).write(to: staging)
+        do { try await LocalFileCommit.commit(staging, to: target, overwrite: false); XCTFail("Existing target must survive") }
+        catch TransferError.conflict { }
+        XCTAssertEqual(try Data(contentsOf: target), Data("original".utf8))
+        XCTAssertTrue(FileManager.default.fileExists(atPath: staging.path))
+        for index in 0..<100 {
+            let data = Data(repeating: UInt8(index), count: 64 * 1024)
+            try data.write(to: staging)
+            try await LocalFileCommit.commit(staging, to: target, overwrite: true)
+            XCTAssertEqual(try Data(contentsOf: target), data)
+            XCTAssertFalse(FileManager.default.fileExists(atPath: staging.path))
+        }
+        XCTAssertEqual((try FileManager.default.attributesOfItem(atPath: target.path)[.posixPermissions] as? NSNumber)?.intValue, 0o640)
+        let link = root.appendingPathComponent("dangling-link")
+        try FileManager.default.createSymbolicLink(at: link, withDestinationURL: root.appendingPathComponent("absent"))
+        try Data("replacement".utf8).write(to: staging)
+        do { try await LocalFileCommit.commit(staging, to: link, overwrite: true); XCTFail("Symlink must not be replaced") }
+        catch TransferError.conflict { }
+        XCTAssertEqual(try FileManager.default.destinationOfSymbolicLink(atPath: link.path), root.appendingPathComponent("absent").path)
+    }
     func testManifestHasNoCredentialsTrustOrPrivateKeyAndRejectsInvalidJournal() async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("aethertransfer-resume-test-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: false)

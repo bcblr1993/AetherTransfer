@@ -271,8 +271,7 @@ public actor ResumableTransfer {
             // Recheck the destination immediately before the same-filesystem rename.
             guard try ResumeIO.existingFingerprintSync(destination) == current else { throw ResumeTransferError.targetChanged }
             try Task.checkCancellation()
-            if current != nil { _ = try FileManager.default.replaceItemAt(destination, withItemAt: staging) }
-            else { try FileManager.default.moveItem(at: staging, to: destination) }
+            try LocalFileCommit.commitSync(staging, to: destination, overwrite: current != nil)
         }
     }
     private func upload(client: RemoteClient, restart: Bool, progress: @escaping @Sendable (TransferProgress) -> Void) async throws {

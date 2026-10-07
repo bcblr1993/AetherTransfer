@@ -1,4 +1,5 @@
 import Foundation
+import Darwin
 import CryptoKit
 import CTransfer
 
@@ -258,13 +259,10 @@ public struct RemoteClient: Sendable {
         let fm = FileManager.default
         if fm.fileExists(atPath: destination.path) && !overwrite { throw TransferError.conflict(destination.lastPathComponent) }
         let temporary = destination.deletingLastPathComponent().appendingPathComponent(".aethertransfer-\(UUID().uuidString).part")
-        defer { try? fm.removeItem(at: temporary) }
+        defer { temporary.path.withCString { _ = unlink($0) } }
         _ = try await perform(path: remote, mode: 1, local: temporary.path, maximumDownloadBytes: maximumBytes, progress: progress)
         try Task.checkCancellation()
-        if fm.fileExists(atPath: destination.path) {
-            guard overwrite else { throw TransferError.conflict(destination.lastPathComponent) }
-            _ = try fm.replaceItemAt(destination, withItemAt: temporary)
-        } else { try fm.moveItem(at: temporary, to: destination) }
+        try await LocalFileCommit.commit(temporary, to: destination, overwrite: overwrite)
     }
     public func upload(_ local: URL, to remote: String, overwrite: Bool = false,
                        progress: @escaping @Sendable (TransferProgress) -> Void = { _ in }) async throws {

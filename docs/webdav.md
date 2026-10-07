@@ -10,10 +10,10 @@ GET 下载和 PUT 上传保持流式文件 IO、限速、暂停/继续与取消�
 
 仅接受操作对应的 HTTP 成功状态；重定向要求用户填写最终地址，不自动转发凭据或降级。修改请求返回 207 多项错误时不能被报告为成功。认证支持 libcurl 的 Basic 和 Digest；HTTP 仍是明文传输，应优先使用 HTTPS。
 
-隔离验收使用 WsgiDAV 4.3.5 和 Cheroot 11.1.2（MIT，仅测试 venv，不进入应用）。真实服务在 loopback 上运行，文件、证书、SSH 密钥位于 TemporaryDirectory，退出后清理。`./scripts/test_protocols.sh` 覆盖 HTTP/HTTPS 的 1 MiB 中文/空格往返、字节校验、空文件、Basic/Digest、错误密码、证书不可信/名称不符、拒绝明文服务器与重定向、MOVE 不覆盖、非空文件夹保护、取消 PUT 保留原目标、暂停恢复、同步与明确镜像删除。`./scripts/test_core.sh` 覆盖 XML/路径边界。
+隔离验收使用 WsgiDAV 4.3.5（MIT，仅测试 venv，不进入应用）执行真实认证和文件操作。HTTP 使用 Cheroot 11.1.2；HTTPS 使用标准库阻塞 TLS/WSGI 服务，四个有界处理槽、按 Content-Length 限制输入，输入提前结束拒绝完整上传。TLS fixture 为 HTTP/1.0，认证挑战与操作完成后关闭连接；它验证 Digest 重连，不证明 HTTPS 持久连接兼容。真实服务在 loopback 上运行，文件、证书、SSH 密钥位于 TemporaryDirectory，退出后清理。`./scripts/test_protocols.sh` 覆盖 HTTP/HTTPS 的 1 MiB 中文/空格往返、字节校验、空文件、Basic/Digest、错误密码、证书不可信/名称不符、拒绝明文服务器与重定向、MOVE 不覆盖、非空文件夹保护、取消 PUT 保留原目标、暂停恢复、同步与明确镜像删除。`./scripts/test_core.sh` 覆盖 XML/路径边界。
 
 单个文件支持保留进度和重启恢复。下载要求正确的 Range / Content-Range，并在强 ETag 可用时使用 If-Match；普通 PUT 上传必须明确选择从头上传。内容与版本核对、临时文件清理及限制见 [保留进度与断点续传](resumable-transfers.md)。
 
-尚待完成：真实 Nextcloud/NAS 等服务矩阵、锁定文件编辑、服务器 COPY 的完整界面工作流、目标条件写入与目录任务恢复、外部创建子项的删除竞态、自定义企业 CA 的系统管理流程。当前不接受无用户名匿名服务，也不提供绕过证书验证的开关。
+尚待完成：真实 Nextcloud/NAS 等服务矩阵与 HTTPS 持久连接验收、锁定文件编辑、服务器 COPY 的完整界面工作流、目标条件写入与目录任务恢复、外部创建子项的删除竞态、自定义企业 CA 的系统管理流程。当前不接受无用户名匿名服务，也不提供绕过证书验证的开关。
 
 协议依据：[RFC 4918](https://www.rfc-editor.org/rfc/rfc4918.html)、[libcurl HTTPAUTH](https://curl.se/libcurl/c/CURLOPT_HTTPAUTH.html)。
