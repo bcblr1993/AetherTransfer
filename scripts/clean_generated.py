@@ -43,6 +43,7 @@ if args.scope == "all":
                      "reports/tree-ui-download", "reports/tree-ui-source.json",
                      "reports/preview-ui-files", "reports/preview-ui-source.json",
                      "reports/cache-ui-source.json",
+                     "reports/icons-ui-files", "reports/icons-ui-source.json",
                      ".build/curl-source", ".build/curl-8.22.0.tar.xz"]:
         remove(relative)
     for path in (root / ".build").glob("*.log"):

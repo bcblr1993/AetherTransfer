@@ -49,6 +49,8 @@ struct ActivityItem: Identifiable {
     @Published var showRecovery = false
     @Published var showInspector = false
     @Published var focusedRemote = false
+    @Published var localViewMode: FileViewMode = .list
+    @Published var remoteViewMode: FileViewMode = .list
     private var credentials = Credentials()
     private let store = ProfileStore()
     private let queue: TransferQueue
@@ -76,6 +78,10 @@ struct ActivityItem: Identifiable {
         let profile: ServerProfile
     }
     var client: RemoteClient? { connectedProfile.map { RemoteClient(profile: $0, credentials: credentials) } }
+
+    func setViewMode(_ mode: FileViewMode) {
+        if focusedRemote { remoteViewMode = mode } else { localViewMode = mode }
+    }
 
     init(queue: TransferQueue = TransferQueue(limit: 2), editors: FileEditorManager = FileEditorManager(),
          previews: FilePreviewManager = FilePreviewManager()) {

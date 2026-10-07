@@ -27,6 +27,9 @@ import AetherTransferCore
                 Button("保留的传输…") { tabs.current.showRecovery = true }
             }
             CommandMenu("显示") {
+                Button("图标视图") { tabs.current.setViewMode(.icons) }.keyboardShortcut("1")
+                Button("列表视图") { tabs.current.setViewMode(.list) }.keyboardShortcut("2")
+                Divider()
                 Button("显示 / 隐藏隐藏文件") { tabs.current.showHidden.toggle() }.keyboardShortcut(".", modifiers: [.command, .shift])
             }
             CommandGroup(after: .textEditing) {
@@ -256,14 +259,30 @@ struct FilePane: View {
         PresentationRequest(revision: remote ? workspace.remoteRevision : workspace.localRevision,
                             query: query, hidden: workspace.showHidden, field: sortField, descending: descending)
     }
+    private var viewMode: Binding<FileViewMode> {
+        remote ? $workspace.remoteViewMode : $workspace.localViewMode
+    }
 
     var body: some View {
         VStack(spacing: 0) {
             HStack {
                 Image(systemName: remote ? "network" : "internaldrive").foregroundStyle(.secondary)
-                Text(title).font(.callout.weight(.semibold))
+                Text(title).font(.callout.weight(.semibold)).lineLimit(1).truncationMode(.middle)
                 Spacer()
                 if loading || presenting { ProgressView().controlSize(.small) }
+                Picker("\(title)视图", selection: viewMode) {
+                    Image(systemName: "square.grid.2x2").accessibilityLabel("图标视图").tag(FileViewMode.icons)
+                    Image(systemName: "list.bullet").accessibilityLabel("列表视图").tag(FileViewMode.list)
+                }.pickerStyle(.segmented).labelsHidden().frame(width: 78)
+                if viewMode.wrappedValue == .icons {
+                    Menu("排序", systemImage: "arrow.up.arrow.down") {
+                        Picker("排序依据", selection: $sortField) {
+                            Text("名称").tag(FileSortField.name); Text("大小").tag(FileSortField.size); Text("修改日期").tag(FileSortField.modified)
+                        }
+                        Divider()
+                        Button(descending ? "升序" : "降序") { descending.toggle() }
+                    }.labelStyle(.iconOnly).menuStyle(.borderlessButton)
+                }
                 Button("上一级", systemImage: "arrow.up") { workspace.parent(remote: remote) }.labelStyle(.iconOnly)
                 Button("新建文件夹", systemImage: "folder.badge.plus") { workspace.createFolder(remote: remote) }.labelStyle(.iconOnly)
                 if !remote { Button("选择文件夹", systemImage: "folder") { workspace.chooseLocal() }.labelStyle(.iconOnly) }
@@ -271,12 +290,19 @@ struct FilePane: View {
             TextField("路径", text: $path).textFieldStyle(.roundedBorder).font(.system(.callout, design: .monospaced))
                 .onSubmit { if remote { workspace.refreshRemote() } else { workspace.refreshLocal() } }
                 .padding(.horizontal, 12).padding(.bottom, 10)
-            NativeFileTable(files: filtered, revision: presentationRevision, selection: $selection,
-                            sortField: $sortField, descending: $descending, remote: remote, workspace: workspace)
+            Group {
+                if viewMode.wrappedValue == .icons {
+                    NativeFileIcons(files: filtered, revision: presentationRevision, selection: $selection, remote: remote, workspace: workspace)
+                } else {
+                    NativeFileTable(files: filtered, revision: presentationRevision, selection: $selection,
+                                    sortField: $sortField, descending: $descending, remote: remote, workspace: workspace)
+                }
+            }
                 .disabled(loading || presenting)
                 .overlay { if filtered.isEmpty && !loading && !presenting { ContentUnavailableView("没有文件", systemImage: "folder", description: Text(query.isEmpty ? "此目录为空。" : "没有匹配的项目。")) } }
 
         }.frame(minWidth: 350, maxWidth: .infinity, maxHeight: .infinity)
+        .onChange(of: viewMode.wrappedValue) { _, _ in workspace.focusedRemote = remote }
         .task(id: request) {
             // Read entries and revision from the same observable source. A child can see a new
             // revision before its parent passes the refreshed value-type files argument.

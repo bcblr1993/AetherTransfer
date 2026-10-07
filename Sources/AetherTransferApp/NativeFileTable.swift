@@ -42,6 +42,10 @@ struct NativeFileTable: NSViewRepresentable {
                 coordinator.parent.workspace.focusedRemote = coordinator.parent.remote
             }
         }
+        table.initialFocusRequested = { [weak coordinator = context.coordinator] in
+            guard let coordinator else { return false }
+            return coordinator.parent.workspace.focusedRemote == coordinator.parent.remote
+        }
         table.setDraggingSourceOperationMask(.copy, forLocal: false)
         scroll.documentView = table
         context.coordinator.table = table
@@ -65,6 +69,7 @@ struct NativeFileTable: NSViewRepresentable {
         if table.sortDescriptors.first?.key != key || table.sortDescriptors.first?.ascending != !descending {
             table.sortDescriptors = [NSSortDescriptor(key: key, ascending: !descending)]
         }
+        table.focusIfNeeded()
     }
 
     @MainActor final class Coordinator: NSObject, NSTableViewDataSource, NSTableViewDelegate {
@@ -74,6 +79,7 @@ struct NativeFileTable: NSViewRepresentable {
         var rowByID: [String: Int] = [:]
         var revision: UUID?
         var updating = false
+        private let actions = FileBrowserActions()
         private let dateFormatter: DateFormatter = {
             let value = DateFormatter(); value.dateStyle = .short; value.timeStyle = .short; return value
         }()
@@ -159,30 +165,10 @@ struct NativeFileTable: NSViewRepresentable {
             let row = table.row(at: table.convert(event.locationInWindow, from: nil))
             guard files.indices.contains(row) else { return nil }
             if !table.selectedRowIndexes.contains(row) { table.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false) }
-            let entry = files[row], menu = NSMenu()
-            func add(_ title: String, _ selector: Selector, enabled: Bool = true) {
-                let item = NSMenuItem(title: title, action: selector, keyEquivalent: "")
-                item.target = self; item.representedObject = entry; item.isEnabled = enabled; menu.addItem(item)
-            }
-            add(entry.isDirectory ? "打开" : (parent.remote ? "下载" : "打开"), #selector(openItem(_:)))
-            if !entry.isDirectory && !entry.isSymbolicLink { add("编辑文本…", #selector(editItem(_:))) }
-            add("快速查看", #selector(previewItem(_:)), enabled: !entry.isDirectory && !entry.isSymbolicLink)
-            add("文件信息", #selector(informationItem(_:)))
-            if !parent.remote { add("上传", #selector(uploadItems), enabled: parent.workspace.client != nil) }
-            menu.addItem(.separator())
-            add("重命名…", #selector(renameItem(_:))); add("删除…", #selector(deleteItem(_:)))
-            menu.autoenablesItems = false
-            return menu
+            parent.workspace.focusedRemote = parent.remote
+            return actions.menu(for: files[row], selection: files.filter { parent.selection.contains($0.id) },
+                                remote: parent.remote, workspace: parent.workspace)
         }
-        @objc private func openItem(_ sender: NSMenuItem) { if let entry = sender.representedObject as? FileEntry { parent.workspace.open(entry, remote: parent.remote) } }
-        @objc private func renameItem(_ sender: NSMenuItem) { if let entry = sender.representedObject as? FileEntry { parent.workspace.rename(entry, remote: parent.remote) } }
-        @objc private func editItem(_ sender: NSMenuItem) { if let entry = sender.representedObject as? FileEntry { parent.workspace.edit(entry, remote: parent.remote) } }
-        @objc private func previewItem(_ sender: NSMenuItem) { if let entry = sender.representedObject as? FileEntry { parent.workspace.preview(entry, remote: parent.remote) } }
-        @objc private func informationItem(_ sender: NSMenuItem) {
-            parent.workspace.focusedRemote = parent.remote; parent.workspace.showInspector = true
-        }
-        @objc private func deleteItem(_ sender: NSMenuItem) { if let entry = sender.representedObject as? FileEntry { parent.workspace.delete(entry, remote: parent.remote) } }
-        @objc private func uploadItems() { parent.workspace.upload(files.filter { parent.selection.contains($0.id) }) }
     }
 }
 
@@ -191,6 +177,13 @@ struct NativeFileTable: NSViewRepresentable {
     var openSelected: (() -> Void)?
     var previewSelected: (() -> Void)?
     var focused: (() -> Void)?
+    var initialFocusRequested: (() -> Bool)?
+    private var initialFocusPending = true
+    func focusIfNeeded() {
+        guard initialFocusPending, isEnabled, let window, initialFocusRequested?() == true else { return }
+        initialFocusPending = false; window.makeFirstResponder(self)
+    }
+    override func viewDidMoveToWindow() { super.viewDidMoveToWindow(); focusIfNeeded() }
     override func becomeFirstResponder() -> Bool {
         let result = super.becomeFirstResponder()
         if result { focused?() }
