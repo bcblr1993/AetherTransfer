@@ -19,12 +19,14 @@ private final class ProgressRecorder: @unchecked Sendable {
 @MainActor final class ProtocolIntegrationTests: XCTestCase {
     func client(_ kind: TransferProtocol, trusted: Bool = true) throws -> RemoteClient {
         let env = ProcessInfo.processInfo.environment
-        guard let port = env[kind == .ftp ? "AT_FTP_PORT" : "AT_SFTP_PORT"], let number = Int(port) else {
-            throw XCTSkip("Run scripts/test_protocols.sh for isolated real FTP/SFTP servers")
+        let variable = "AT_\(kind.rawValue.uppercased())_PORT"
+        guard let port = env[variable], let number = Int(port) else {
+            throw XCTSkip("Run scripts/test_protocols.sh for isolated real protocol servers")
         }
         return RemoteClient(profile: ServerProfile(host: "127.0.0.1", port: number, username: "fixture", protocolKind: kind,
                                                   trustedHostKey: trusted && kind == .sftp ? env["AT_SFTP_KEY"] : nil),
-                            credentials: Credentials(password: "fixture-only"))
+                            credentials: Credentials(password: "fixture-only"),
+                            certificateAuthority: (kind == .ftps || kind == .ftpes) ? env["AT_TLS_CA"].map { URL(fileURLWithPath: $0) } : nil)
     }
     func roundTrip(_ kind: TransferProtocol) async throws {
         let remote = try client(kind)
@@ -60,6 +62,36 @@ private final class ProgressRecorder: @unchecked Sendable {
     }
     func testFTPRoundTrip() async throws { try await roundTrip(.ftp) }
     func testSFTPRoundTrip() async throws { try await roundTrip(.sftp) }
+    func testExplicitTLSRoundTrip() async throws { try await roundTrip(.ftpes) }
+    func testImplicitTLSRoundTrip() async throws { try await roundTrip(.ftps) }
+    func testTLSRejectsUntrustedCertificatesHostMismatchAndPlaintextServer() async throws {
+        for kind in [TransferProtocol.ftpes, .ftps] {
+            let trusted = try client(kind)
+            let untrusted = RemoteClient(profile: trusted.profile, credentials: trusted.credentials)
+            do { _ = try await untrusted.list("/"); XCTFail("Untrusted certificate must fail") }
+            catch TransferError.remote { }
+            var wrongHost = trusted.profile; wrongHost.host = "localhost"
+            let mismatched = RemoteClient(profile: wrongHost, credentials: trusted.credentials, certificateAuthority: trusted.certificateAuthority)
+            do { _ = try await mismatched.list("/"); XCTFail("Certificate hostname must be checked") }
+            catch TransferError.remote { }
+        }
+        let plain = try client(.ftp)
+        var profile = plain.profile; profile.protocolKind = .ftpes
+        do { _ = try await RemoteClient(profile: profile, credentials: plain.credentials).list("/"); XCTFail("TLS must never downgrade to plaintext") }
+        catch TransferError.remote { }
+    }
+    func testEncryptedSSHPrivateKeyAuthentication() async throws {
+        let passwordClient = try client(.sftp)
+        let env = ProcessInfo.processInfo.environment
+        let privateKey = try XCTUnwrap(env["AT_SFTP_PRIVATE_KEY"])
+        var profile = passwordClient.profile; profile.privateKeyPath = privateKey
+        let keyClient = RemoteClient(profile: profile, credentials: Credentials(passphrase: "fixture-passphrase"))
+        let listing = try await keyClient.list("/")
+        XCTAssertTrue(listing.contains { $0.name == "中文 seed.txt" })
+        let wrongPassphrase = RemoteClient(profile: profile, credentials: Credentials(passphrase: "incorrect"))
+        do { _ = try await wrongPassphrase.list("/"); XCTFail("Wrong passphrase must fail") }
+        catch TransferError.remote { }
+    }
     func testPauseResumeAndCancellationPreserveFiles() async throws {
         for kind in [TransferProtocol.ftp, .sftp] {
             let remote = try client(kind)

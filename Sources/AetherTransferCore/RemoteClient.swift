@@ -45,8 +45,11 @@ public struct RemoteClient: Sendable {
     public let credentials: Credentials
     public let control: TransferControl?
     public let rateLimit: Int64
-    public init(profile: ServerProfile, credentials: Credentials, control: TransferControl? = nil, rateLimit: Int64 = 0) {
+    public let certificateAuthority: URL?
+    public init(profile: ServerProfile, credentials: Credentials, control: TransferControl? = nil, rateLimit: Int64 = 0,
+                certificateAuthority: URL? = nil) {
         self.profile = profile; self.credentials = credentials; self.control = control; self.rateLimit = max(0, rateLimit)
+        self.certificateAuthority = certificateAuthority ?? Bundle.main.url(forResource: "cacert", withExtension: "pem")
     }
 
     public static func fingerprint(_ key: String) -> String {
@@ -65,6 +68,10 @@ public struct RemoteClient: Sendable {
         }}}
         guard let request else { throw TransferError.remote("无法创建传输连接。") }
         let box = RequestBox(pointer: request, callback: progress)
+        let tlsCode = (certificateAuthority?.path ?? "").withCString {
+            at_tls(request, profile.protocolKind == .ftpes || profile.protocolKind == .ftps ? 1 : 0, $0)
+        }
+        guard tlsCode == 0 else { throw TransferError.remote("无法配置 TLS 证书验证。") }
         at_rate_limit(request, rateLimit)
         control?.attach(box)
         defer { control?.detach() }
@@ -119,7 +126,7 @@ public struct RemoteClient: Sendable {
             try await rename(temporary, to: remote)
         } catch {
             // Cleanup is independent of the cancelled task. Never delete the user's final destination.
-            let cleanup = RemoteClient(profile: profile, credentials: credentials)
+            let cleanup = RemoteClient(profile: profile, credentials: credentials, certificateAuthority: certificateAuthority)
             _ = try? await Task.detached { try await cleanup.remove(temporary, directory: false) }.value
             throw error
         }

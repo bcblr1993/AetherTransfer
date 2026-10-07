@@ -9,19 +9,28 @@ import tempfile
 import threading
 import json
 import sys
+import ipaddress
+from datetime import datetime, timedelta, timezone
 
 import paramiko
+from cryptography import x509
+from cryptography.x509.oid import NameOID
+from cryptography.hazmat.primitives import hashes, serialization
+from cryptography.hazmat.primitives.asymmetric import rsa
 from pyftpdlib.authorizers import DummyAuthorizer
-from pyftpdlib.handlers import FTPHandler
+from pyftpdlib.handlers import FTPHandler, TLS_FTPHandler
 from pyftpdlib.servers import FTPServer
 
 logging.disable(logging.CRITICAL)
 
 class Authentication(paramiko.ServerInterface):
+    accepted_key = None
     def check_auth_password(self, username, password):
         return paramiko.AUTH_SUCCESSFUL if username == 'fixture' and password == 'fixture-only' else paramiko.AUTH_FAILED
     def get_allowed_auths(self, username):
-        return 'password'
+        return 'password,publickey'
+    def check_auth_publickey(self, username, key):
+        return paramiko.AUTH_SUCCESSFUL if username == 'fixture' and key == self.accepted_key else paramiko.AUTH_FAILED
     def check_channel_request(self, kind, channel_id):
         return paramiko.OPEN_SUCCEEDED if kind == 'session' else paramiko.OPEN_FAILED_ADMINISTRATIVELY_PROHIBITED
 
@@ -69,13 +78,34 @@ class Files(paramiko.SFTPServerInterface):
         except OSError as e: return paramiko.SFTPServer.convert_errno(e.errno)
 
 with tempfile.TemporaryDirectory(prefix='aethertransfer-fixture-') as directory:
-    root = Path(directory)
+    certificates = Path(directory)
+    root = certificates / 'files'; root.mkdir()
+    tls_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    subject = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, 'AetherTransfer isolated fixture')])
+    certificate = (x509.CertificateBuilder().subject_name(subject).issuer_name(subject).public_key(tls_key.public_key())
+                   .serial_number(x509.random_serial_number()).not_valid_before(datetime.now(timezone.utc) - timedelta(minutes=1))
+                   .not_valid_after(datetime.now(timezone.utc) + timedelta(days=1))
+                   .add_extension(x509.SubjectAlternativeName([x509.IPAddress(ipaddress.ip_address('127.0.0.1'))]), critical=False)
+                   .add_extension(x509.BasicConstraints(ca=True, path_length=None), critical=True).sign(tls_key, hashes.SHA256()))
+    cert_file = certificates / 'certificate.pem'; cert_file.write_bytes(certificate.public_bytes(serialization.Encoding.PEM))
+    key_file = certificates / 'tls-key.pem'
+    key_file.write_bytes(tls_key.private_bytes(serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8, serialization.NoEncryption()))
+    key_file.chmod(0o600)
     (root / '中文 seed.txt').write_text('fixture content', encoding='utf8')
     authorizer = DummyAuthorizer()
     authorizer.add_user('fixture', 'fixture-only', str(root), perm='elradfmwMT')
     class Handler(FTPHandler): pass
     Handler.authorizer = authorizer
     ftp = FTPServer(('127.0.0.1', 0), Handler)
+    class TLSHandler(TLS_FTPHandler): pass
+    TLSHandler.authorizer = authorizer
+    TLSHandler.certfile = str(cert_file); TLSHandler.keyfile = str(key_file)
+    TLSHandler.tls_control_required = True; TLSHandler.tls_data_required = True
+    ftpes = FTPServer(('127.0.0.1', 0), TLSHandler)
+    class ImplicitTLSHandler(TLSHandler):
+        def on_connect(self):
+            self.secure_connection(self.ssl_context)
+    ftps = FTPServer(('127.0.0.1', 0), ImplicitTLSHandler)
     stopping = threading.Event()
     def serve_ftp():
         while not stopping.is_set():
@@ -83,6 +113,11 @@ with tempfile.TemporaryDirectory(prefix='aethertransfer-fixture-') as directory:
     ftp_thread = threading.Thread(target=serve_ftp, daemon=True)
     ftp_thread.start()
     key = paramiko.RSAKey.generate(2048)
+    client_key = paramiko.RSAKey.generate(2048)
+    Authentication.accepted_key = client_key
+    client_key_file = certificates / 'client-key.pem'
+    client_key.write_private_key_file(str(client_key_file), password='fixture-passphrase')
+    client_key_file.chmod(0o600)
     listener = socket.socket()
     listener.bind(('127.0.0.1', 0)); listener.listen(16)
     transports = []
@@ -101,7 +136,8 @@ with tempfile.TemporaryDirectory(prefix='aethertransfer-fixture-') as directory:
     threading.Thread(target=accept, daemon=True).start()
     env = os.environ.copy()
     env.update(AT_FTP_PORT=str(ftp.socket.getsockname()[1]), AT_SFTP_PORT=str(listener.getsockname()[1]),
-               AT_SFTP_KEY=key.get_base64())
+               AT_SFTP_KEY=key.get_base64(), AT_FTPES_PORT=str(ftpes.socket.getsockname()[1]),
+               AT_FTPS_PORT=str(ftps.socket.getsockname()[1]), AT_TLS_CA=str(cert_file), AT_SFTP_PRIVATE_KEY=str(client_key_file))
     try:
         if '--serve' in sys.argv:
             report = Path('reports/fixture.json')
@@ -115,6 +151,6 @@ with tempfile.TemporaryDirectory(prefix='aethertransfer-fixture-') as directory:
             result = subprocess.run(['swift', 'test', '--filter', 'ProtocolIntegrationTests'], env=env)
     finally:
         stopping.set(); ftp_thread.join(timeout=2)
-        ftp.close_all(); listener.close()
+        ftp.close_all(); ftpes.close_all(); ftps.close_all(); listener.close()
         for transport in transports: transport.close()
     raise SystemExit(result.returncode if result else 0)

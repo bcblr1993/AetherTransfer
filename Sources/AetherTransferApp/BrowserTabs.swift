@@ -39,7 +39,17 @@ struct BrowserTabItem: View {
     let id: UUID
     @ObservedObject var workspace: Workspace
     @ObservedObject var tabs: BrowserTabs
-    var body: some View {
+    let namespace: Namespace.ID
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    @ViewBuilder var body: some View {
+        if tabs.selected == id {
+            content.glassEffect(.regular.tint(.accentColor.opacity(0.08)), in: Capsule())
+                .glassEffectID("selected-tab", in: namespace)
+                .glassEffectTransition(reduceMotion ? .identity : .matchedGeometry)
+                .accessibilityAddTraits(.isSelected)
+        } else { content }
+    }
+    private var content: some View {
         HStack(spacing: 8) {
             Button { tabs.selected = id } label: {
                 Label(workspace.connectedProfile.map { $0.name.isEmpty ? $0.host : $0.name } ?? "新连接", systemImage: workspace.connectedProfile == nil ? "folder" : "network")
@@ -50,6 +60,5 @@ struct BrowserTabItem: View {
             }
         }
         .padding(.horizontal, 12).padding(.vertical, 8)
-        .background(tabs.selected == id ? Color.primary.opacity(0.08) : .clear, in: RoundedRectangle(cornerRadius: 8))
     }
 }

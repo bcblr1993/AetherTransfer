@@ -4,6 +4,11 @@ public enum DirectoryListing {
     public static func parse(_ text: String, parent: String) throws -> [FileEntry] {
         let pattern = #"^([dl-][rwxstST-]{9}[+@.]?)\s+\d+\s+\S+\s+\S+\s+(\d+)\s+([A-Za-z]{3}|\d{1,2})\s+(\d{1,2}|[A-Za-z]{3})\s+(\d{4}|\d{1,2}:\d{2})\s+(.+)$"#
         let regex = try NSRegularExpression(pattern: pattern)
+        let months = ["Jan": 1, "Feb": 2, "Mar": 3, "Apr": 4, "May": 5, "Jun": 6,
+                      "Jul": 7, "Aug": 8, "Sep": 9, "Oct": 10, "Nov": 11, "Dec": 12]
+        // LIST dates have fixed English month names. Avoid ICU date parsing for every row.
+        let now = Date(), calendar = Calendar(identifier: .gregorian)
+        let year = calendar.component(.year, from: now)
         var entries: [FileEntry] = []
         for raw in text.components(separatedBy: "\n") {
             let line = raw.hasSuffix("\r") ? String(raw.dropLast()) : raw
@@ -17,16 +22,22 @@ public enum DirectoryListing {
             if link, let arrow = name.range(of: " -> ", options: .backwards) { name = String(name[..<arrow.lowerBound]) }
             if name == "." || name == ".." { continue }
             let path = try RemotePath.join(parent, name)
-            let formatter = DateFormatter(); formatter.locale = Locale(identifier: "en_US_POSIX")
             let time = value(5)
-            formatter.dateFormat = time.contains(":") ? "MMM d yyyy HH:mm" : "MMM d yyyy"
-            let year = Calendar.current.component(.year, from: Date())
             let dayFirst = Int(value(3)) != nil
             let month = dayFirst ? value(4) : value(3)
             let day = dayFirst ? value(3) : value(4)
-            var date = formatter.date(from: "\(month) \(day) \(time.contains(":") ? "\(year) \(time)" : time)")
-            if let candidate = date, time.contains(":"), candidate.timeIntervalSinceNow > 86400 {
-                date = Calendar.current.date(byAdding: .year, value: -1, to: candidate)
+            let clock = time.split(separator: ":")
+            let dateYear = time.contains(":") ? year : Int(time)
+            let hour = clock.count == 2 ? Int(clock[0]) : 0, minute = clock.count == 2 ? Int(clock[1]) : 0
+            var date: Date?
+            if let month = months[month], let day = Int(day), (1...31).contains(day), let dateYear,
+               let hour, let minute, (0...23).contains(hour), (0...59).contains(minute) {
+                let components = DateComponents(year: dateYear, month: month, day: day, hour: hour, minute: minute)
+                if let candidate = calendar.date(from: components), calendar.component(.day, from: candidate) == day,
+                   calendar.component(.month, from: candidate) == month { date = candidate }
+            }
+            if let candidate = date, time.contains(":"), candidate.timeIntervalSince(now) > 86400 {
+                date = calendar.date(byAdding: .year, value: -1, to: candidate)
             }
             entries.append(FileEntry(name: name, path: path, isDirectory: mode.hasPrefix("d"),
                                      isSymbolicLink: link, size: Int64(value(2)) ?? 0, modified: date, permissions: mode))

@@ -6,6 +6,7 @@ let package = Package(
     platforms: [.macOS("26.0")],
     products: [
         .executable(name: "AetherTransfer", targets: ["AetherTransferApp"]),
+        .executable(name: "AetherTransferBenchmarks", targets: ["AetherTransferBenchmarks"]),
         .library(name: "AetherTransferCore", targets: ["AetherTransferCore"])
     ],
     targets: [
@@ -13,6 +14,7 @@ let package = Package(
                 linkerSettings: [.unsafeFlags(["-L/opt/homebrew/opt/curl/lib"]), .linkedLibrary("curl")]),
         .target(name: "AetherTransferCore", dependencies: ["CTransfer"]),
         .executableTarget(name: "AetherTransferApp", dependencies: ["AetherTransferCore"]),
+        .executableTarget(name: "AetherTransferBenchmarks", dependencies: ["AetherTransferCore"], path: "Tools/PerformanceProbe"),
         .testTarget(name: "AetherTransferCoreTests", dependencies: ["AetherTransferCore"])
     ]
 )

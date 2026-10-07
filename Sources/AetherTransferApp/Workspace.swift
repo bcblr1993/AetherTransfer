@@ -20,6 +20,8 @@ struct ActivityItem: Identifiable {
     @Published var remotePath = "/"
     @Published var localFiles: [FileEntry] = []
     @Published var remoteFiles: [FileEntry] = []
+    @Published private(set) var localRevision = UUID()
+    @Published private(set) var remoteRevision = UUID()
     @Published var localSelection: Set<String> = []
     @Published var remoteSelection: Set<String> = []
     @Published var activities: [ActivityItem] = []
@@ -30,6 +32,7 @@ struct ActivityItem: Identifiable {
     @Published var error: String?
     @Published var hostChallenge: HostChallenge?
     @Published var connectedProfile: ServerProfile?
+    @Published var connectionPrompt: ServerProfile?
     private var credentials = Credentials()
     private let store = ProfileStore()
     private let queue: TransferQueue
@@ -53,9 +56,14 @@ struct ActivityItem: Identifiable {
         refreshLocal()
     }
     func persist() { do { try store.save(profiles) } catch { self.error = error.localizedDescription } }
-    func save(_ profile: ServerProfile, credentials: Credentials, remember: Bool) throws {
+    @discardableResult func save(_ profile: ServerProfile, credentials: Credentials, remember: Bool) throws -> ServerProfile {
         try profile.validate()
         profiles = try store.load()
+        var profile = profile
+        if let previous = profiles.first(where: { $0.id == profile.id }),
+           previous.host != profile.host || previous.port != profile.port || previous.protocolKind != profile.protocolKind {
+            profile.trustedHostKey = nil
+        }
         if remember {
             try CredentialStore.save(credentials.password, id: profile.id)
             try CredentialStore.save(credentials.passphrase, id: profile.id, kind: "passphrase")
@@ -63,6 +71,45 @@ struct ActivityItem: Identifiable {
         if let index = profiles.firstIndex(where: { $0.id == profile.id }) { profiles[index] = profile }
         else { profiles.append(profile) }
         try store.save(profiles)
+        return profile
+    }
+    func removeProfile(_ profile: ServerProfile) {
+        let alert = NSAlert()
+        alert.messageText = "移除服务器收藏？"
+        alert.informativeText = "将移除“\(profile.name.isEmpty ? profile.host : profile.name)”及其保存的钥匙串凭据。服务器上的文件不会改变。"
+        alert.addButton(withTitle: "移除收藏"); alert.addButton(withTitle: "取消")
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        do {
+            var saved = try store.load(); saved.removeAll { $0.id == profile.id }
+            try CredentialStore.save("", id: profile.id)
+            try CredentialStore.save("", id: profile.id, kind: "passphrase")
+            try store.save(saved); profiles = saved
+            if selectedServer == profile.id { selectedServer = nil }
+        } catch { self.error = error.localizedDescription }
+    }
+    func exportProfiles() {
+        let panel = NSSavePanel(); panel.nameFieldStringValue = "AetherTransfer-servers.json"
+        guard panel.runModal() == .OK, let destination = panel.url else { return }
+        Task {
+            do {
+                try await Task.detached { try ProfileStore(file: destination).save(ProfileStore().load()) }.value
+            } catch { self.error = error.localizedDescription }
+        }
+    }
+    func importProfiles() {
+        let panel = NSOpenPanel(); panel.canChooseDirectories = false; panel.allowsMultipleSelection = false
+        guard panel.runModal() == .OK, let source = panel.url else { return }
+        Task {
+            do {
+                let data = try await Task.detached {
+                    let size = try source.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? 0
+                    guard size <= 1024 * 1024 else { throw TransferError.remote("收藏文件超过 1 MiB。") }
+                    return try Data(contentsOf: source)
+                }.value
+                let values = try ProfileStore.importing(data, into: store.load())
+                try store.save(values); profiles = values
+            } catch { self.error = error.localizedDescription }
+        }
     }
     func reloadProfiles() {
         do { profiles = try store.load() } catch { self.error = error.localizedDescription }
@@ -83,20 +130,22 @@ struct ActivityItem: Identifiable {
     }
     func connectSaved(_ profile: ServerProfile) {
         do {
-            connect(profile, credentials: Credentials(password: try CredentialStore.load(id: profile.id),
-                                                      passphrase: try CredentialStore.load(id: profile.id, kind: "passphrase")))
+            let credentials = Credentials(password: try CredentialStore.load(id: profile.id),
+                                          passphrase: try CredentialStore.load(id: profile.id, kind: "passphrase"))
+            if credentials.password.isEmpty && profile.privateKeyPath.isEmpty { connectionPrompt = profile }
+            else { connect(profile, credentials: credentials) }
         } catch { self.error = error.localizedDescription }
     }
     func connect(_ profile: ServerProfile, credentials: Credentials) {
         browseTask?.cancel()
         connectedProfile = profile; self.credentials = credentials
         selectedServer = profile.id; remotePath = RemotePath.normalize(profile.initialPath)
-        remoteFiles = []; connecting = true
+        remoteFiles = []; remoteRevision = UUID(); connecting = true
         refreshRemote()
     }
     func disconnect() {
         browseTask?.cancel(); remoteGeneration = UUID(); connectedProfile = nil; remoteFiles = []
-        remoteSelection = []; connecting = false; loadingRemote = false
+        remoteSelection = []; remoteRevision = UUID(); connecting = false; loadingRemote = false
     }
     func approveHostKey() {
         guard let challenge = hostChallenge else { return }
@@ -112,9 +161,9 @@ struct ActivityItem: Identifiable {
             do {
                 let files = try await Task.detached { try LocalFiles.list(URL(fileURLWithPath: path), showHidden: hidden) }.value
                 guard generation == localGeneration else { return }
-                localFiles = files; localSelection = []
+                localFiles = files; localRevision = UUID(); localSelection = []
             } catch {
-                if generation == localGeneration { localFiles = []; localSelection = []; self.error = error.localizedDescription }
+                if generation == localGeneration { localFiles = []; localRevision = UUID(); localSelection = []; self.error = error.localizedDescription }
             }
             if generation == localGeneration { loadingLocal = false }
         }
@@ -128,16 +177,16 @@ struct ActivityItem: Identifiable {
             do {
                 let files = try await client.list(path)
                 guard generation == remoteGeneration else { return }
-                remoteFiles = files; remoteSelection = []
+                remoteFiles = files; remoteRevision = UUID(); remoteSelection = []
             } catch let failure as TransferError {
                 guard generation == remoteGeneration else { return }
-                remoteFiles = []; remoteSelection = []
+                remoteFiles = []; remoteRevision = UUID(); remoteSelection = []
                 if case .hostKeyRequired(let key, let changed) = failure, !changed {
                     hostChallenge = HostChallenge(key: key, profile: client.profile)
                 } else { error = failure.localizedDescription }
             } catch is CancellationError { }
             catch {
-                if generation == remoteGeneration { remoteFiles = []; remoteSelection = []; self.error = error.localizedDescription }
+                if generation == remoteGeneration { remoteFiles = []; remoteRevision = UUID(); remoteSelection = []; self.error = error.localizedDescription }
             }
             if generation == remoteGeneration { loadingRemote = false; connecting = false }
         }
@@ -239,6 +288,11 @@ struct ActivityItem: Identifiable {
         guard let operation = retryOperations[id] else { return }
         controls[id]?.resume()
         setState(id, "等待中"); submit(id, operation: operation)
+    }
+    func clearFinishedActivities() {
+        let ended = Set(activities.filter { ["完成", "失败", "已取消"].contains($0.state) }.map(\.id))
+        activities.removeAll { ended.contains($0.id) }
+        for id in ended { retryOperations[id] = nil; controls[id] = nil }
     }
     func createFolder(remote: Bool) {
         guard let name = askName(title: "新建文件夹", initial: "新文件夹") else { return }

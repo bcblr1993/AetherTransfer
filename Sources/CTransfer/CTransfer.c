@@ -20,6 +20,7 @@ struct ATRequest {
     ATProgress progress;
     void *context;
     double last_progress;
+    int64_t last_completed;
 };
 static pthread_once_t initialized = PTHREAD_ONCE_INIT;
 static void initialize(void) { curl_global_init(CURL_GLOBAL_DEFAULT); }
@@ -40,8 +41,9 @@ static int progress(void *ctx, curl_off_t dt, curl_off_t dn, curl_off_t ut, curl
     struct timespec now;
     clock_gettime(CLOCK_MONOTONIC, &now);
     double seconds = now.tv_sec + now.tv_nsec / 1000000000.0;
-    if (r->progress && (seconds - r->last_progress >= 0.1 || (dn + un == dt + ut && dt + ut > 0))) {
+    if (r->progress && (seconds - r->last_progress >= 0.1 || (dn + un != r->last_completed && dn + un == dt + ut && dt + ut > 0))) {
         r->last_progress = seconds;
+        r->last_completed = dn + un;
         r->progress(r->context, dn + un, dt + ut);
     }
     return atomic_load(&r->cancelled);
@@ -106,6 +108,14 @@ void at_pause(ATRequest *r, int paused) { atomic_store(&r->paused, paused); }
 void at_rate_limit(ATRequest *r, int64_t rate) {
     curl_easy_setopt(r->curl, CURLOPT_MAX_SEND_SPEED_LARGE, (curl_off_t)rate);
     curl_easy_setopt(r->curl, CURLOPT_MAX_RECV_SPEED_LARGE, (curl_off_t)rate);
+}
+int at_tls(ATRequest *r, int required, const char *certificate_authority) {
+    CURLcode code = curl_easy_setopt(r->curl, CURLOPT_SSL_VERIFYPEER, 1L);
+    if (code == CURLE_OK) code = curl_easy_setopt(r->curl, CURLOPT_SSL_VERIFYHOST, 2L);
+    if (code == CURLE_OK && required) code = curl_easy_setopt(r->curl, CURLOPT_USE_SSL, (long)CURLUSESSL_ALL);
+    if (code == CURLE_OK && certificate_authority && *certificate_authority)
+        code = curl_easy_setopt(r->curl, CURLOPT_CAINFO, certificate_authority);
+    return code;
 }
 void at_destroy(ATRequest *r) {
     if (!r) return;

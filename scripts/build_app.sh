@@ -5,6 +5,9 @@ swift build -c release
 APP="outputs/AetherTransfer.app"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Frameworks" "$APP/Contents/Resources"
 cp .build/release/AetherTransfer "$APP/Contents/MacOS/AetherTransfer"
+# Keep TLS trust available outside the developer's Homebrew installation.
+cp /opt/homebrew/etc/ca-certificates/cert.pem "$APP/Contents/Resources/cacert.pem"
+bash scripts/build_icon.sh
 cat > "$APP/Contents/Info.plist" <<'PLIST'
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -14,6 +17,7 @@ cat > "$APP/Contents/Info.plist" <<'PLIST'
 <key>CFBundleName</key><string>AetherTransfer</string>
 <key>CFBundleDisplayName</key><string>AetherTransfer</string>
 <key>CFBundlePackageType</key><string>APPL</string>
+<key>CFBundleIconFile</key><string>AppIcon</string>
 <key>CFBundleShortVersionString</key><string>0.1.0</string>
 <key>CFBundleVersion</key><string>2026100701</string>
 <key>LSMinimumSystemVersion</key><string>26.0</string>

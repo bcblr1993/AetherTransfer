@@ -1,9 +1,15 @@
 import Foundation
 
 public enum TransferProtocol: String, Codable, CaseIterable, Sendable {
-    case sftp, ftp, ftps
+    case sftp, ftp, ftps, ftpes
     public var defaultPort: Int { self == .sftp ? 22 : (self == .ftps ? 990 : 21) }
-    public var title: String { rawValue.uppercased() }
+    public var title: String {
+        switch self {
+        case .ftps: "FTPS · 隐式 TLS"
+        case .ftpes: "FTP · 显式 TLS"
+        default: rawValue.uppercased()
+        }
+    }
 }
 
 public struct ServerProfile: Identifiable, Codable, Hashable, Sendable {
@@ -33,7 +39,8 @@ public struct ServerProfile: Identifiable, Codable, Hashable, Sendable {
     public func url(path: String, directory: Bool = false) throws -> String {
         try validate(); try RemotePath.validate(path)
         var components = URLComponents()
-        components.scheme = protocolKind.rawValue; components.host = host; components.port = port
+        components.scheme = protocolKind == .ftpes ? "ftp" : protocolKind.rawValue
+        components.host = host; components.port = port
         let absolute = RemotePath.normalize(path)
         // FTP URLs need a second slash to address an absolute server path.
         components.path = (protocolKind == .sftp ? "" : "/") + absolute + (directory && absolute != "/" ? "/" : "")
