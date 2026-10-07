@@ -10,6 +10,7 @@ void at_destroy(ATRequest *request);
 void at_cancel(ATRequest *request);
 void at_pause(ATRequest *request, int paused);
 void at_rate_limit(ATRequest *request, int64_t bytes_per_second);
+void at_download_limit(ATRequest *request, int64_t maximum_bytes);
 int at_tls(ATRequest *request, int required, const char *certificate_authority);
 int at_http(ATRequest *request, const char *method, const char *headers, const char *body);
 long at_response_code(ATRequest *request);

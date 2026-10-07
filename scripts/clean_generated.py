@@ -33,6 +33,7 @@ if args.scope == "all":
                      "reports/ui-download", "reports/native-ui-download", "reports/fixture.json",
                      "reports/sync-ui-left", "reports/sync-ui-right", "reports/sync-ui-large",
                      "reports/webdav-ui-source", "reports/webdav-ui-download",
+                     "reports/editor-ui-files", "reports/editor-fixture-port.json",
                      ".build/curl-source", ".build/curl-8.22.0.tar.xz",
                      ".build/site-checkout/node_modules", ".build/site-checkout/dist", ".build/site-checkout/.astro"]:
         remove(relative)

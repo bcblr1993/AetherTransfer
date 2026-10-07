@@ -31,7 +31,8 @@
 | S3 / IAM Role / DreamObjects / R2 | 待实现 | 对象存储、签名与 multipart |
 | Backblaze B2 / Azure / OpenStack / Rackspace | 待实现 | 独立服务适配与真实验收 |
 | Google Drive / Dropbox / Box / OneDrive Business | 待实现 | OAuth 注册、限流、真实账号与适配 |
-| 内置/外部编辑器、终端联动、压缩上传 | 待实现 | 不宣称已支持 |
+| 内置与外部文本编辑器 | 基础协议与本地 UI 已验证 | UTF-8 / BOM / CRLF；六种协议真实保存、源内容冲突与取消；本地和 WebDAV 界面编辑、TextEdit 自动回传、冲突导出与退出保护。一万行文本保存已核对；完整编辑器矩阵、恢复与服务器条件写入待扩展，见 editing.md |
+| 终端联动、压缩上传 | 待实现 | 不宣称已支持 |
 | 批量重命名、规则、标签与复制粘贴 | 待实现 | 完整文件工作流 |
 | 加密跨 Mac 配置同步 | 待实现 | 密钥、冲突、凭据同步边界待设计与验证 |
 | 中英文、浅深色、无障碍、减少透明度 | 部分实现 | 系统外观跟随；完整英文与 VoiceOver/透明度矩阵待完成；自动化大表格容器点击存在持续布局问题，见 performance.md |

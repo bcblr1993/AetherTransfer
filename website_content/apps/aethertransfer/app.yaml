@@ -51,6 +51,11 @@ features:
       body:
         zh: 开发候选已加入本地与远程目录的单向、双向差异预览，逐项选择方向与操作。镜像删除默认不选中，预览后文件变化会要求重新比较。
         en: The development candidate includes one-way and two-way previews across local and remote folders, with per-item direction and action choices. Mirror deletions start unchecked; changed files require a new preview.
+    - kicker: { zh: 编辑, en: Edit }
+      title: { zh: 原生编辑，保存后回传, en: Native editing and save-back }
+      body:
+        zh: 开发候选支持本地与远程 UTF-8 文本的原生编辑，也可选择本机编辑器，保存后自动回传。检测到原文件内容变化时保留草稿；其他编码、草稿恢复与完整编辑器兼容性仍在开发。
+        en: The development candidate supports native editing of local and remote UTF-8 text, or a chosen local editor with automatic save-back. Detected source changes preserve the draft; other encodings, draft recovery and broader editor compatibility remain in development.
 faq:
   eyebrow: FAQ
   title: { zh: 常见问题, en: Questions }

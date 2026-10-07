@@ -153,6 +153,7 @@ struct NativeFileTable: NSViewRepresentable {
                 item.target = self; item.representedObject = entry; item.isEnabled = enabled; menu.addItem(item)
             }
             add(entry.isDirectory ? "打开" : (parent.remote ? "下载" : "打开"), #selector(openItem(_:)))
+            if !entry.isDirectory && !entry.isSymbolicLink { add("编辑文本…", #selector(editItem(_:))) }
             if !parent.remote { add("上传", #selector(uploadItems), enabled: parent.workspace.client != nil) }
             menu.addItem(.separator())
             add("重命名…", #selector(renameItem(_:))); add("删除…", #selector(deleteItem(_:)))
@@ -161,6 +162,7 @@ struct NativeFileTable: NSViewRepresentable {
         }
         @objc private func openItem(_ sender: NSMenuItem) { if let entry = sender.representedObject as? FileEntry { parent.workspace.open(entry, remote: parent.remote) } }
         @objc private func renameItem(_ sender: NSMenuItem) { if let entry = sender.representedObject as? FileEntry { parent.workspace.rename(entry, remote: parent.remote) } }
+        @objc private func editItem(_ sender: NSMenuItem) { if let entry = sender.representedObject as? FileEntry { parent.workspace.edit(entry, remote: parent.remote) } }
         @objc private func deleteItem(_ sender: NSMenuItem) { if let entry = sender.representedObject as? FileEntry { parent.workspace.delete(entry, remote: parent.remote) } }
         @objc private func uploadItems() { parent.workspace.upload(files.filter { parent.selection.contains($0.id) }) }
     }

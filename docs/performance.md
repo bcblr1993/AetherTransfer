@@ -30,3 +30,5 @@ WebDAV 实际窗口载入 10,000 项后，通过可见文件文字点击取得�
 同步预览复用固定 28 pt 行高 AppKit 表格；方向菜单只在同名冲突行创建，普通复制/新建/删除行使用文本单元格。实际载入 10,000 个零字节本地文件的差异，滚动到最后一项、切换该项选择、全不选/全选后，稳定 5.01 秒采样 CPU 累计时间未增加、RSS 259.80 MiB（`ps` CPU 时间精度 0.01 秒）；此样本只反映短时空闲，不证明长时能耗或动画帧率。先前组合流程的 RSS 为 339.80 MiB，按需创建冲突菜单后复测降低。浅色大目录与深色冲突预览已实际检查；开发构建运行于 macOS 27，macOS 26 UI 仍需独立验收。
 
 实现依据：[Apple Liquid Glass](https://developer.apple.com/documentation/swiftui/applying-liquid-glass-to-custom-views)、[AppKit view reuse](https://developer.apple.com/documentation/appkit/nstableview/makeview(withidentifier:owner:))。
+
+原生 NSTextView 编辑器实际打开 10,000 行 UTF-8 中文文本（原始 1,090,000 字节），滚动到末段、插入内容并保存；核对文件保留全部原始内容且新增标记仅出现一次。随后 5.01 秒空闲样本中累计 CPU 时间没有增加，RSS 从 218.41 MiB 到 218.36 MiB。中文查找、撤销重做、保存后列表刷新及浅/深色窗口已检查。此样本不衡量键入延迟、帧率、长时内存或外部编辑器回传期间的能耗；自动化直接点击整个长文本辅助功能元素会因元素不完全可见而失败，截图中可见文本的点击与保存正常，VoiceOver 仍待独立验收。

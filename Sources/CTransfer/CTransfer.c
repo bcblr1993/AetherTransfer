@@ -24,6 +24,8 @@ struct ATRequest {
     int64_t last_completed;
     struct curl_slist *headers;
     FILE *download;
+    int64_t download_limit;
+    int64_t downloaded;
 };
 static pthread_once_t initialized = PTHREAD_ONCE_INIT;
 static void initialize(void) { curl_global_init(CURL_GLOBAL_DEFAULT); }
@@ -45,6 +47,7 @@ static size_t response_header(char *data, size_t size, size_t count, void *ctx) 
     // Authentication may produce multiple responses. Only retain the final response body.
     if (n >= 5 && memcmp(data, "HTTP/", 5) == 0) {
         r->length = 0;
+        r->downloaded = 0;
         if (r->result) r->result[0] = 0;
         if (r->download && (fseek(r->download, 0, SEEK_SET) != 0 || ftruncate(fileno(r->download), 0) != 0)) return 0;
     }
@@ -52,6 +55,18 @@ static size_t response_header(char *data, size_t size, size_t count, void *ctx) 
 }
 static int seek_upload(void *ctx, curl_off_t offset, int origin) {
     return fseeko(ctx, (off_t)offset, origin) == 0 ? CURL_SEEKFUNC_OK : CURL_SEEKFUNC_FAIL;
+}
+static size_t write_download(char *data, size_t size, size_t count, void *ctx) {
+    ATRequest *r = ctx;
+    if (size && count > SIZE_MAX / size) return 0;
+    size_t n = size * count;
+    if (r->download_limit > 0 && (uint64_t)n > (uint64_t)(r->download_limit - r->downloaded)) {
+        snprintf(r->error, sizeof(r->error), "Remote file exceeds the download size limit");
+        return 0;
+    }
+    size_t written = fwrite(data, 1, n, r->download);
+    r->downloaded += (int64_t)written;
+    return written;
 }
 static int progress(void *ctx, curl_off_t dt, curl_off_t dn, curl_off_t ut, curl_off_t un) {
     ATRequest *r = ctx;
@@ -159,6 +174,7 @@ int at_tls(ATRequest *r, int required, const char *certificate_authority) {
         code = curl_easy_setopt(r->curl, CURLOPT_CAINFO, certificate_authority);
     return code;
 }
+void at_download_limit(ATRequest *r, int64_t maximum_bytes) { r->download_limit = maximum_bytes > 0 ? maximum_bytes : 0; }
 void at_destroy(ATRequest *r) {
     if (!r) return;
     curl_easy_cleanup(r->curl);
@@ -175,7 +191,11 @@ int at_perform(ATRequest *r, int mode, const char *local, const char *commands, 
     } else if (mode == 1 || mode == 2) {
         f = fopen(local, mode == 1 ? "wbx" : "rb");
         if (!f) { snprintf(r->error, sizeof(r->error), "Cannot open local transfer file"); return CURLE_READ_ERROR; }
-        if (mode == 1) { r->download = f; curl_easy_setopt(r->curl, CURLOPT_WRITEDATA, f); }
+        if (mode == 1) {
+            r->download = f;
+            curl_easy_setopt(r->curl, CURLOPT_WRITEFUNCTION, write_download);
+            curl_easy_setopt(r->curl, CURLOPT_WRITEDATA, r);
+        }
         else {
             struct stat st;
             if (fstat(fileno(f), &st) != 0) { fclose(f); return CURLE_READ_ERROR; }

@@ -4,11 +4,13 @@ import AetherTransferCore
 
 @main struct AetherTransferApp: App {
     @StateObject private var tabs = BrowserTabs()
+    @NSApplicationDelegateAdaptor(TransferAppDelegate.self) private var appDelegate
     @AppStorage("appearance") private var appearance = "system"
     var body: some Scene {
         WindowGroup("AetherTransfer") {
             MainView(workspace: tabs.current, tabs: tabs).frame(minWidth: 1000, minHeight: 640)
                 .preferredColorScheme(appearance == "dark" ? .dark : (appearance == "light" ? .light : nil))
+                .onAppear { appDelegate.editors = tabs.editors }
         }
         .defaultSize(width: 1240, height: 800)
         .commands {
@@ -19,9 +21,16 @@ import AetherTransferCore
                 Button("上传所选文件") { tabs.current.uploadSelection() }.keyboardShortcut("u", modifiers: [.command, .shift])
                 Button("下载所选文件") { tabs.current.downloadSelection() }.keyboardShortcut("d", modifiers: [.command, .shift])
                 Button("同步目录…") { tabs.current.showSync = true }.keyboardShortcut("s", modifiers: [.command, .shift])
+                Button("编辑所选文本…") { tabs.current.editSelection() }.keyboardShortcut("e")
             }
             CommandMenu("显示") {
                 Button("显示 / 隐藏隐藏文件") { tabs.current.showHidden.toggle() }.keyboardShortcut(".", modifiers: [.command, .shift])
+            }
+            CommandGroup(after: .textEditing) {
+                Button("查找…") {
+                    let sender = NSMenuItem(); sender.tag = NSTextFinder.Action.showFindInterface.rawValue
+                    NSApp.sendAction(#selector(NSTextView.performFindPanelAction(_:)), to: nil, from: sender)
+                }.keyboardShortcut("f")
             }
         }
         Settings { TransferSettingsView(tabs: tabs) }
@@ -175,6 +184,9 @@ struct MainView: View {
         .onChange(of: workspace.showHidden) { workspace.refreshLocal() }
         .onChange(of: tabs.selected) { workspace.reloadProfiles() }
         .onChange(of: workspace.activities.count) { old, new in if new > old { showActivities = true } }
+        .onReceive(NotificationCenter.default.publisher(for: .init("AetherTransferEditedFile"))) { _ in
+            workspace.refreshLocal(); workspace.refreshRemote()
+        }
         .onAppear { workspace.reloadProfiles() }
     }
 }

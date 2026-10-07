@@ -38,6 +38,7 @@ struct ActivityItem: Identifiable {
     private var credentials = Credentials()
     private let store = ProfileStore()
     private let queue: TransferQueue
+    private let editors: FileEditorManager
     private var retryOperations: [UUID: TransferQueue.Operation] = [:]
     private var controls: [UUID: TransferControl] = [:]
     private var browseTask: Task<Void, Never>?
@@ -52,8 +53,8 @@ struct ActivityItem: Identifiable {
     }
     var client: RemoteClient? { connectedProfile.map { RemoteClient(profile: $0, credentials: credentials) } }
 
-    init(queue: TransferQueue = TransferQueue(limit: 2)) {
-        self.queue = queue
+    init(queue: TransferQueue = TransferQueue(limit: 2), editors: FileEditorManager = FileEditorManager()) {
+        self.queue = queue; self.editors = editors
         do { profiles = try store.load() } catch { self.error = error.localizedDescription }
         refreshLocal()
     }
@@ -203,6 +204,15 @@ struct ActivityItem: Identifiable {
     func parent(remote: Bool) {
         if remote { remotePath = RemotePath.parent(remotePath); refreshRemote() }
         else { localPath = URL(fileURLWithPath: localPath).deletingLastPathComponent().path; refreshLocal() }
+    }
+    func edit(_ entry: FileEntry, remote: Bool) {
+        guard !entry.isDirectory, !entry.isSymbolicLink else { return }
+        if remote, let client { editors.open(entry, source: .remote(client, entry.path)) }
+        else if !remote { editors.open(entry, source: .local(URL(fileURLWithPath: entry.path))) }
+    }
+    func editSelection() {
+        if let entry = remoteFiles.first(where: { remoteSelection.contains($0.id) }) { edit(entry, remote: true) }
+        else if let entry = localFiles.first(where: { localSelection.contains($0.id) }) { edit(entry, remote: false) }
     }
     func chooseLocal() {
         let panel = NSOpenPanel(); panel.canChooseDirectories = true; panel.canChooseFiles = false

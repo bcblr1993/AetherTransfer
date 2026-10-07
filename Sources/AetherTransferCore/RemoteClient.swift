@@ -60,6 +60,7 @@ public struct RemoteClient: Sendable {
 
     private func perform(path: String, directory: Bool = false, mode: Int32, local: String = "", commands: String = "",
                          httpMethod: String? = nil, httpHeaders: [String] = [],
+                         maximumDownloadBytes: Int64 = 0,
                          progress: @escaping @Sendable (TransferProgress) -> Void = { _ in }) async throws -> String {
         try Task.checkCancellation()
         let url = try profile.url(path: path, directory: directory)
@@ -89,6 +90,7 @@ public struct RemoteClient: Sendable {
             guard configuration == 0 else { throw TransferError.remote("无法配置 WebDAV 请求。") }
         }
         at_rate_limit(request, rateLimit)
+        at_download_limit(request, maximumDownloadBytes)
         control?.attach(box)
         defer { control?.detach() }
         return try await withTaskCancellationHandler {
@@ -152,13 +154,13 @@ public struct RemoteClient: Sendable {
         }
         return try DirectoryListing.parse(response, parent: RemotePath.normalize(path))
     }
-    public func download(_ remote: String, to destination: URL, overwrite: Bool = false,
+    public func download(_ remote: String, to destination: URL, overwrite: Bool = false, maximumBytes: Int64 = 0,
                          progress: @escaping @Sendable (TransferProgress) -> Void = { _ in }) async throws {
         let fm = FileManager.default
         if fm.fileExists(atPath: destination.path) && !overwrite { throw TransferError.conflict(destination.lastPathComponent) }
         let temporary = destination.deletingLastPathComponent().appendingPathComponent(".aethertransfer-\(UUID().uuidString).part")
         defer { try? fm.removeItem(at: temporary) }
-        _ = try await perform(path: remote, mode: 1, local: temporary.path, progress: progress)
+        _ = try await perform(path: remote, mode: 1, local: temporary.path, maximumDownloadBytes: maximumBytes, progress: progress)
         try Task.checkCancellation()
         if fm.fileExists(atPath: destination.path) {
             guard overwrite else { throw TransferError.conflict(destination.lastPathComponent) }
