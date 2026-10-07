@@ -14,6 +14,27 @@ private final class PreviewProgress: @unchecked Sendable {
 }
 
 extension ProtocolIntegrationTests {
+    func testRemotePreviewReservedFilenamePreservesLeaseForEveryProtocol() async throws {
+        for kind in TransferProtocol.allCases {
+            let remote = try client(kind), root = FileManager.default.temporaryDirectory.appendingPathComponent("aethertransfer-preview-test-\(UUID())")
+            try FileManager.default.createDirectory(at: root, withIntermediateDirectories: false)
+            defer { try? FileManager.default.removeItem(at: root) }
+            let source = root.appendingPathComponent("source"), folder = "/preview-reserved-\(UUID())"
+            let data = Data("server file named .lease".utf8); try data.write(to: source)
+            try await remote.mkdir(folder)
+            let target = try RemotePath.join(folder, ".lease")
+            try await remote.upload(source, to: target)
+            let preview = try await FilePreview.open(.remote(remote, target), temporaryParent: root)
+            XCTAssertEqual(preview.url.lastPathComponent, ".lease")
+            XCTAssertEqual(preview.url.deletingLastPathComponent().lastPathComponent, "payload")
+            XCTAssertEqual(try Data(contentsOf: preview.url), data)
+            let active = try await FilePreview.reclaimAbandoned(in: root)
+            XCTAssertEqual(active.inUse, 1); XCTAssertEqual(active.removed, 0)
+            try await preview.close()
+            XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: root.path), ["source"])
+            try await remote.remove(target, directory: false); try await remote.remove(folder, directory: true)
+        }
+    }
     func testRemotePreviewVerifiedSnapshotAndIdempotentCloseForEveryProtocol() async throws {
         for kind in TransferProtocol.allCases {
             let remote = try client(kind), root = FileManager.default.temporaryDirectory.appendingPathComponent("aethertransfer-preview-test-\(UUID())")

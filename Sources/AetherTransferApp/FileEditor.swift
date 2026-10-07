@@ -42,7 +42,7 @@ import AetherTransferCore
             alert.runModal(); return .terminateCancel
         }
         guard editors?.approveQuit() != false else { return .terminateCancel }
-        guard editors?.hasWindows == true || tabs?.previews.hasWindow == true else { return .terminateNow }
+        guard editors?.hasWindows == true || tabs?.previews.needsShutdown == true else { return .terminateNow }
         Task {
             await tabs?.previews.shutdown(); await editors?.shutdown()
             sender.reply(toApplicationShouldTerminate: true)

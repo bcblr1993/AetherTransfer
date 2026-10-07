@@ -26,6 +26,8 @@ swift run AetherTransfer
 
 测试和打包脚本会先清理上一轮 Swift 构建产物；打包只保留一个开发 app。依赖源码编译完成即清理，仅缓存一份协议 runtime、源码压缩包和测试 venv。官网构建前后用 `python3 scripts/clean_generated.py website` 清理 node_modules、dist、Astro 和 npm 缓存。手动清理本项目生成的性能追踪与所有构建缓存：`python3 scripts/clean_generated.py all`；该命令保留源码、Git 与官网 checkout，不删除用户的待续传数据。
 
+测试和构建串行执行，结束后再清理 `swift`、`runtime`、`website` 三个范围，保留一个当前开发 app 和少量验收证据；不保留多轮编译目录或大型性能追踪。预览缓存独立于构建清理：关闭或正常退出清理自己的副本，启动时回收已确认归属且无人使用的遗留副本，未知数据保留。
+
 ## 产品分工
 
 AetherTransfer 专注文件管理与传输；ApexTerm 专注 SSH 终端与运维。无追踪、无云端账号要求，凭据保存在系统 Keychain。

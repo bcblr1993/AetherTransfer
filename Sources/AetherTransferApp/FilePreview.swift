@@ -7,7 +7,26 @@ import AetherTransferCore
     private var controller: FilePreviewWindow?
     private var pending: (FileEntry, FilePreviewSource)?
     private var quitting = false
-    var hasWindow: Bool { controller != nil }
+    private var reclamation: Task<Void, Never>?
+    init() {
+        reclamation = Task { [weak self] in
+            guard let self else { return }
+            defer { reclamation = nil }
+            do {
+                let report = try await FilePreview.reclaimAbandoned()
+                if report.failed > 0 || report.reachedLimit {
+                    reportCacheFailure("\(report.failed) 个已确认归属的缓存未能清理。\(report.reachedLimit ? "本轮扫描已到上限，余下项目将在下次启动重试。" : "下次启动将再次尝试。")")
+                }
+            } catch is CancellationError { }
+            catch { reportCacheFailure(error.localizedDescription) }
+        }
+    }
+    private func reportCacheFailure(_ message: String) {
+        guard !quitting else { return }
+        let alert = NSAlert(); alert.messageText = "临时预览清理未完成"
+        alert.informativeText = message; alert.addButton(withTitle: "确定"); alert.runModal()
+    }
+    var needsShutdown: Bool { controller != nil || reclamation != nil }
     func open(_ entry: FileEntry, source: FilePreviewSource) {
         guard !entry.isDirectory, !entry.isSymbolicLink else { return }
         guard !quitting else { return }
@@ -24,6 +43,7 @@ import AetherTransferCore
     }
     func shutdown() async {
         quitting = true; pending = nil
+        reclamation?.cancel(); await reclamation?.value
         guard let current = controller else { return }
         current.window?.contentViewController = nil // Release the Quick Look renderer before removing its file.
         await current.model.shutdown(); current.reportCleanupFailure(); current.close(); controller = nil
@@ -33,6 +53,7 @@ import AetherTransferCore
 @MainActor private final class FilePreviewWindow: NSWindowController, NSWindowDelegate {
     let model = FilePreviewModel()
     private(set) var closing = false
+    private var cleanupFailureReported = false
     private let didClose: () -> Void
     init(didClose: @escaping () -> Void) {
         self.didClose = didClose
@@ -54,7 +75,8 @@ import AetherTransferCore
         Task { await model.shutdown(); reportCleanupFailure(); didClose() }
     }
     func reportCleanupFailure() {
-        guard let message = model.cleanupError else { return }
+        guard !cleanupFailureReported, let message = model.cleanupError else { return }
+        cleanupFailureReported = true
         let alert = NSAlert(); alert.messageText = "临时预览清理未完成"
         alert.informativeText = message; alert.addButton(withTitle: "确定"); alert.runModal()
     }

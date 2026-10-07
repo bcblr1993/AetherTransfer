@@ -23,12 +23,17 @@ public struct FilePreview: Sendable {
     public let url: URL
     public let byteCount: Int64
     public let directory: URL?
-    private init(url: URL, byteCount: Int64, directory: URL?) {
-        self.url = url; self.byteCount = byteCount; self.directory = directory
+    private let lease: PreviewCacheLease?
+    public static var cacheDirectory: URL { PreviewCache.directory }
+    private init(url: URL, byteCount: Int64, lease: PreviewCacheLease?) {
+        self.url = url; self.byteCount = byteCount; self.lease = lease; directory = lease?.directory
+    }
+    public static func reclaimAbandoned(in parent: URL = cacheDirectory) async throws -> PreviewCacheCleanup {
+        try await TreeIO.run { try PreviewCache.reclaim(parent) }
     }
     public static func open(_ source: FilePreviewSource,
                             maximumRemoteBytes: Int64 = maximumRemoteBytes,
-                            temporaryParent: URL = FileManager.default.temporaryDirectory,
+                            temporaryParent: URL = cacheDirectory,
                             progress: @escaping @Sendable (TransferProgress) -> Void = { _ in }) async throws -> FilePreview {
         try Task.checkCancellation()
         switch source {
@@ -45,7 +50,7 @@ public struct FilePreview: Sendable {
                 return metadata.st_size
             }
             try Task.checkCancellation()
-            return FilePreview(url: url, byteCount: size, directory: nil)
+            return FilePreview(url: url, byteCount: size, lease: nil)
         case .remote(let client, let rawPath):
             try RemotePath.validate(rawPath)
             let path = RemotePath.normalize(rawPath)
@@ -54,13 +59,9 @@ public struct FilePreview: Sendable {
             let version = try await client.fileVersion(path)
             guard maximumRemoteBytes > 0, version.size <= maximumRemoteBytes else { throw FilePreviewError.tooLarge }
             try Task.checkCancellation()
-            let directory = temporaryParent.appendingPathComponent("aethertransfer-preview-\(UUID())", isDirectory: true)
-            let destination = directory.appendingPathComponent(entry.name)
+            let lease = try await TreeIO.run { try PreviewCacheLease(parentURL: temporaryParent) }
+            let directory = lease.directory, destination = lease.payload.appendingPathComponent(entry.name)
             do {
-                try await TreeIO.run {
-                    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: false,
-                                                            attributes: [.posixPermissions: 0o700])
-                }
                 let store = ResumeTransferStore(directory: directory.appendingPathComponent("journal", isDirectory: true))
                 guard let transfer = try await client.resumableDownload(entry, to: destination, store: store) else {
                     throw FilePreviewError.unsupportedFile
@@ -68,24 +69,16 @@ public struct FilePreview: Sendable {
                 try await transfer.run(client: client, expectedSourceSize: version.size, progress: progress)
                 guard try await client.fileVersion(path) == version else { throw FilePreviewError.changed }
                 try Task.checkCancellation()
-                return FilePreview(url: destination, byteCount: version.size, directory: directory)
+                return FilePreview(url: destination, byteCount: version.size, lease: lease)
             } catch {
                 // This directory contains only this preview's verified file and its journal.
                 // Cleanup cannot inherit the cancelled reader's cancellation.
-                try await remove(directory)
+                try await lease.close()
                 throw error
             }
         }
     }
     public func close() async throws {
-        if let directory { try await Self.remove(directory) }
-    }
-    private static func remove(_ directory: URL) async throws {
-        try await Task.detached {
-            if FileManager.default.fileExists(atPath: directory.path) {
-                do { try FileManager.default.removeItem(at: directory) }
-                catch { if FileManager.default.fileExists(atPath: directory.path) { throw error } }
-            }
-        }.value
+        try await lease?.close()
     }
 }
