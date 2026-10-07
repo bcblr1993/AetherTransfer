@@ -158,7 +158,8 @@ public actor ResumableTransfer {
         guard !busy else { throw ResumeTransferError.busy }
         guard !finished, !record.discardPending, ResumeEndpoint(client.profile) == record.endpoint else { throw ResumeTransferError.invalidCheckpoint }
         busy = true; defer { busy = false }
-        client.control?.beginAttempt()
+        // Honor pause/retain requested during queued preparation; clear only after this attempt ends.
+        defer { client.control?.resetRetainRequest() }
         let descriptor = try await store.lock(record.id)
         defer { flock(descriptor, LOCK_UN); Darwin.close(descriptor) }
         if persisted { record = try await store.load(record.id) }

@@ -68,7 +68,7 @@ public final class TransferControl: @unchecked Sendable {
     public func retainProgress() {
         lock.lock(); defer { lock.unlock() }; retaining = true; request?.cancel()
     }
-    public func beginAttempt() { lock.lock(); defer { lock.unlock() }; retaining = false; paused = false }
+    func resetRetainRequest() { lock.lock(); defer { lock.unlock() }; retaining = false }
     private func setPaused(_ value: Bool) {
         lock.lock(); defer { lock.unlock() }
         paused = value

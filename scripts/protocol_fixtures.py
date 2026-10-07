@@ -169,6 +169,14 @@ with tempfile.TemporaryDirectory(prefix='aethertransfer-fixture-') as directory:
             'http_authenticator': {'accept_basic': not digest, 'accept_digest': digest, 'default_to_digest': digest},
             'dir_browser': {'enable': False}, 'logging': {'enable': False}, 'verbose': 0,
         })
+        # Keep internal server exception evidence without logging requests or authentication.
+        from wsgidav.error_printer import _logger
+        logging.disable(logging.NOTSET)
+        logging.getLogger().handlers = [logging.NullHandler()]
+        logging.getLogger('pyftpdlib').disabled = True
+        _logger.setLevel(logging.ERROR)
+        _logger.propagate = False
+        if not _logger.handlers: _logger.addHandler(logging.StreamHandler())
         def faults(environ, start_response):
             original_start = start_response
             def start_response(status, headers, exc_info=None):

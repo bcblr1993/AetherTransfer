@@ -108,6 +108,32 @@ extension ProtocolIntegrationTests {
         let records = try await store.records(); XCTAssertTrue(records.isEmpty)
         XCTAssertFalse(FileManager.default.fileExists(atPath: target.path)); try await remote.remove(path, directory: false)
     }
+    func testPauseAndRetainBeforePreparationSurviveIntoRecovery() async throws {
+        let remote = try client(.ftp), root = try resumeFolder()
+        defer { try? FileManager.default.removeItem(at: root) }
+        let source = root.appendingPathComponent("source"), target = root.appendingPathComponent("target")
+        let data = Data(repeating: 37, count: 32 * 1024), path = "/early-control-\(UUID().uuidString)"
+        let store = ResumeTransferStore(directory: root.appendingPathComponent("journal"))
+        try data.write(to: source); try await remote.upload(source, to: path)
+        let control = TransferControl(); control.pause()
+        let controlled = RemoteClient(profile: remote.profile, credentials: remote.credentials, control: control)
+        let transfer = try ResumableTransfer(direction: .download, local: target, remote: path, profile: remote.profile, store: store)
+        let operation = Task { try await transfer.run(client: controlled) }
+        try await Task.sleep(for: .milliseconds(150))
+        XCTAssertFalse(FileManager.default.fileExists(atPath: target.path))
+        let unprepared = try await store.records(); XCTAssertTrue(unprepared.isEmpty)
+        control.retainProgress()
+        do { try await operation.value; XCTFail("Early retain must suspend preparation") }
+        catch ResumeTransferError.suspended { }
+        let records = try await store.records(); XCTAssertEqual(records.count, 1)
+        XCTAssertEqual(records[0].retainedBytes, 0)
+        control.resume()
+        let restored = try ResumableTransfer(restoring: records[0], store: store)
+        try await restored.run(client: controlled)
+        XCTAssertEqual(try Data(contentsOf: target), data)
+        let remaining = try await store.records(); XCTAssertTrue(remaining.isEmpty)
+        try await remote.remove(path, directory: false)
+    }
     func testWebDAVUploadRequiresExplicitRestart() async throws {
         for kind in [TransferProtocol.webdav, .webdavs] {
             let remote = try client(kind), root = try resumeFolder()

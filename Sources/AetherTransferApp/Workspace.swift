@@ -243,19 +243,16 @@ struct ActivityItem: Identifiable {
     func upload(_ entries: [FileEntry]) {
         guard let client else { return }
         let rateLimit = Int64(max(0, UserDefaults.standard.integer(forKey: "transferRateKiB"))) * 1024
+        let remoteNames = Set(remoteFiles.map(\.name))
         for entry in entries {
             do {
                 let target = try RemotePath.join(remotePath, entry.name)
-                let exists = remoteFiles.contains { $0.name == entry.name }
+                let exists = remoteNames.contains(entry.name)
                 guard let policy = exists ? conflictPolicy(entry.name, directory: entry.isDirectory) : .reject else { continue }
                 if !entry.isDirectory {
                     guard !entry.isSymbolicLink else { throw ResumeTransferError.unsupportedVersion }
-                    Task {
-                        do {
-                            if let transfer = try await client.resumableUpload(URL(fileURLWithPath: entry.path), to: target, policy: policy) {
-                                await enqueueResume(transfer, client: client, rateLimit: rateLimit)
-                            }
-                        } catch { self.error = error.localizedDescription }
+                    enqueueFileResume(name: entry.name, direction: "上传", client: client, rateLimit: rateLimit) { controlled in
+                        try await controlled.resumableUpload(URL(fileURLWithPath: entry.path), to: target, policy: policy)
                     }
                     continue
                 }
@@ -269,17 +266,14 @@ struct ActivityItem: Identifiable {
     func download(_ entries: [FileEntry]) {
         guard let client else { return }
         let rateLimit = Int64(max(0, UserDefaults.standard.integer(forKey: "transferRateKiB"))) * 1024
+        let localNames = Set(localFiles.map(\.name))
         for entry in entries {
             let target = URL(fileURLWithPath: localPath).appendingPathComponent(entry.name)
-            let exists = FileManager.default.fileExists(atPath: target.path)
+            let exists = localNames.contains(entry.name)
             guard let policy = exists ? conflictPolicy(entry.name, directory: entry.isDirectory) : .reject else { continue }
             if !entry.isDirectory {
-                Task {
-                    do {
-                        if let transfer = try await client.resumableDownload(entry, to: target, policy: policy) {
-                            await enqueueResume(transfer, client: client, rateLimit: rateLimit)
-                        }
-                    } catch { self.error = error.localizedDescription }
+                enqueueFileResume(name: entry.name, direction: "下载", client: client, rateLimit: rateLimit) { controlled in
+                    try await controlled.resumableDownload(entry, to: target, policy: policy)
                 }
                 continue
             }
@@ -315,6 +309,32 @@ struct ActivityItem: Identifiable {
                 Task { @MainActor in self?.receive(id, event) }
             }
         }
+    }
+    private func enqueueFileResume(name: String, direction: String, client: RemoteClient, rateLimit: Int64,
+                                   prepare: @escaping @Sendable (RemoteClient) async throws -> ResumableTransfer?) {
+        let id = UUID(), control = TransferControl()
+        activities.insert(ActivityItem(id: id, name: name, direction: direction), at: 0)
+        controls[id] = control
+        let operation: TransferQueue.Operation = { [weak self] progress in
+            let controlled = RemoteClient(profile: client.profile, credentials: client.credentials, control: control,
+                                          rateLimit: rateLimit, certificateAuthority: client.certificateAuthority)
+            // Preparation uses the same queue slot as transfer, including metadata and conflict checks.
+            guard let transfer = try await prepare(controlled) else { return }
+            try Task.checkCancellation()
+            let record = await transfer.checkpoint()
+            let job = ResumeJob(transfer: transfer, record: record, client: client, control: control, rateLimit: rateLimit)
+            guard let self, await self.attachResume(job, to: id) else { throw CancellationError() }
+            try await transfer.run(client: controlled, progress: progress)
+        }
+        retryOperations[id] = operation
+        submit(id, operation: operation)
+    }
+    private func attachResume(_ job: ResumeJob, to id: UUID) -> Bool {
+        guard let index = activities.firstIndex(where: { $0.id == id }) else { return false }
+        resumeJobs[id] = job
+        activities[index].canRetain = true
+        activities[index].requiresRestart = job.record.direction == .upload && job.record.endpoint.protocolKind.isWebDAV
+        return true
     }
     private func enqueueResume(_ transfer: ResumableTransfer, client: RemoteClient, rateLimit: Int64,
                                restart: Bool = false) async {
@@ -391,6 +411,7 @@ struct ActivityItem: Identifiable {
     func resume(_ id: UUID) { controls[id]?.resume(); setState(id, "传输中") }
     func retry(_ id: UUID) {
         if let job = resumeJobs[id] {
+            job.control.resume()
             setState(id, "等待中")
             submit(id, operation: resumeOperation(job, restart: job.record.direction == .upload && job.record.endpoint.protocolKind.isWebDAV))
             return
