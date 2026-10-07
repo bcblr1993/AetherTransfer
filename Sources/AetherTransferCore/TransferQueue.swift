@@ -1,7 +1,7 @@
 import Foundation
 
 public enum QueueEvent: Sendable {
-    case queued, running, progress(TransferProgress), completed, failed(String), cancelled
+    case queued, running, progress(TransferProgress), completed, suspended, failed(String), cancelled
 }
 
 /// Limits active operations independently of UI selection and window refreshes.
@@ -45,6 +45,7 @@ public actor TransferQueue {
                     try Task.checkCancellation()
                     result = .completed
                 } catch is CancellationError { result = .cancelled }
+                catch ResumeTransferError.suspended { result = .suspended }
                 catch { result = .failed(error.localizedDescription) }
                 finish(job, result: result)
             }

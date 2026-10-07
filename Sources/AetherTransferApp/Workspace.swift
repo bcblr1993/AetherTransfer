@@ -12,6 +12,9 @@ struct ActivityItem: Identifiable {
     var state: String = "等待中"
     var error: String?
     var canRetry = true
+    var canRetain = false
+    var requiresRestart = false
+    var phase: String?
 }
 
 @MainActor final class Workspace: ObservableObject {
@@ -35,12 +38,22 @@ struct ActivityItem: Identifiable {
     @Published var connectedProfile: ServerProfile?
     @Published var connectionPrompt: ServerProfile?
     @Published var showSync = false
+    @Published var showRecovery = false
     private var credentials = Credentials()
     private let store = ProfileStore()
     private let queue: TransferQueue
     private let editors: FileEditorManager
     private var retryOperations: [UUID: TransferQueue.Operation] = [:]
     private var controls: [UUID: TransferControl] = [:]
+    private struct ResumeJob {
+        let transfer: ResumableTransfer
+        let record: ResumeTransferRecord
+        let client: RemoteClient
+        let control: TransferControl
+        let rateLimit: Int64
+    }
+    private var resumeJobs: [UUID: ResumeJob] = [:]
+    var resumeIDs: Set<UUID> { Set(resumeJobs.values.map { $0.record.id }) }
     private var browseTask: Task<Void, Never>?
     private var localTask: Task<Void, Never>?
     private var localGeneration = UUID()
@@ -235,6 +248,17 @@ struct ActivityItem: Identifiable {
                 let target = try RemotePath.join(remotePath, entry.name)
                 let exists = remoteFiles.contains { $0.name == entry.name }
                 guard let policy = exists ? conflictPolicy(entry.name, directory: entry.isDirectory) : .reject else { continue }
+                if !entry.isDirectory {
+                    guard !entry.isSymbolicLink else { throw ResumeTransferError.unsupportedVersion }
+                    Task {
+                        do {
+                            if let transfer = try await client.resumableUpload(URL(fileURLWithPath: entry.path), to: target, policy: policy) {
+                                await enqueueResume(transfer, client: client, rateLimit: rateLimit)
+                            }
+                        } catch { self.error = error.localizedDescription }
+                    }
+                    continue
+                }
                 enqueue(name: entry.name, direction: "上传") { control, progress in
                     let controlled = RemoteClient(profile: client.profile, credentials: client.credentials, control: control, rateLimit: rateLimit)
                     try await controlled.uploadTree(URL(fileURLWithPath: entry.path), to: target, policy: policy, progress: progress)
@@ -249,6 +273,16 @@ struct ActivityItem: Identifiable {
             let target = URL(fileURLWithPath: localPath).appendingPathComponent(entry.name)
             let exists = FileManager.default.fileExists(atPath: target.path)
             guard let policy = exists ? conflictPolicy(entry.name, directory: entry.isDirectory) : .reject else { continue }
+            if !entry.isDirectory {
+                Task {
+                    do {
+                        if let transfer = try await client.resumableDownload(entry, to: target, policy: policy) {
+                            await enqueueResume(transfer, client: client, rateLimit: rateLimit)
+                        }
+                    } catch { self.error = error.localizedDescription }
+                }
+                continue
+            }
             enqueue(name: entry.name, direction: "下载") { control, progress in
                 let controlled = RemoteClient(profile: client.profile, credentials: client.credentials, control: control, rateLimit: rateLimit)
                 try await controlled.downloadTree(entry, to: target, policy: policy, progress: progress)
@@ -282,6 +316,32 @@ struct ActivityItem: Identifiable {
             }
         }
     }
+    private func enqueueResume(_ transfer: ResumableTransfer, client: RemoteClient, rateLimit: Int64,
+                               restart: Bool = false) async {
+        let record = await transfer.checkpoint()
+        guard !resumeIDs.contains(record.id) else { return }
+        let id = UUID(), control = TransferControl()
+        let job = ResumeJob(transfer: transfer, record: record, client: client, control: control, rateLimit: rateLimit)
+        resumeJobs[id] = job; controls[id] = control
+        activities.insert(ActivityItem(id: id, name: record.name, direction: record.direction == .upload ? "上传" : "下载",
+                                       bytes: record.retainedBytes, total: record.expectedSize, canRetain: true,
+                                       requiresRestart: record.direction == .upload && record.endpoint.protocolKind.isWebDAV), at: 0)
+        submit(id, operation: resumeOperation(job, restart: restart))
+    }
+    private func resumeOperation(_ job: ResumeJob, restart: Bool) -> TransferQueue.Operation {
+        { progress in
+            let controlled = RemoteClient(profile: job.client.profile, credentials: job.client.credentials,
+                                          control: job.control, rateLimit: job.rateLimit,
+                                          certificateAuthority: job.client.certificateAuthority)
+            try await job.transfer.run(client: controlled, restartWebDAVUpload: restart, progress: progress)
+        }
+    }
+    func recover(_ record: ResumeTransferRecord, restart: Bool) async throws {
+        guard let client, ResumeEndpoint(client.profile) == record.endpoint else { throw ResumeTransferError.invalidCheckpoint }
+        let transfer = try ResumableTransfer(restoring: record)
+        let rate = Int64(max(0, UserDefaults.standard.integer(forKey: "transferRateKiB"))) * 1024
+        await enqueueResume(transfer, client: client, rateLimit: rate, restart: restart)
+    }
     private func receive(_ id: UUID, _ event: QueueEvent) {
         switch event {
         case .queued: setState(id, "等待中")
@@ -290,28 +350,74 @@ struct ActivityItem: Identifiable {
             guard let index = activities.firstIndex(where: { $0.id == id }), activities[index].state == "传输中" else { return }
             activities[index].bytes = progress.completed; activities[index].total = progress.total
             activities[index].progress = progress.total > 0 ? Double(progress.completed) / Double(progress.total) : 0
-        case .completed: setState(id, "完成"); retryOperations[id] = nil; controls[id] = nil; refreshLocal(); refreshRemote()
-        case .cancelled: setState(id, "已取消"); refreshLocal(); refreshRemote()
+            activities[index].phase = progress.phase
+        case .completed: setState(id, "完成"); retryOperations[id] = nil; controls[id] = nil; resumeJobs[id] = nil; refreshLocal(); refreshRemote()
+        case .suspended:
+            setState(id, "待续传"); refreshLocal(); refreshRemote()
+            if let job = resumeJobs[id] {
+                Task {
+                    let record = await job.transfer.checkpoint()
+                    guard let index = activities.firstIndex(where: { $0.id == id }), activities[index].state == "待续传" else { return }
+                    activities[index].bytes = record.retainedBytes; activities[index].total = record.expectedSize
+                    activities[index].progress = record.expectedSize > 0 ? Double(record.retainedBytes) / Double(record.expectedSize) : 0
+                }
+            }
+        case .cancelled:
+            setState(id, "已取消")
+            if let job = resumeJobs[id], let index = activities.firstIndex(where: { $0.id == id }) {
+                activities[index].canRetry = false; activities[index].canRetain = false
+                setState(id, "清理中")
+                Task {
+                    do { try await job.transfer.discard(client: job.client); setState(id, "已取消") }
+                    catch { setState(id, "失败", error: "进度清理未完成，可在保留的传输中重试：\(error.localizedDescription)") }
+                }
+            }
+            resumeJobs[id] = nil; refreshLocal(); refreshRemote()
         case .failed(let error): setState(id, "失败", error: error); refreshLocal(); refreshRemote()
         }
     }
     private func setState(_ id: UUID, _ state: String, error: String? = nil) {
         guard let index = activities.firstIndex(where: { $0.id == id }) else { return }
         activities[index].state = state; activities[index].error = error
+        activities[index].phase = nil
         if state == "完成" { activities[index].progress = 1 }
     }
-    func cancel(_ id: UUID) { controls[id]?.resume(); Task { await queue.cancel(id) } }
+    func cancel(_ id: UUID) {
+        controls[id]?.resume()
+        Task { await queue.cancel(id) }
+    }
+    func retain(_ id: UUID) { controls[id]?.retainProgress(); setState(id, "保留中") }
     func pause(_ id: UUID) { controls[id]?.pause(); setState(id, "已暂停") }
     func resume(_ id: UUID) { controls[id]?.resume(); setState(id, "传输中") }
     func retry(_ id: UUID) {
+        if let job = resumeJobs[id] {
+            setState(id, "等待中")
+            submit(id, operation: resumeOperation(job, restart: job.record.direction == .upload && job.record.endpoint.protocolKind.isWebDAV))
+            return
+        }
         guard let operation = retryOperations[id] else { return }
         controls[id]?.resume()
         setState(id, "等待中"); submit(id, operation: operation)
     }
+    func discardRetained(_ id: UUID) {
+        guard let job = resumeJobs[id] else { return }
+        let alert = NSAlert(); alert.messageText = "丢弃“\(job.record.name)”的保留进度？"
+        alert.informativeText = "将清理此任务的部分文件。原始文件和原有目标文件会保留。"
+        alert.addButton(withTitle: "丢弃进度"); alert.addButton(withTitle: "返回")
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        setState(id, "清理中")
+        Task {
+            do {
+                try await job.transfer.discard(client: job.client)
+                resumeJobs[id] = nil; controls[id] = nil; setState(id, "已取消")
+                if let index = activities.firstIndex(where: { $0.id == id }) { activities[index].canRetry = false; activities[index].canRetain = false }
+            } catch { setState(id, "失败", error: "进度清理未完成：\(error.localizedDescription)") }
+        }
+    }
     func clearFinishedActivities() {
         let ended = Set(activities.filter { ["完成", "失败", "已取消"].contains($0.state) }.map(\.id))
         activities.removeAll { ended.contains($0.id) }
-        for id in ended { retryOperations[id] = nil; controls[id] = nil }
+        for id in ended { retryOperations[id] = nil; controls[id] = nil; resumeJobs[id] = nil }
     }
     func createFolder(remote: Bool) {
         guard let name = askName(title: "新建文件夹", initial: "新文件夹") else { return }

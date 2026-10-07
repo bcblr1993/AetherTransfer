@@ -39,8 +39,8 @@ features:
     - kicker: { zh: 传输, en: Transfer }
       title: { zh: 可靠传输与可见进度, en: Reliable transfers and visible progress }
       body:
-        zh: 开发候选已加入 FTP / FTPS / SFTP 和 WebDAV（HTTP、HTTPS），提供任务队列、冲突处理与暂停取消；断点续传和完整云服务仍在开发。
-        en: The development candidate includes FTP / FTPS / SFTP and WebDAV (HTTP, HTTPS), with a task queue, conflict handling, pause and cancellation. Resumable transfers and the full cloud service range remain in development.
+        zh: 开发候选提供 FTP / FTPS / SFTP 和 WebDAV（HTTP、HTTPS）、任务队列与冲突处理。单文件可保留进度、重启后核对恢复；WebDAV 下载要求服务器支持 Range，上传须明确选择从头上传。目录任务恢复与完整云服务仍在开发。
+        en: The development candidate includes FTP / FTPS / SFTP and WebDAV (HTTP, HTTPS), a task queue and conflict handling. Single-file progress can be retained and verified after restart. WebDAV downloads require server Range support; uploads require an explicit restart. Folder-job recovery and the full cloud service range remain in development.
     - kicker: { zh: 隐私, en: Privacy }
       title: { zh: 凭据留在系统钥匙串, en: Credentials in system Keychain }
       body:

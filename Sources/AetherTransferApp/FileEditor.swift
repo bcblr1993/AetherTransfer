@@ -31,7 +31,16 @@ import AetherTransferCore
 
 @MainActor final class TransferAppDelegate: NSObject, NSApplicationDelegate {
     weak var editors: FileEditorManager?
+    weak var tabs: BrowserTabs?
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        if tabs?.tabs.contains(where: { tab in
+            tab.workspace.activities.contains { ["等待中", "传输中", "已暂停", "保留中", "清理中"].contains($0.state) }
+        }) == true {
+            let alert = NSAlert(); alert.messageText = "仍有文件操作正在进行"
+            alert.informativeText = "请先在活动列表保留单个文件的进度，或取消任务，再退出。目录传输和同步目前需要先完成或取消。"
+            alert.addButton(withTitle: "返回传输")
+            alert.runModal(); return .terminateCancel
+        }
         guard let editors, editors.hasWindows else { return .terminateNow }
         guard editors.approveQuit() else { return .terminateCancel }
         Task { await editors.shutdown(); sender.reply(toApplicationShouldTerminate: true) }

@@ -8,3 +8,4 @@
 - Native reusable file table, background filtering/sorting, Liquid Glass tabs and compact activity panel.
 - Server groups, editing and credential-free JSON import/export.
 - Folder sync previews across local and connected remote roots, manual bidirectional conflict resolution, explicit mirror selection and stale-plan checks.
+- Persistent single-file transfer checkpoints, verified FTP/FTPS/SFTP upload/download resume and HTTP/HTTPS ranged downloads; explicit restart for WebDAV uploads, recovery UI and owned-partial cleanup.

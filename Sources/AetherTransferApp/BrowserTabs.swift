@@ -27,7 +27,7 @@ import AetherTransferCore
         guard tabs.count > 1, let index = tabs.firstIndex(where: { $0.id == id }) else { return }
         let workspace = tabs[index].workspace
         // Active file operations must remain visible until the user cancels or finishes them.
-        if workspace.activities.contains(where: { $0.state == "传输中" || $0.state == "等待中" || $0.state == "已暂停" }) {
+        if workspace.activities.contains(where: { ["传输中", "等待中", "已暂停", "保留中", "清理中"].contains($0.state) }) {
             workspace.error = "此标签页仍有传输任务，请先完成或取消任务。"
             return
         }

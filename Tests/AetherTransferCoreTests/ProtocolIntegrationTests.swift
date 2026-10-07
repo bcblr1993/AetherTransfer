@@ -65,7 +65,9 @@ private final class ProgressRecorder: @unchecked Sendable {
     func testExplicitTLSRoundTrip() async throws { try await roundTrip(.ftpes) }
     func testImplicitTLSRoundTrip() async throws { try await roundTrip(.ftps) }
     func testWebDAVHTTPRoundTrip() async throws { try await roundTrip(.webdav) }
-    func testWebDAVHTTPSDigestRoundTrip() async throws { try await roundTrip(.webdavs) }
+    func testWebDAVHTTPSDigestRoundTrip() async throws {
+        for _ in 0..<3 { try await roundTrip(.webdavs) }
+    }
     func testTLSRejectsUntrustedCertificatesHostMismatchAndPlaintextServer() async throws {
         for kind in [TransferProtocol.ftpes, .ftps, .webdavs] {
             let trusted = try client(kind)

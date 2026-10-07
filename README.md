@@ -8,6 +8,8 @@
 
 本地与远程 UTF-8 文本可在原生窗口编辑，或选择本机编辑器后保存自动回传；内容冲突会保留草稿。编码、大小与并发写入限制见 [文本编辑](docs/editing.md)。
 
+单个文件可保留进度并在重启后恢复；恢复前核对源、已传内容和目标。WebDAV 上传需明确选择从头上传。支持范围与空间清理见 [续传](docs/resumable-transfers.md)。
+
 ## 开发
 
 要求 Apple Silicon、macOS 26+、Xcode 26+ / Swift 6。协议库在项目自己的 `.build` 中构建，不修改本机 Homebrew curl：
@@ -22,7 +24,7 @@ swift run AetherTransfer
 
 `scripts/build_app.sh` 生成可运行的开发 `.app` 并嵌入动态依赖。用户安装包不能依赖 Homebrew。
 
-测试和打包脚本会先清理上一轮 Swift 构建产物；打包只保留一个开发 app。依赖源码编译完成即清理，仅缓存一份协议 runtime、源码压缩包和测试 venv。手动清理本项目生成的性能追踪与官网构建缓存：`python3 scripts/clean_generated.py all`；该命令保留源码、Git 与官网 checkout。
+测试和打包脚本会先清理上一轮 Swift 构建产物；打包只保留一个开发 app。依赖源码编译完成即清理，仅缓存一份协议 runtime、源码压缩包和测试 venv。官网构建前后用 `python3 scripts/clean_generated.py website` 清理 node_modules、dist、Astro 和 npm 缓存。手动清理本项目生成的性能追踪与所有构建缓存：`python3 scripts/clean_generated.py all`；该命令保留源码、Git 与官网 checkout，不删除用户的待续传数据。
 
 ## 产品分工
 

@@ -10,7 +10,7 @@ import AetherTransferCore
         WindowGroup("AetherTransfer") {
             MainView(workspace: tabs.current, tabs: tabs).frame(minWidth: 1000, minHeight: 640)
                 .preferredColorScheme(appearance == "dark" ? .dark : (appearance == "light" ? .light : nil))
-                .onAppear { appDelegate.editors = tabs.editors }
+                .onAppear { appDelegate.editors = tabs.editors; appDelegate.tabs = tabs }
         }
         .defaultSize(width: 1240, height: 800)
         .commands {
@@ -22,6 +22,7 @@ import AetherTransferCore
                 Button("下载所选文件") { tabs.current.downloadSelection() }.keyboardShortcut("d", modifiers: [.command, .shift])
                 Button("同步目录…") { tabs.current.showSync = true }.keyboardShortcut("s", modifiers: [.command, .shift])
                 Button("编辑所选文本…") { tabs.current.editSelection() }.keyboardShortcut("e")
+                Button("保留的传输…") { tabs.current.showRecovery = true }
             }
             CommandMenu("显示") {
                 Button("显示 / 隐藏隐藏文件") { tabs.current.showHidden.toggle() }.keyboardShortcut(".", modifiers: [.command, .shift])
@@ -164,6 +165,7 @@ struct MainView: View {
         .searchable(text: $query, prompt: "筛选当前目录")
         .sheet(isPresented: $showConnect) { ConnectionView(workspace: workspace) }
         .sheet(isPresented: $workspace.showSync) { SyncReviewView(workspace: workspace, tabs: tabs) }
+        .sheet(isPresented: $workspace.showRecovery) { RecoveryView(workspace: workspace, tabs: tabs) }
         .sheet(item: $editingProfile) { profile in ConnectionView(workspace: workspace, initial: profile, editing: true) }
         .sheet(item: $workspace.connectionPrompt) { profile in ConnectionView(workspace: workspace, initial: profile, loadSaved: true) }
         .alert("操作失败", isPresented: Binding(get: { workspace.error != nil }, set: { if !$0 { workspace.error = nil } })) {
@@ -294,38 +296,51 @@ struct ActivityView: View {
             HStack {
                 Button { expanded.toggle() } label: { Label("传输活动", systemImage: expanded ? "chevron.down" : "chevron.right").font(.callout.weight(.semibold)) }.buttonStyle(.plain)
                 Spacer()
+                Button("保留的传输…", systemImage: "clock.arrow.circlepath") { workspace.showRecovery = true }.buttonStyle(.borderless).font(.caption)
                 Text(workspace.activities.isEmpty ? "暂无任务" : "\(workspace.activities.filter { $0.state == "传输中" }.count) 个进行中 · \(workspace.activities.count) 个任务").font(.caption).foregroundStyle(.secondary)
                 if !workspace.activities.isEmpty { Button("清除已结束任务") { workspace.clearFinishedActivities() }.buttonStyle(.borderless).font(.caption) }
             }.padding(.horizontal, 14).frame(height: 38)
             if expanded && workspace.activities.isEmpty {
                 Text("上传或下载文件后，在这里查看进度。").foregroundStyle(.secondary).frame(maxWidth: .infinity, maxHeight: .infinity)
             } else if expanded {
-                List(workspace.activities) { item in
-                    HStack {
-                        Image(systemName: item.direction == "同步" ? "arrow.triangle.2.circlepath" : (item.direction == "上传" ? "arrow.up.circle" : "arrow.down.circle"))
-                        VStack(alignment: .leading, spacing: 3) {
-                            Text(item.name).lineLimit(1)
-                            if item.state == "传输中" || item.state == "已暂停" {
-                                ProgressView(value: item.progress).frame(maxWidth: 220)
-                                Text("\(item.direction == "同步" ? "同步总量" : "当前文件")：\(ByteCountFormatter.string(fromByteCount: item.bytes, countStyle: .file)) / \(ByteCountFormatter.string(fromByteCount: item.total, countStyle: .file))").font(.caption).foregroundStyle(.secondary)
-                            }
-                            if let error = item.error { Text(error).font(.caption).foregroundStyle(.red).lineLimit(2) }
+                ScrollView {
+                    LazyVStack(spacing: 0) {
+                        ForEach(workspace.activities) { item in
+                            HStack {
+                                Image(systemName: item.direction == "同步" ? "arrow.triangle.2.circlepath" : (item.direction == "上传" ? "arrow.up.circle" : "arrow.down.circle"))
+                                VStack(alignment: .leading, spacing: 3) {
+                                    Text(item.name).lineLimit(1)
+                                    if ["传输中", "已暂停", "待续传", "保留中"].contains(item.state) {
+                                        ProgressView(value: item.progress).frame(maxWidth: 220)
+                                        Text("\(item.direction == "同步" ? "同步总量" : "当前文件")：\(ByteCountFormatter.string(fromByteCount: item.bytes, countStyle: .file)) / \(ByteCountFormatter.string(fromByteCount: item.total, countStyle: .file))").font(.caption).foregroundStyle(.secondary)
+                                        if let phase = item.phase { Text(phase).font(.caption).foregroundStyle(.secondary) }
+                                    }
+                                    if let error = item.error { Text(error).font(.caption).foregroundStyle(.red).lineLimit(2) }
+                                }
+                                Spacer()
+                                Label(item.state, systemImage: item.state == "完成" ? "checkmark.circle.fill" : (item.state == "失败" ? "exclamationmark.circle" : "circle.dotted"))
+                                    .font(.caption).foregroundStyle(item.state == "失败" ? Color.red : (item.state == "完成" ? Color.green : Color.secondary))
+                                if item.state == "传输中" { Button("暂停", systemImage: "pause.circle") { workspace.pause(item.id) }.labelStyle(.iconOnly).buttonStyle(.borderless) }
+                                if item.state == "已暂停" { Button("继续", systemImage: "play.circle") { workspace.resume(item.id) }.labelStyle(.iconOnly).buttonStyle(.borderless) }
+                                if item.canRetain && (item.state == "传输中" || item.state == "已暂停") {
+                                    Button("保留进度", systemImage: "clock.arrow.circlepath") { workspace.retain(item.id) }.buttonStyle(.borderless)
+                                }
+                                if item.state == "传输中" || item.state == "等待中" || item.state == "已暂停" { Button("取消", systemImage: "xmark.circle") { workspace.cancel(item.id) }.labelStyle(.iconOnly).buttonStyle(.borderless) }
+                                if item.state == "待续传" || (item.state == "失败" && item.canRetain) {
+                                    Button(item.requiresRestart ? "从头上传" : "继续传输", systemImage: "play.circle") { workspace.retry(item.id) }.buttonStyle(.borderless)
+                                    Button("丢弃进度", systemImage: "trash") { workspace.discardRetained(item.id) }.labelStyle(.iconOnly).buttonStyle(.borderless)
+                                } else if item.state == "失败" || item.state == "已取消" {
+                                    if item.canRetry {
+                                        Button("重试", systemImage: "arrow.clockwise") { workspace.retry(item.id) }.labelStyle(.iconOnly).buttonStyle(.borderless)
+                                    } else if item.direction == "同步" {
+                                        Button("重新预览", systemImage: "arrow.triangle.2.circlepath") { workspace.showSync = true }.buttonStyle(.borderless)
+                                    }
+                                }
+                            }.padding(.vertical, 10).accessibilityElement(children: .contain)
+                            Divider()
                         }
-                        Spacer()
-                        Label(item.state, systemImage: item.state == "完成" ? "checkmark.circle.fill" : (item.state == "失败" ? "exclamationmark.circle" : "circle.dotted"))
-                            .font(.caption).foregroundStyle(item.state == "失败" ? Color.red : (item.state == "完成" ? Color.green : Color.secondary))
-                        if item.state == "传输中" { Button("暂停", systemImage: "pause.circle") { workspace.pause(item.id) }.labelStyle(.iconOnly).buttonStyle(.borderless) }
-                        if item.state == "已暂停" { Button("继续", systemImage: "play.circle") { workspace.resume(item.id) }.labelStyle(.iconOnly).buttonStyle(.borderless) }
-                        if item.state == "传输中" || item.state == "等待中" || item.state == "已暂停" { Button("取消", systemImage: "xmark.circle") { workspace.cancel(item.id) }.labelStyle(.iconOnly).buttonStyle(.borderless) }
-                        if item.state == "失败" || item.state == "已取消" {
-                            if item.canRetry {
-                                Button("重试", systemImage: "arrow.clockwise") { workspace.retry(item.id) }.labelStyle(.iconOnly).buttonStyle(.borderless)
-                            } else {
-                                Button("重新预览", systemImage: "arrow.triangle.2.circlepath") { workspace.showSync = true }.buttonStyle(.borderless)
-                            }
-                        }
-                    }
-                }.listStyle(.plain)
+                    }.padding(.horizontal, 14)
+                }
             }
         }
     }

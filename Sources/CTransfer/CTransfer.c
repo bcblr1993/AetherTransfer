@@ -8,6 +8,8 @@
 #include <sys/stat.h>
 #include <time.h>
 #include <unistd.h>
+#include <fcntl.h>
+#include <strings.h>
 
 struct ATRequest {
     CURL *curl;
@@ -26,6 +28,12 @@ struct ATRequest {
     FILE *download;
     int64_t download_limit;
     int64_t downloaded;
+    int64_t offset, range_end, expected_total;
+    int window, is_http, mode, valid_range, rejected_range;
+    long http_status;
+    char etag[1024];
+    ATBody sink;
+    void *sink_context;
 };
 static pthread_once_t initialized = PTHREAD_ONCE_INIT;
 static void initialize(void) { curl_global_init(CURL_GLOBAL_DEFAULT); }
@@ -46,10 +54,27 @@ static size_t response_header(char *data, size_t size, size_t count, void *ctx) 
     size_t n = size * count;
     // Authentication may produce multiple responses. Only retain the final response body.
     if (n >= 5 && memcmp(data, "HTTP/", 5) == 0) {
+        char line[64]; size_t copied = n < sizeof(line) - 1 ? n : sizeof(line) - 1;
+        memcpy(line, data, copied); line[copied] = 0;
+        sscanf(line, "HTTP/%*s %ld", &r->http_status);
         r->length = 0;
-        r->downloaded = 0;
+        r->downloaded = r->offset;
+        r->valid_range = 0; r->etag[0] = 0;
+        if (r->sink) r->sink(r->sink_context, NULL, 0);
         if (r->result) r->result[0] = 0;
-        if (r->download && (fseek(r->download, 0, SEEK_SET) != 0 || ftruncate(fileno(r->download), 0) != 0)) return 0;
+        if (r->download && (fseeko(r->download, r->offset, SEEK_SET) != 0 || ftruncate(fileno(r->download), r->offset) != 0)) return 0;
+    } else if (n > 5 && strncasecmp(data, "ETag:", 5) == 0) {
+        size_t start = 5, end = n;
+        while (start < end && (data[start] == ' ' || data[start] == '\t')) start++;
+        while (end > start && (data[end-1] == '\r' || data[end-1] == '\n' || data[end-1] == ' ')) end--;
+        if (end - start < sizeof(r->etag)) { memcpy(r->etag, data + start, end - start); r->etag[end - start] = 0; }
+    } else if (n > 14 && strncasecmp(data, "Content-Range:", 14) == 0) {
+        char line[256]; size_t copied = n < sizeof(line)-1 ? n : sizeof(line)-1;
+        memcpy(line, data, copied); line[copied] = 0;
+        long long start, end, total;
+        if (sscanf(line + 14, " bytes %lld-%lld/%lld", &start, &end, &total) == 3 &&
+            start == r->offset && end >= start && total > end &&
+            (r->range_end < 0 || end == r->range_end) && (r->expected_total < 0 || total == r->expected_total)) r->valid_range = 1;
     }
     return n;
 }
@@ -60,11 +85,21 @@ static size_t write_download(char *data, size_t size, size_t count, void *ctx) {
     ATRequest *r = ctx;
     if (size && count > SIZE_MAX / size) return 0;
     size_t n = size * count;
-    if (r->download_limit > 0 && (uint64_t)n > (uint64_t)(r->download_limit - r->downloaded)) {
+    // Digest authentication can return a challenge body before the actual ranged response.
+    // Discard that body; it is never part of a downloaded file or content digest.
+    if (r->is_http && r->http_status == 401) return n;
+    if (r->is_http && r->window && (r->offset > 0 || r->range_end >= 0) &&
+        (r->http_status != 206 || !r->valid_range)) {
+        r->rejected_range = 1; return 0;
+    }
+    int64_t limit = r->download_limit > 0 ? r->download_limit : (r->window ? r->expected_total : -1);
+    if (limit >= 0 && (r->downloaded > limit || (uint64_t)n > (uint64_t)(limit - r->downloaded))) {
         snprintf(r->error, sizeof(r->error), "Remote file exceeds the download size limit");
         return 0;
     }
-    size_t written = fwrite(data, 1, n, r->download);
+    size_t written = n;
+    if (r->sink) r->sink(r->sink_context, data, n);
+    else written = fwrite(data, 1, n, r->download);
     r->downloaded += (int64_t)written;
     return written;
 }
@@ -76,7 +111,8 @@ static int progress(void *ctx, curl_off_t dt, curl_off_t dn, curl_off_t ut, curl
     if (r->progress && (seconds - r->last_progress >= 0.1 || (dn + un != r->last_completed && dn + un == dt + ut && dt + ut > 0))) {
         r->last_progress = seconds;
         r->last_completed = dn + un;
-        r->progress(r->context, dn + un, dt + ut);
+        int64_t base = r->mode == 1 || r->mode == 2 ? r->offset : 0;
+        r->progress(r->context, base + dn + un, base + dt + ut);
     }
     return atomic_load(&r->cancelled);
 }
@@ -108,6 +144,8 @@ ATRequest *at_create(const char *url, const char *user, const char *password,
     if (!r) return NULL;
     atomic_init(&r->cancelled, 0);
     atomic_init(&r->paused, 0);
+    r->range_end = -1; r->expected_total = -1;
+    r->is_http = strncmp(url, "http:", 5) == 0 || strncmp(url, "https:", 6) == 0;
     r->curl = curl_easy_init();
     if (!r->curl) { free(r); return NULL; }
     if (fingerprint && *fingerprint) r->fingerprint = strdup(fingerprint);
@@ -145,7 +183,11 @@ int at_http(ATRequest *r, const char *method, const char *headers, const char *b
         r->headers = next;
     }
     free(copy);
-    CURLcode code = curl_easy_setopt(r->curl, CURLOPT_CUSTOMREQUEST, method);
+    // GET, HEAD and PUT follow their native transfer modes, including authentication retries.
+    // Reserve CUSTOMREQUEST for actual DAV extensions; forcing PUT also forces it onto auth probes.
+    CURLcode code = CURLE_OK;
+    if (strcmp(method, "GET") != 0 && strcmp(method, "HEAD") != 0 && strcmp(method, "PUT") != 0)
+        code = curl_easy_setopt(r->curl, CURLOPT_CUSTOMREQUEST, method);
     if (code == CURLE_OK) code = curl_easy_setopt(r->curl, CURLOPT_HTTPHEADER, r->headers);
     if (code == CURLE_OK) code = curl_easy_setopt(r->curl, CURLOPT_HTTPAUTH, (long)(CURLAUTH_BASIC | CURLAUTH_DIGEST));
     if (code == CURLE_OK) code = curl_easy_setopt(r->curl, CURLOPT_FOLLOWLOCATION, 0L);
@@ -175,6 +217,20 @@ int at_tls(ATRequest *r, int required, const char *certificate_authority) {
     return code;
 }
 void at_download_limit(ATRequest *r, int64_t maximum_bytes) { r->download_limit = maximum_bytes > 0 ? maximum_bytes : 0; }
+int at_transfer_window(ATRequest *r, int64_t offset, int64_t end, int64_t total) {
+    if (offset < 0 || (end >= 0 && end < offset) || (total >= 0 && offset > total)) return CURLE_BAD_FUNCTION_ARGUMENT;
+    r->window = 1; r->offset = offset; r->range_end = end; r->expected_total = total; r->downloaded = offset;
+    if (end >= 0) {
+        char range[80]; snprintf(range, sizeof(range), "%lld-%lld", (long long)offset, (long long)end);
+        return curl_easy_setopt(r->curl, CURLOPT_RANGE, range);
+    }
+    return curl_easy_setopt(r->curl, CURLOPT_RESUME_FROM_LARGE, (curl_off_t)offset);
+}
+void at_body_sink(ATRequest *r, ATBody sink, void *context) { r->sink = sink; r->sink_context = context; }
+int64_t at_file_size(ATRequest *r) { curl_off_t size = -1; curl_easy_getinfo(r->curl, CURLINFO_CONTENT_LENGTH_DOWNLOAD_T, &size); return size; }
+int64_t at_file_time(ATRequest *r) { curl_off_t time = -1; curl_easy_getinfo(r->curl, CURLINFO_FILETIME_T, &time); return time; }
+const char *at_etag(ATRequest *r) { return r->etag; }
+int64_t at_body_bytes(ATRequest *r) { return r->downloaded - r->offset; }
 void at_destroy(ATRequest *r) {
     if (!r) return;
     curl_easy_cleanup(r->curl);
@@ -182,14 +238,22 @@ void at_destroy(ATRequest *r) {
     free(r->result); free(r->host_key); free(r->fingerprint); free(r);
 }
 int at_perform(ATRequest *r, int mode, const char *local, const char *commands, ATProgress p, void *ctx) {
-    r->progress = p; r->context = ctx;
+    r->progress = p; r->context = ctx; r->mode = mode;
     FILE *f = NULL;
     struct curl_slist *quotes = NULL;
     if (mode == 0) {
         curl_easy_setopt(r->curl, CURLOPT_WRITEFUNCTION, collect);
         curl_easy_setopt(r->curl, CURLOPT_WRITEDATA, r);
     } else if (mode == 1 || mode == 2) {
-        f = fopen(local, mode == 1 ? "wbx" : "rb");
+        if (mode == 1 && r->window) {
+            int descriptor = open(local, O_RDWR | O_NOFOLLOW);
+            if (descriptor >= 0) {
+                struct stat st;
+                if (fstat(descriptor, &st) != 0 || !S_ISREG(st.st_mode) || st.st_size != r->offset) { close(descriptor); descriptor = -1; }
+            }
+            if (descriptor >= 0) { f = fdopen(descriptor, "r+b"); if (!f) close(descriptor); }
+            if (f && fseeko(f, r->offset, SEEK_SET) != 0) { fclose(f); f = NULL; }
+        } else f = fopen(local, mode == 1 ? "wbx" : "rb");
         if (!f) { snprintf(r->error, sizeof(r->error), "Cannot open local transfer file"); return CURLE_READ_ERROR; }
         if (mode == 1) {
             r->download = f;
@@ -207,6 +271,14 @@ int at_perform(ATRequest *r, int mode, const char *local, const char *commands, 
             curl_easy_setopt(r->curl, CURLOPT_WRITEFUNCTION, collect);
             curl_easy_setopt(r->curl, CURLOPT_WRITEDATA, r);
         }
+    } else if (mode == 5) {
+        curl_easy_setopt(r->curl, CURLOPT_WRITEFUNCTION, write_download);
+        curl_easy_setopt(r->curl, CURLOPT_WRITEDATA, r);
+    } else if (mode == 6) {
+        curl_easy_setopt(r->curl, CURLOPT_NOBODY, 1L);
+        curl_easy_setopt(r->curl, CURLOPT_FILETIME, 1L);
+        curl_easy_setopt(r->curl, CURLOPT_WRITEFUNCTION, collect);
+        curl_easy_setopt(r->curl, CURLOPT_WRITEDATA, r);
     } else if (mode == 4) {
         curl_easy_setopt(r->curl, CURLOPT_WRITEFUNCTION, collect);
         curl_easy_setopt(r->curl, CURLOPT_WRITEDATA, r);
@@ -250,6 +322,11 @@ int at_perform(ATRequest *r, int mode, const char *local, const char *commands, 
     if (f && fclose(f) != 0 && code == CURLE_OK) { snprintf(r->error, sizeof(r->error), "Cannot flush local file"); code = CURLE_WRITE_ERROR; }
     r->download = NULL;
     curl_slist_free_all(quotes);
+    if (r->rejected_range || (code == CURLE_OK && r->is_http && r->window &&
+        (r->offset > 0 || r->range_end >= 0) && (r->http_status != 206 || !r->valid_range))) {
+        snprintf(r->error, sizeof(r->error), "Server did not return the requested byte range; partial file preserved");
+        code = CURLE_RANGE_ERROR;
+    }
     if (code != CURLE_OK && !r->error[0]) snprintf(r->error, sizeof(r->error), "%s", curl_easy_strerror(code));
     return code;
 }

@@ -65,7 +65,7 @@ extension RemoteClient {
             }
         } else { try await download(entry.path, to: destination, overwrite: policy == .overwrite, progress: progress) }
     }
-    private func availableRemoteName(_ path: String) async throws -> String {
+    func availableRemoteName(_ path: String) async throws -> String {
         let parent = RemotePath.parent(path)
         let names = Set(try await list(parent).map(\.name))
         let name = URL(fileURLWithPath: path).lastPathComponent
@@ -75,7 +75,7 @@ extension RemoteClient {
         }
         throw TransferError.conflict(name)
     }
-    private func availableLocalName(_ url: URL) throws -> URL {
+    func availableLocalName(_ url: URL) throws -> URL {
         for index in 2...10000 {
             let candidate = url.deletingLastPathComponent().appendingPathComponent("\(url.lastPathComponent) (\(index))")
             if !FileManager.default.fileExists(atPath: candidate.path) { return candidate }

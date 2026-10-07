@@ -5,13 +5,50 @@ import CTransfer
 public struct TransferProgress: Sendable {
     public let completed: Int64
     public let total: Int64
+    public let phase: String?
+    public init(completed: Int64, total: Int64, phase: String? = nil) {
+        self.completed = completed; self.total = total; self.phase = phase
+    }
+}
+
+public struct RemoteFileVersion: Codable, Hashable, Sendable {
+    public let size: Int64
+    public let modified: Int64?
+    public let etag: String?
+    func validate() throws {
+        guard size >= 0, modified == nil || modified! >= 0 else { throw ResumeTransferError.invalidCheckpoint }
+        if let etag {
+            guard etag.utf8.count < 1024, etag.count >= 2, etag.first == "\"", etag.last == "\"",
+                  etag.utf8.allSatisfy({ $0 >= 0x21 && $0 <= 0x7e }), !etag.dropFirst().dropLast().contains("\"") else {
+                throw ResumeTransferError.invalidCheckpoint
+            }
+        }
+    }
+}
+
+private final class NativeDigest: @unchecked Sendable {
+    // Used exclusively by the owning native worker, including HTTP authentication resets.
+    var hash = SHA256()
+    func consume(_ pointer: UnsafeRawPointer?, _ count: Int) {
+        guard let pointer else { hash = SHA256(); return }
+        hash.update(bufferPointer: UnsafeRawBufferPointer(start: pointer, count: count))
+    }
+}
+private final class ResponseProbe: @unchecked Sendable {
+    var version: RemoteFileVersion?
+    var digest: Data?
+    var bytes: Int64 = 0
 }
 
 private final class RequestBox: @unchecked Sendable {
     let pointer: OpaquePointer
     let callback: @Sendable (TransferProgress) -> Void
+    let digest: NativeDigest?
     init(pointer: OpaquePointer, callback: @escaping @Sendable (TransferProgress) -> Void) {
-        self.pointer = pointer; self.callback = callback
+        self.pointer = pointer; self.callback = callback; digest = nil
+    }
+    init(pointer: OpaquePointer, callback: @escaping @Sendable (TransferProgress) -> Void, digest: NativeDigest?) {
+        self.pointer = pointer; self.callback = callback; self.digest = digest
     }
     deinit { at_destroy(pointer) }
     func cancel() { at_cancel(pointer) }
@@ -21,11 +58,17 @@ private final class RequestBox: @unchecked Sendable {
 public final class TransferControl: @unchecked Sendable {
     private let lock = NSLock()
     private var paused = false
+    private var retaining = false
     private var request: RequestBox?
     public init() {}
     public func pause() { setPaused(true) }
     public func resume() { setPaused(false) }
     public var isPaused: Bool { lock.lock(); defer { lock.unlock() }; return paused }
+    public var isRetainingProgress: Bool { lock.lock(); defer { lock.unlock() }; return retaining }
+    public func retainProgress() {
+        lock.lock(); defer { lock.unlock() }; retaining = true; request?.cancel()
+    }
+    public func beginAttempt() { lock.lock(); defer { lock.unlock() }; retaining = false; paused = false }
     private func setPaused(_ value: Bool) {
         lock.lock(); defer { lock.unlock() }
         paused = value
@@ -34,6 +77,7 @@ public final class TransferControl: @unchecked Sendable {
     fileprivate func attach(_ request: RequestBox) {
         lock.lock(); defer { lock.unlock() }
         self.request = request; at_pause(request.pointer, paused ? 1 : 0)
+        if retaining { request.cancel() }
     }
     fileprivate func detach() {
         lock.lock(); defer { lock.unlock() }
@@ -61,6 +105,8 @@ public struct RemoteClient: Sendable {
     private func perform(path: String, directory: Bool = false, mode: Int32, local: String = "", commands: String = "",
                          httpMethod: String? = nil, httpHeaders: [String] = [],
                          maximumDownloadBytes: Int64 = 0,
+                         offset: Int64? = nil, rangeEnd: Int64 = -1, expectedTotal: Int64 = -1,
+                         probe: ResponseProbe? = nil,
                          progress: @escaping @Sendable (TransferProgress) -> Void = { _ in }) async throws -> String {
         try Task.checkCancellation()
         let url = try profile.url(path: path, directory: directory)
@@ -70,12 +116,19 @@ public struct RemoteClient: Sendable {
             }}
         }}}
         guard let request else { throw TransferError.remote("无法创建传输连接。") }
-        let box = RequestBox(pointer: request, callback: progress)
+        let digest = mode == 5 ? NativeDigest() : nil
+        let box = RequestBox(pointer: request, callback: progress, digest: digest)
+        if let digest {
+            at_body_sink(request, { context, bytes, count in
+                guard let context else { return }
+                Unmanaged<NativeDigest>.fromOpaque(context).takeUnretainedValue().consume(bytes, count)
+            }, Unmanaged.passUnretained(digest).toOpaque())
+        }
         let tlsCode = (certificateAuthority?.path ?? "").withCString {
             at_tls(request, profile.protocolKind == .ftpes || profile.protocolKind == .ftps ? 1 : 0, $0)
         }
         guard tlsCode == 0 else { throw TransferError.remote("无法配置 TLS 证书验证。") }
-        let method = httpMethod ?? (mode == 0 ? "PROPFIND" : (mode == 2 ? "PUT" : "GET"))
+        let method = httpMethod ?? (mode == 0 ? "PROPFIND" : (mode == 2 ? "PUT" : (mode == 6 ? "HEAD" : "GET")))
         if profile.protocolKind.isWebDAV {
             var headers = httpHeaders + ["Expect:"]
             let body: String?
@@ -91,6 +144,9 @@ public struct RemoteClient: Sendable {
         }
         at_rate_limit(request, rateLimit)
         at_download_limit(request, maximumDownloadBytes)
+        if let offset {
+            guard at_transfer_window(request, offset, rangeEnd, expectedTotal) == 0 else { throw ResumeTransferError.invalidCheckpoint }
+        }
         control?.attach(box)
         defer { control?.detach() }
         return try await withTaskCancellationHandler {
@@ -123,7 +179,8 @@ public struct RemoteClient: Sendable {
                     if code == 0 {
                         let accepted: Set<Int> = switch method {
                         case "PROPFIND": [207]
-                        case "GET": [200]
+                        case "GET": (offset ?? 0) > 0 || rangeEnd >= 0 ? [206] : [200]
+                        case "HEAD": [200]
                         case "PUT", "MOVE", "COPY": [201, 204]
                         case "MKCOL": [201]
                         case "DELETE": [200, 204]
@@ -141,9 +198,51 @@ public struct RemoteClient: Sendable {
                     }
                     throw TransferError.remote(String(cString: at_error(box.pointer)))
                 }
+                if let probe {
+                    let raw = String(cString: at_etag(box.pointer))
+                    let etag = raw.count >= 2 && raw.first == "\"" && raw.last == "\"" &&
+                        raw.utf8.allSatisfy { $0 >= 0x21 && $0 <= 0x7e } && !raw.dropFirst().dropLast().contains("\"") ? raw : nil
+                    let time = at_file_time(box.pointer)
+                    probe.version = RemoteFileVersion(size: at_file_size(box.pointer), modified: time >= 0 ? time : nil, etag: etag)
+                    probe.bytes = at_body_bytes(box.pointer)
+                    if let digest { probe.digest = Data(digest.hash.finalize()) }
+                }
                 return String(cString: at_result(box.pointer))
             }.value
         } onCancel: { box.cancel() }
+    }
+
+    public func fileVersion(_ path: String) async throws -> RemoteFileVersion {
+        let probe = ResponseProbe()
+        _ = try await perform(path: path, mode: 6, probe: probe)
+        guard let version = probe.version, version.size >= 0, version.modified != nil || version.etag != nil else {
+            throw ResumeTransferError.unsupportedVersion
+        }
+        return version
+    }
+    public func contentDigest(_ path: String, version: RemoteFileVersion, prefixBytes: Int64? = nil) async throws -> Data {
+        try version.validate()
+        let bytes = prefixBytes ?? version.size
+        guard bytes >= 0, bytes <= version.size else { throw ResumeTransferError.invalidCheckpoint }
+        if bytes == 0 { return Data(SHA256.hash(data: Data())) }
+        let probe = ResponseProbe()
+        _ = try await perform(path: path, mode: 5, httpHeaders: version.etag.map { ["If-Match: \($0)"] } ?? [],
+                              maximumDownloadBytes: bytes, offset: 0, rangeEnd: prefixBytes == nil ? -1 : bytes - 1,
+                              expectedTotal: version.size, probe: probe)
+        guard probe.bytes == bytes, let digest = probe.digest else { throw ResumeTransferError.sourceChanged }
+        return digest
+    }
+    func downloadPartial(_ path: String, to partial: URL, offset: Int64, version: RemoteFileVersion,
+                         progress: @escaping @Sendable (TransferProgress) -> Void) async throws {
+        try version.validate()
+        _ = try await perform(path: path, mode: 1, local: partial.path,
+                              httpHeaders: version.etag.map { ["If-Match: \($0)"] } ?? [],
+                              maximumDownloadBytes: version.size, offset: offset, expectedTotal: version.size, progress: progress)
+    }
+    func uploadPartial(_ local: URL, to staging: String, offset: Int64,
+                       progress: @escaping @Sendable (TransferProgress) -> Void) async throws {
+        guard offset == 0 || !profile.protocolKind.isWebDAV else { throw ResumeTransferError.uploadRestartRequired }
+        _ = try await perform(path: staging, mode: 2, local: local.path, offset: offset, progress: progress)
     }
 
     public func list(_ path: String) async throws -> [FileEntry] {

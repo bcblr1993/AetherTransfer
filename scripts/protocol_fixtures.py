@@ -4,6 +4,7 @@ import logging
 import os
 from pathlib import Path
 import socket
+import ssl
 import subprocess
 import tempfile
 import threading
@@ -23,8 +24,30 @@ from pyftpdlib.servers import FTPServer
 from wsgidav.wsgidav_app import WsgiDAVApp
 from cheroot.wsgi import Server as DAVServer
 from cheroot.ssl.builtin import BuiltinSSLAdapter
+from cheroot.server import HTTPConnection
 
 logging.disable(logging.CRITICAL)
+
+class DAVConnection(HTTPConnection):
+    def close(self):
+        # Cheroot leaves the writer to GC; close it before its transport, including
+        # when a deliberate client cancellation left an unsent response in it.
+        try: self.wfile.close()
+        except OSError: pass
+        super().close()
+
+    def _close_kernel_socket(self):
+        # Complete TLS shutdown rather than closing TCP without close_notify.
+        if isinstance(self.socket, ssl.SSLSocket):
+            self.socket.settimeout(.25)
+            try:
+                transport = self.socket.unwrap()
+                try: transport.shutdown(socket.SHUT_RDWR)
+                except OSError: pass
+                transport.close()
+                return
+            except (OSError, ssl.SSLError): pass
+        super()._close_kernel_socket()
 
 class Authentication(paramiko.ServerInterface):
     accepted_key = None
@@ -155,9 +178,30 @@ with tempfile.TemporaryDirectory(prefix='aethertransfer-fixture-') as directory:
                 body = b'<d:multistatus xmlns:d="DAV:"><d:response><d:href>/missing</d:href><d:status>HTTP/1.1 403 Forbidden</d:status></d:response></d:multistatus>'
                 start_response('207 Multi-Status', [('Content-Type', 'application/xml'), ('Content-Length', str(len(body)))])
                 return [body]
-            return app(environ, start_response)
+            path = environ['PATH_INFO']
+            if environ['REQUEST_METHOD'] == 'GET' and environ.get('HTTP_RANGE') and path.startswith('/__aether_fixture_range_'):
+                body = (root / path.lstrip('/')).read_bytes()
+                headers = [('Content-Length', str(len(body)))]
+                if path.startswith('/__aether_fixture_range_bad__'):
+                    headers.append(('Content-Range', f'bytes 1-{len(body)-1}/{len(body)}'))
+                    start_response('206 Partial Content', headers)
+                else:
+                    start_response('200 OK', headers)
+                return [body]
+            response = app(environ, start_response)
+            if environ['REQUEST_METHOD'] == 'HEAD':
+                # WsgiDAV's authentication middleware yields a challenge body even for HEAD.
+                # A real HEAD response has no body (RFC 9110 section 9.3.2).
+                try:
+                    for _ in response: pass
+                finally:
+                    if hasattr(response, 'close'): response.close()
+                return [b'']
+            return response
         server = DAVServer(('127.0.0.1', 0), faults, numthreads=4)
-        if tls: server.ssl_adapter = BuiltinSSLAdapter(str(cert_file), str(key_file))
+        server.ConnectionClass = DAVConnection
+        if tls:
+            server.ssl_adapter = BuiltinSSLAdapter(str(cert_file), str(key_file))
         server.prepare()
         thread = threading.Thread(target=server.serve, daemon=True); thread.start()
         dav_servers.append(server); dav_threads.append(thread)
