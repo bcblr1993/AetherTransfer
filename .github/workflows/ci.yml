@@ -12,8 +12,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Install protocol library
-        run: brew install curl
-      - run: swift test
+        run: |
+          brew install openssl@3 libssh2
+          ./scripts/build_protocol_runtime.sh
+      - run: ./scripts/test_core.sh
       - run: ./scripts/test_protocols.sh
-      - run: swift build -c release
       - run: ./scripts/build_app.sh

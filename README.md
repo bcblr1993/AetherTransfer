@@ -6,15 +6,18 @@
 
 ## 开发
 
-要求 Apple Silicon、macOS 26+、Xcode 26+ / Swift 6。开发环境使用 Homebrew libcurl（带 SFTP 后端）：
+要求 Apple Silicon、macOS 26+、Xcode 26+ / Swift 6。协议库在项目自己的 `.build` 中构建，不修改本机 Homebrew curl：
 
 ```sh
-brew install curl
-swift test
+brew install openssl@3 libssh2
+./scripts/build_protocol_runtime.sh
+./scripts/test_core.sh
 swift run AetherTransfer
 ```
 
 `scripts/build_app.sh` 生成可运行的开发 `.app` 并嵌入动态依赖。用户安装包不能依赖 Homebrew。
+
+测试和打包脚本会先清理上一轮 Swift 构建产物；打包只保留一个开发 app。依赖源码编译完成即清理，仅缓存一份协议 runtime、源码压缩包和测试 venv。手动清理本项目生成的性能追踪与官网构建缓存：`python3 scripts/clean_generated.py all`；该命令保留源码、Git 与官网 checkout。
 
 ## 产品分工
 

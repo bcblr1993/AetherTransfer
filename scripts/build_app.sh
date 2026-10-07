@@ -1,12 +1,15 @@
 #!/bin/bash
 set -euo pipefail
 cd "$(dirname "$0")/.."
+python3 scripts/clean_generated.py app
+./scripts/build_protocol_runtime.sh
 swift build -c release
 APP="outputs/AetherTransfer.app"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Frameworks" "$APP/Contents/Resources"
 cp .build/release/AetherTransfer "$APP/Contents/MacOS/AetherTransfer"
 # Keep TLS trust available outside the developer's Homebrew installation.
 cp /opt/homebrew/etc/ca-certificates/cert.pem "$APP/Contents/Resources/cacert.pem"
+cp "${AT_CURL_PREFIX:-$PWD/.build/protocol-runtime}/curl-LICENSE.txt" "$APP/Contents/Resources/curl-LICENSE.txt"
 bash scripts/build_icon.sh
 cat > "$APP/Contents/Info.plist" <<'PLIST'
 <?xml version="1.0" encoding="UTF-8"?>

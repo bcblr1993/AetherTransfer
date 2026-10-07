@@ -28,8 +28,10 @@ while pending:
             resolved_dependency = str(source.parent / dependency.removeprefix("@loader_path/"))
         else:
             resolved_dependency = dependency
-        if not resolved_dependency.startswith(("/opt/homebrew/", "/usr/local/")):
+        if resolved_dependency.startswith(("/System/", "/usr/lib/", "@executable_path/")):
             continue
+        if not pathlib.Path(resolved_dependency).is_absolute():
+            raise RuntimeError(f"Unresolved dependency: {dependency}")
         original = pathlib.Path(resolved_dependency).resolve()
         if not original.is_file():
             raise RuntimeError(f"Missing dependency: {dependency}")
@@ -51,3 +53,7 @@ for binary in visited:
     linked = subprocess.check_output(["otool", "-L", str(binary)], text=True)
     if "/opt/homebrew/" in linked or "/usr/local/" in linked or "@rpath/" in linked or "@loader_path/" in linked:
         raise RuntimeError(f"Unbundled dependency in {binary.name}")
+    for line in linked.splitlines()[1:]:
+        dependency = line.strip().split(" (", 1)[0]
+        if not dependency.startswith(("/System/", "/usr/lib/", "@executable_path/../Frameworks/")):
+            raise RuntimeError(f"Unbundled dependency in {binary.name}: {dependency}")
