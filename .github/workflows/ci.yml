@@ -1,0 +1,19 @@
+name: macOS quality gates
+on: [push, pull_request, workflow_dispatch]
+permissions:
+  contents: read
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  test:
+    runs-on: macos-26
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install protocol library
+        run: brew install curl
+      - run: swift test
+      - run: ./scripts/test_protocols.sh
+      - run: swift build -c release
+      - run: ./scripts/build_app.sh

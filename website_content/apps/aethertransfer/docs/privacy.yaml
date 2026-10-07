@@ -1,0 +1,14 @@
+title: { zh: 隐私政策, en: Privacy policy }
+heading: { zh: AetherTransfer 隐私政策, en: AetherTransfer privacy policy }
+meta: { zh: 更新于 2026-10-07 · 开发阶段, en: Updated 2026-10-07 · Development phase }
+lead: { zh: 文件与连接资料由你掌控。, en: Your files and connections remain under your control. }
+sections:
+  - heading: { zh: 本地配置与凭据, en: Local configuration and credentials }
+    body:
+      - { zh: 连接资料保存在本机。选择保存的密码与私钥口令存入系统 Keychain，不写入连接配置文件。, en: Connection profiles remain on your Mac. Saved passwords and private-key passphrases use system Keychain and are not written to profile files. }
+  - heading: { zh: 文件传输, en: File transfers }
+    body:
+      - { zh: 应用按你的操作连接指定服务器，并向它上传或从它下载文件。服务器提供者可能记录连接和文件操作，应同时参考其隐私政策。, en: The app connects to servers you select and transfers files at your direction. Server providers may log connections and file operations; their privacy policies also apply. }
+  - heading: { zh: 开发阶段, en: Development phase }
+    body:
+      - { zh: 当前实现没有分析埋点、广告或云端账户要求。未来增加配置同步或其他服务时会更新此政策。, en: The current implementation has no analytics, ads or cloud account requirement. This policy will be updated when configuration sync or other services are added. }

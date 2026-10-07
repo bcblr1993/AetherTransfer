@@ -1,0 +1,62 @@
+name: AetherTransfer
+order: 9
+repo: https://github.com/bcblr1993/AetherTransfer
+icon: ./media/icon.png
+minimumSystemVersion: "26.0"
+tech: [Swift 6, SwiftUI, AppKit, Liquid Glass, libcurl, libssh2]
+tagline:
+  zh: 原生文件传输工作台，让每一步清楚可控
+  en: A native file transfer workspace, clear at every step
+summary:
+  zh: "面向 Apple 芯片 Mac 的原生文件传输客户端，正在开发双栏浏览、FTP / SFTP 连接与传输活动管理。以 Transmit 的完整文件工作流为功能目标，采用 macOS 26 Liquid Glass 界面。"
+  en: "A native file transfer client for Apple silicon Mac. Dual-pane browsing, FTP / SFTP connections and transfer activity are in development, with Transmit workflow parity as the goal and a macOS 26 Liquid Glass interface."
+platforms:
+  - id: mac
+    status: dev
+    requirement: { zh: Apple 芯片 · macOS 26.0+, en: Apple silicon · macOS 26.0+ }
+notice:
+  zh: 开发中，尚未发布安装包。协议兼容性与完整功能仍在验证。
+  en: In development. No installer has been released; protocol compatibility and full functionality are still being verified.
+hero:
+  eyebrow: { zh: 文件传输 · 原生 Mac · 开发中, en: File transfer · Native Mac · In development }
+  title: { zh: "文件两端，\n尽在掌握。", en: "Two sides.\nOne clear workspace." }
+  lead:
+    zh: "在一个原生窗口中浏览本地与远程文件，掌握连接与传输状态。\n从 FTP / SFTP 核心开始，逐步完成云存储、目录同步与编辑工作流。"
+    en: "Browse local and remote files in one native window, with clear connection and transfer status.\nStarting with FTP / SFTP, then building out cloud storage, folder sync and editing workflows."
+  requirements: { zh: Apple 芯片 Mac · macOS 26.0+, en: Apple silicon Mac · macOS 26.0+ }
+features:
+  eyebrow: { zh: 开发方向, en: Development goals }
+  title: { zh: 文件为中心，原生为底色。, en: Focused on files. Native at the core. }
+  lead:
+    zh: 以下是正在实现的产品方向，实际支持范围以未来版本记录为准。
+    en: These are development goals. Actual support will be documented in release notes.
+  items:
+    - kicker: { zh: 浏览, en: Browse }
+      title: { zh: 本地与远程双栏, en: Local and remote, side by side }
+      body:
+        zh: 文件列表、路径导航与系统快捷键，结合原生工具栏和 Liquid Glass 操作控件。
+        en: File lists, path navigation and keyboard shortcuts with native toolbars and Liquid Glass controls.
+    - kicker: { zh: 传输, en: Transfer }
+      title: { zh: 可靠传输与可见进度, en: Reliable transfers and visible progress }
+      body:
+        zh: 正在构建 FTP / FTPS / SFTP、任务队列、冲突处理与恢复能力；完成校验后才将文件标记为成功。
+        en: Building FTP / FTPS / SFTP support, a task queue, conflict handling and recovery. Files are only marked successful after completion checks.
+    - kicker: { zh: 隐私, en: Privacy }
+      title: { zh: 凭据留在系统钥匙串, en: Credentials in system Keychain }
+      body:
+        zh: 连接配置保存在本地，密码与口令由 Keychain 管理。SFTP 核对主机密钥，TLS 验证证书。
+        en: Local connection profiles with passwords and passphrases in Keychain. SFTP verifies host keys and TLS validates certificates.
+faq:
+  eyebrow: FAQ
+  title: { zh: 常见问题, en: Questions }
+  lead: { zh: 关于开发状态与产品定位。, en: Development status and product scope. }
+  items:
+    - q: { zh: 现在可以下载使用吗？, en: Can I download it now? }
+      a: { zh: 目前处于开发阶段，尚未发布安装包。源码与进度会在 GitHub 仓库中更新。, en: It is in development and no installer has been released. Source and progress will be available on GitHub. }
+    - q: { zh: 与 ApexTerm 有什么不同？, en: How does it differ from ApexTerm? }
+      a: { zh: ApexTerm 专注 SSH 终端与运维；AetherTransfer 专注文件浏览、批量传输、任务管理与目录同步。, en: ApexTerm focuses on SSH terminals and operations. AetherTransfer focuses on file browsing, batch transfers, task management and folder sync. }
+    - q: { zh: 是否已经支持全部云服务？, en: Are all cloud services supported already? }
+      a: { zh: 还没有。完整目标包含多种云服务，但每一种都需要独立实现与真实验证，未来版本会明确列出支持范围。, en: Not yet. The goal includes multiple cloud services, each requiring its own implementation and real validation. Future releases will specify actual support. }
+cta:
+  title: { zh: 关注原生文件传输的开发进展。, en: Follow the native file transfer project. }
+  note: { zh: 开发中 · macOS 26.0+ · Apple 芯片, en: In development · macOS 26.0+ · Apple silicon }
