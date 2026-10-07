@@ -121,13 +121,23 @@ import AetherTransferCore
     }
     init(name: String, source: FileEditSource) { self.name = name; self.source = source }
     func load() {
+        guard !closed, session == nil, !saving else { return }
+        loading = true; error = nil; notice = "正在读取文件…"
         operation = Task {
             do {
                 let opened = try await FileEditSession.open(source)
-                if closed { try? await opened.close(); return }
-                session = opened
-                let snapshot = try await opened.snapshot()
-                text = snapshot.text; savedText = snapshot.text; notice = "已载入 · UTF-8\(snapshot.hasUTF8BOM ? " BOM" : "")"
+                do {
+                    let snapshot = try await opened.snapshot()
+                    try Task.checkCancellation()
+                    guard !closed else { throw CancellationError() }
+                    // Publish a ready session only after its initial text is available.
+                    session = opened
+                    text = snapshot.text; savedText = snapshot.text; notice = "已载入 · UTF-8\(snapshot.hasUTF8BOM ? " BOM" : "")"
+                } catch {
+                    // Closing on the cancelled reader would also cancel its cleanup worker.
+                    await Task.detached { try? await opened.close() }.value
+                    throw error
+                }
             } catch is CancellationError { notice = "读取已取消" }
             catch { self.error = error.localizedDescription; notice = "无法打开文件" }
             loading = false
@@ -298,6 +308,7 @@ private struct FileEditorView: View {
                 if model.saving { ProgressView().controlSize(.small) }
                 Text(model.notice).lineLimit(1)
                 if model.saving || model.loading { Button("取消") { model.cancelOperation() }.buttonStyle(.borderless) }
+                else if !model.ready { Button("重新读取") { model.load() }.buttonStyle(.borderless) }
                 Spacer(); Text("UTF-8 · 5 MiB 上限")
             }.font(.caption).foregroundStyle(.secondary).padding(.horizontal, 18).frame(height: 36)
         }

@@ -108,6 +108,12 @@ class Authentication(paramiko.ServerInterface):
     def check_channel_request(self, kind, channel_id):
         return paramiko.OPEN_SUCCEEDED if kind == 'session' else paramiko.OPEN_FAILED_ADMINISTRATIVELY_PROHIBITED
 
+class SlowEditorRead(paramiko.SFTPHandle):
+    def read(self, offset, length):
+        # Named, disposable UI fixture makes initial-editor cancellation observable.
+        threading.Event().wait(.2)
+        return super().read(offset, length)
+
 class Files(paramiko.SFTPServerInterface):
     def __init__(self, server, *args, root, **kwargs):
         super().__init__(server, *args, **kwargs)
@@ -134,7 +140,7 @@ class Files(paramiko.SFTPServerInterface):
         try:
             fd = os.open(self.path(path), flags, getattr(attrs, 'st_mode', None) or 0o600)
             file = os.fdopen(fd, 'r+b' if flags & os.O_RDWR else ('wb' if flags & os.O_WRONLY else 'rb'))
-            handle = paramiko.SFTPHandle(flags)
+            handle = SlowEditorRead(flags) if path == '/__aether_fixture_editor_slow__.txt' else paramiko.SFTPHandle(flags)
             handle.readfile = file; handle.writefile = file
             return handle
         except OSError as e: return paramiko.SFTPServer.convert_errno(e.errno)
