@@ -311,11 +311,13 @@ struct ActivityView: View {
                                 VStack(alignment: .leading, spacing: 3) {
                                     Text(item.name).lineLimit(1)
                                     if ["传输中", "已暂停", "待续传", "保留中"].contains(item.state) {
-                                        ProgressView(value: item.progress).frame(maxWidth: 220)
-                                        Text("\(item.direction == "同步" ? "同步总量" : "当前文件")：\(ByteCountFormatter.string(fromByteCount: item.bytes, countStyle: .file)) / \(ByteCountFormatter.string(fromByteCount: item.total, countStyle: .file))").font(.caption).foregroundStyle(.secondary)
+                                        if item.hasKnownTotal {
+                                            ProgressView(value: item.progress).frame(maxWidth: 220)
+                                            Text("\(item.direction == "同步" ? "同步总量" : (item.scope == .directory ? "目录处理总量" : "当前文件"))：\(ByteCountFormatter.string(fromByteCount: item.bytes, countStyle: .file)) / \(ByteCountFormatter.string(fromByteCount: item.total, countStyle: .file))").font(.caption).foregroundStyle(.secondary)
+                                        } else { ProgressView().controlSize(.small) }
                                         if let rate = item.rate {
                                             HStack(spacing: 8) {
-                                                Text("\(item.direction == "同步" ? "处理" : "传输") \(ByteCountFormatter.string(fromByteCount: Int64(min(rate.bytesPerSecond, Double(Int64.max).nextDown)), countStyle: .binary))/s")
+                                                Text("\(item.scope == .file ? "传输" : "处理") \(ByteCountFormatter.string(fromByteCount: Int64(min(rate.bytesPerSecond, Double(Int64.max).nextDown)), countStyle: .binary))/s")
                                                 if let remaining = rate.remainingSeconds {
                                                     Text("预计剩余 \(Self.remainingText(remaining))")
                                                 }
@@ -323,7 +325,14 @@ struct ActivityView: View {
                                         }
                                         if let phase = item.phase { Text(phase).font(.caption).foregroundStyle(.secondary) }
                                     }
+                                    if let completed = item.completedItems, let total = item.totalItems {
+                                        Text("已处理 \(completed) / \(total) 个项目\(item.skippedItems > 0 ? " · 跳过 \(item.skippedItems) 项" : "")")
+                                            .font(.caption).foregroundStyle(.secondary).monospacedDigit()
+                                    }
                                     if let error = item.error { Text(error).font(.caption).foregroundStyle(.red).lineLimit(2) }
+                                    if item.scope == .directory && (item.state == "失败" || item.state == "已取消") {
+                                        Text("重新选择目录并确认冲突后，可再次传输。").font(.caption).foregroundStyle(.secondary)
+                                    }
                                 }
                                 Spacer()
                                 Label(item.state, systemImage: item.state == "完成" ? "checkmark.circle.fill" : (item.state == "失败" ? "exclamationmark.circle" : "circle.dotted"))

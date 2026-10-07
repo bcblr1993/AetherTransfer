@@ -15,6 +15,11 @@ struct ActivityItem: Identifiable {
     var canRetain = false
     var requiresRestart = false
     var phase: String?
+    var scope: TransferProgress.Scope = .file
+    var hasKnownTotal = false
+    var completedItems: Int?
+    var totalItems: Int?
+    var skippedItems = 0
     var rate: TransferRateEstimate?
     var rateEstimator = TransferRateEstimator()
 }
@@ -31,6 +36,7 @@ struct ActivityItem: Identifiable {
     @Published var localSelection: Set<String> = []
     @Published var remoteSelection: Set<String> = []
     @Published var activities: [ActivityItem] = []
+    var activityObserver: ((ActivityItem) -> Void)?
     @Published var connecting = false
     @Published var loadingLocal = false
     @Published var loadingRemote = false
@@ -237,7 +243,7 @@ struct ActivityItem: Identifiable {
     func downloadSelection() { download(remoteFiles.filter { remoteSelection.contains($0.id) }) }
     func enqueueSync(_ plan: SyncPlan, left: SyncRoot, right: SyncRoot, selected: Set<String>, resolutions: [String: SyncDirection]) {
         let rate = Int64(max(0, UserDefaults.standard.integer(forKey: "transferRateKiB"))) * 1024
-        enqueue(name: "\(selected.count) 个同步操作", direction: "同步", retryable: false) { control, progress in
+        enqueue(name: "\(selected.count) 个同步操作", direction: "同步", retryable: false, scope: .synchronization) { control, progress in
             _ = try await SyncEngine.execute(plan, left: left, right: right, selected: selected, resolutions: resolutions,
                                              control: control, rateLimit: rate, progress: progress)
         }
@@ -258,7 +264,7 @@ struct ActivityItem: Identifiable {
                     }
                     continue
                 }
-                enqueue(name: entry.name, direction: "上传") { control, progress in
+                enqueue(name: entry.name, direction: "上传", retryable: false, scope: .directory) { control, progress in
                     let controlled = RemoteClient(profile: client.profile, credentials: client.credentials, control: control, rateLimit: rateLimit)
                     try await controlled.uploadTree(URL(fileURLWithPath: entry.path), to: target, policy: policy, progress: progress)
                 }
@@ -279,7 +285,7 @@ struct ActivityItem: Identifiable {
                 }
                 continue
             }
-            enqueue(name: entry.name, direction: "下载") { control, progress in
+            enqueue(name: entry.name, direction: "下载", retryable: false, scope: .directory) { control, progress in
                 let controlled = RemoteClient(profile: client.profile, credentials: client.credentials, control: control, rateLimit: rateLimit)
                 try await controlled.downloadTree(entry, to: target, policy: policy, progress: progress)
             }
@@ -297,9 +303,10 @@ struct ActivityItem: Identifiable {
         default: return nil
         }
     }
-    private func enqueue(name: String, direction: String, retryable: Bool = true,
+    private func enqueue(name: String, direction: String, retryable: Bool = true, scope: TransferProgress.Scope = .file,
                          operation: @escaping @Sendable (TransferControl, @escaping @Sendable (TransferProgress) -> Void) async throws -> Void) {
-        let id = UUID(); activities.insert(ActivityItem(id: id, name: name, direction: direction, canRetry: retryable), at: 0)
+        let id = UUID(); activities.insert(ActivityItem(id: id, name: name, direction: direction, canRetry: retryable, scope: scope), at: 0)
+        activityObserver?(activities[0])
         let control = TransferControl(); controls[id] = control
         let wrapped: TransferQueue.Operation = { progress in try await operation(control, progress) }
         if retryable { retryOperations[id] = wrapped }
@@ -317,6 +324,7 @@ struct ActivityItem: Identifiable {
                                    prepare: @escaping @Sendable (RemoteClient) async throws -> ResumableTransfer?) {
         let id = UUID(), control = TransferControl()
         activities.insert(ActivityItem(id: id, name: name, direction: direction), at: 0)
+        activityObserver?(activities[0])
         controls[id] = control
         let operation: TransferQueue.Operation = { [weak self] progress in
             let controlled = RemoteClient(profile: client.profile, credentials: client.credentials, control: control,
@@ -348,7 +356,9 @@ struct ActivityItem: Identifiable {
         resumeJobs[id] = job; controls[id] = control
         activities.insert(ActivityItem(id: id, name: record.name, direction: record.direction == .upload ? "上传" : "下载",
                                        bytes: record.retainedBytes, total: record.expectedSize, canRetain: true,
-                                       requiresRestart: record.direction == .upload && record.endpoint.protocolKind.isWebDAV), at: 0)
+                                       requiresRestart: record.direction == .upload && record.endpoint.protocolKind.isWebDAV,
+                                       hasKnownTotal: record.expectedSize > 0), at: 0)
+        activityObserver?(activities[0])
         submit(id, operation: resumeOperation(job, restart: restart))
     }
     private func resumeOperation(_ job: ResumeJob, restart: Bool) -> TransferQueue.Operation {
@@ -373,10 +383,12 @@ struct ActivityItem: Identifiable {
             guard let index = activities.firstIndex(where: { $0.id == id }), activities[index].state == "传输中" else { return }
             var item = activities[index]
             item.bytes = progress.completed; item.total = progress.total
-            item.progress = progress.total > 0 ? min(1, max(0, Double(progress.completed) / Double(progress.total))) : 0
+            item.progress = progress.fraction; item.scope = progress.scope; item.hasKnownTotal = progress.hasKnownTotal
+            item.completedItems = progress.completedItems; item.totalItems = progress.totalItems; item.skippedItems = progress.skippedItems
             item.phase = progress.phase
             item.rate = item.rateEstimator.observe(progress, at: time)
             activities[index] = item
+            activityObserver?(item)
         case .completed: setState(id, "完成"); retryOperations[id] = nil; controls[id] = nil; resumeJobs[id] = nil; refreshLocal(); refreshRemote()
         case .suspended:
             setState(id, "待续传"); refreshLocal(); refreshRemote()
@@ -385,6 +397,7 @@ struct ActivityItem: Identifiable {
                     let record = await job.transfer.checkpoint()
                     guard let index = activities.firstIndex(where: { $0.id == id }), activities[index].state == "待续传" else { return }
                     activities[index].bytes = record.retainedBytes; activities[index].total = record.expectedSize
+                    activities[index].hasKnownTotal = record.expectedSize > 0
                     activities[index].progress = record.expectedSize > 0 ? Double(record.retainedBytes) / Double(record.expectedSize) : 0
                 }
             }
@@ -409,6 +422,7 @@ struct ActivityItem: Identifiable {
         item.rate = nil; item.rateEstimator.reset()
         if state == "完成" { item.progress = 1 }
         activities[index] = item
+        activityObserver?(item)
     }
     func cancel(_ id: UUID) {
         controls[id]?.resume()

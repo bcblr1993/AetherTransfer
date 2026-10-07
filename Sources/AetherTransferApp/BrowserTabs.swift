@@ -10,6 +10,7 @@ import AetherTransferCore
     @Published var selected: UUID
     private let queue: TransferQueue
     let editors = FileEditorManager()
+    private let dock = TransferDock()
     var current: Workspace { tabs.first(where: { $0.id == selected })!.workspace }
     init() {
         let savedLimit = UserDefaults.standard.integer(forKey: "maxConcurrentTransfers")
@@ -17,11 +18,16 @@ import AetherTransferCore
         self.queue = queue
         let tab = Tab(id: UUID(), workspace: Workspace(queue: queue, editors: editors))
         tabs = [tab]; selected = tab.id
+        observe(tab.workspace)
     }
     func setConcurrency(_ value: Int) { Task { await queue.setLimit(value) } }
     func add() {
         let tab = Tab(id: UUID(), workspace: Workspace(queue: queue, editors: editors))
         tabs.append(tab); selected = tab.id
+        observe(tab.workspace)
+    }
+    private func observe(_ workspace: Workspace) {
+        workspace.activityObserver = { [weak self] item in self?.dock.receive(item) }
     }
     func close(_ id: UUID) {
         guard tabs.count > 1, let index = tabs.firstIndex(where: { $0.id == id }) else { return }

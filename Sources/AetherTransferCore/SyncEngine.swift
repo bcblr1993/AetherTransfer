@@ -199,9 +199,9 @@ private enum SyncIO {
                 try await checkpoint(control)
                 guard let data = try input.read(upToCount: 64 * 1024), !data.isEmpty else { break }
                 try output.write(contentsOf: data); completed += Int64(data.count)
-                if Date().timeIntervalSince(last) >= 0.1 { progress(TransferProgress(completed: completed, total: size)); last = Date() }
+                if Date().timeIntervalSince(last) >= 0.1 { progress(TransferProgress(completed: completed, total: size, scope: .synchronization)); last = Date() }
             }
-            try output.synchronize(); progress(TransferProgress(completed: completed, total: size))
+            try output.synchronize(); progress(TransferProgress(completed: completed, total: size, scope: .synchronization))
         }
     }
 }
@@ -334,7 +334,7 @@ public enum SyncEngine {
                 let base = doneBytes, total = bytes, size = sourceRecord.size
                 let progressForSource: @Sendable (TransferProgress) -> Void = { value in
                     let count = min(size, value.completed) / (destination.isRemote ? 2 : 1)
-                    progress(TransferProgress(completed: base + count, total: total))
+                    progress(TransferProgress(completed: base + count, total: total, scope: .synchronization))
                 }
                 if source.isRemote { try await SyncIO.worker { try SyncIO.checkSpace(at: stagingDirectory, requiredBytes: size) } }
                 try await source.materialize(item.path, to: temporary, control: control, progress: progressForSource)
@@ -343,12 +343,12 @@ public enum SyncEngine {
                 try await verify(destination, path: item.path, expected: expected, contents: plan.options.comparison == .contents, control: control)
                 try await SyncIO.checkpoint(control)
                 try await destination.commit(temporary, to: item.path, overwrite: expected != nil, modified: sourceRecord.modified) { value in
-                    progress(TransferProgress(completed: base + size / 2 + min(size, value.completed) / 2, total: total))
+                    progress(TransferProgress(completed: base + size / 2 + min(size, value.completed) / 2, total: total, scope: .synchronization))
                 }
                 doneBytes += size
             default: throw SyncError.invalidPlan
             }
-            completed += 1; progress(TransferProgress(completed: doneBytes, total: bytes))
+            completed += 1; progress(TransferProgress(completed: doneBytes, total: bytes, scope: .synchronization))
         }
         return SyncExecutionResult(completed: completed, bytes: doneBytes, trashedItems: trashed)
     }

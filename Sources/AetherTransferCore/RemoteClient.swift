@@ -4,11 +4,26 @@ import CryptoKit
 import CTransfer
 
 public struct TransferProgress: Sendable {
+    public enum Scope: Sendable { case file, directory, synchronization }
     public let completed: Int64
     public let total: Int64
     public let phase: String?
-    public init(completed: Int64, total: Int64, phase: String? = nil) {
+    public let scope: Scope
+    public let completedItems: Int?
+    public let totalItems: Int?
+    public let skippedItems: Int
+    public var hasKnownTotal: Bool { total > 0 || totalItems != nil }
+    public var fraction: Double {
+        if total > 0 { return min(1, max(0, Double(completed) / Double(total))) }
+        if let completedItems, let totalItems, totalItems > 0 {
+            return min(1, max(0, Double(completedItems) / Double(totalItems)))
+        }
+        return 0
+    }
+    public init(completed: Int64, total: Int64, phase: String? = nil, scope: Scope = .file,
+                completedItems: Int? = nil, totalItems: Int? = nil, skippedItems: Int = 0) {
         self.completed = completed; self.total = total; self.phase = phase
+        self.scope = scope; self.completedItems = completedItems; self.totalItems = totalItems; self.skippedItems = skippedItems
     }
 }
 

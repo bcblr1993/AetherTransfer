@@ -12,3 +12,6 @@
 - File preparation shares bounded queue slots and preserves early pause/retain requests; local downloads use atomic commit with exclusive no-clobber behavior and POSIX permission preservation.
 - Cancelled or failed initial editor loads remain read-only until a successful retry; unpublished editor sessions are cleaned independently of the cancelled reader.
 - Current-file transfer speed and estimated remaining time use bounded recent samples; pause, retry and verification reset estimates without adding an idle polling timer.
+- Directory transfers scan bounded manifests and report overall bytes, processed items and skips; each file is verified and committed, and cancellation cleans its active partial.
+- Incremental Dock progress aggregates tasks across tabs, retains completed work until the active batch ends and clears at idle; system Dock visual acceptance remains pending.
+- Preserve an explicit zero-byte SFTP stat size in the bundled curl runtime so safe version checks support empty files.

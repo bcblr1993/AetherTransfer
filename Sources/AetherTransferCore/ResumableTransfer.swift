@@ -153,7 +153,7 @@ public actor ResumableTransfer {
         try record.validate(); self.record = record; self.store = store; persisted = true
     }
     public func checkpoint() -> ResumeTransferRecord { record }
-    public func run(client: RemoteClient, restartWebDAVUpload: Bool = false,
+    public func run(client: RemoteClient, restartWebDAVUpload: Bool = false, expectedSourceSize: Int64? = nil,
                     progress: @escaping @Sendable (TransferProgress) -> Void = { _ in }) async throws {
         guard !busy else { throw ResumeTransferError.busy }
         guard !finished, !record.discardPending, ResumeEndpoint(client.profile) == record.endpoint else { throw ResumeTransferError.invalidCheckpoint }
@@ -173,7 +173,8 @@ public actor ResumableTransfer {
                 }
                 try await cleanLocal(); finished = true; return
             }
-            if record.sourceLocal == nil && record.sourceRemote == nil { try await prepare(client: client); try await store.save(record); persisted = true }
+            if record.sourceLocal == nil && record.sourceRemote == nil { try await prepare(client: client, expectedSourceSize: expectedSourceSize); try await store.save(record); persisted = true }
+            if let expectedSourceSize, record.expectedSize != expectedSourceSize { throw ResumeTransferError.sourceChanged }
             try checkBoundary(client)
             switch record.direction {
             case .download: try await download(client: client, progress: progress)
@@ -210,12 +211,13 @@ public actor ResumableTransfer {
         try Task.checkCancellation()
         if client.control?.isRetainingProgress == true { throw ResumeTransferError.suspended }
     }
-    private func prepare(client: RemoteClient) async throws {
+    private func prepare(client: RemoteClient, expectedSourceSize: Int64?) async throws {
         var prepared = record
         let entry = try await client.list(RemotePath.parent(record.remotePath)).first { $0.path == record.remotePath }
         if record.direction == .upload {
             prepared.sourceLocal = try await ResumeIO.fingerprint(URL(fileURLWithPath: record.localPath))
             prepared.expectedSize = prepared.sourceLocal!.size
+            if let expectedSourceSize, prepared.expectedSize != expectedSourceSize { throw ResumeTransferError.sourceChanged }
             if let entry {
                 guard !entry.isDirectory, !entry.isSymbolicLink, record.overwrite else { throw ResumeTransferError.targetChanged }
                 prepared.targetRemote = try await client.fileVersion(record.remotePath)
@@ -223,6 +225,7 @@ public actor ResumableTransfer {
         } else {
             guard let entry, !entry.isDirectory, !entry.isSymbolicLink else { throw ResumeTransferError.unsupportedVersion }
             prepared.sourceRemote = try await client.fileVersion(record.remotePath); prepared.expectedSize = prepared.sourceRemote!.size
+            if let expectedSourceSize, prepared.expectedSize != expectedSourceSize { throw ResumeTransferError.sourceChanged }
             let local = URL(fileURLWithPath: record.localPath)
             if FileManager.default.fileExists(atPath: local.path) {
                 guard record.overwrite else { throw ResumeTransferError.targetChanged }

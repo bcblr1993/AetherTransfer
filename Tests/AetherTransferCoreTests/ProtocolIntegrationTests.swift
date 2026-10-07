@@ -1,4 +1,5 @@
 import Foundation
+import CryptoKit
 import XCTest
 @testable import AetherTransferCore
 
@@ -14,6 +15,24 @@ private final class ProgressRecorder: @unchecked Sendable {
         if value > 0 && !announced { announced = true; started.fulfill() }
     }
     func snapshot() -> Int64 { lock.lock(); defer { lock.unlock() }; return value }
+}
+
+private final class TreeProtocolProgress: @unchecked Sendable {
+    private let lock = NSLock()
+    private var samples: [TransferProgress] = []
+    func record(_ value: TransferProgress) { lock.lock(); defer { lock.unlock() }; samples.append(value) }
+    func values() -> [TransferProgress] { lock.lock(); defer { lock.unlock() }; return samples }
+}
+
+private final class ManifestMutation: @unchecked Sendable {
+    private let lock = NSLock()
+    private var changed = false
+    let file: URL
+    init(_ file: URL) { self.file = file }
+    func apply(_ value: TransferProgress) {
+        lock.lock(); defer { lock.unlock() }
+        if !changed && value.phase == "目录扫描完成" { changed = true; try? Data("changed size".utf8).write(to: file) }
+    }
 }
 
 @MainActor final class ProtocolIntegrationTests: XCTestCase {
@@ -62,6 +81,19 @@ private final class ProgressRecorder: @unchecked Sendable {
     }
     func testFTPRoundTrip() async throws { try await roundTrip(.ftp) }
     func testSFTPRoundTrip() async throws { try await roundTrip(.sftp) }
+    func testSFTPEmptyFileHasVerifiableVersion() async throws {
+        let remote = try client(.sftp)
+        let source = FileManager.default.temporaryDirectory.appendingPathComponent("aethertransfer-empty-\(UUID())")
+        try Data().write(to: source)
+        defer { try? FileManager.default.removeItem(at: source) }
+        let target = "/empty-version-\(UUID())"
+        try await remote.upload(source, to: target)
+        let version = try await remote.fileVersion(target)
+        XCTAssertEqual(version.size, 0); XCTAssertNotNil(version.modified)
+        let digest = try await remote.contentDigest(target, version: version)
+        XCTAssertEqual(digest, Data(SHA256.hash(data: Data())))
+        try await remote.remove(target, directory: false)
+    }
     func testExplicitTLSRoundTrip() async throws { try await roundTrip(.ftpes) }
     func testImplicitTLSRoundTrip() async throws { try await roundTrip(.ftps) }
     func testWebDAVHTTPRoundTrip() async throws { try await roundTrip(.webdav) }
@@ -135,25 +167,103 @@ private final class ProgressRecorder: @unchecked Sendable {
         }
     }
     func testRecursiveTransfersAndKeepBoth() async throws {
-        for kind in [TransferProtocol.ftp, .sftp] {
+        for kind in TransferProtocol.allCases {
             let remote = try client(kind)
             let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
             try FileManager.default.createDirectory(at: folder.appendingPathComponent("source/子目录"), withIntermediateDirectories: true)
             defer { try? FileManager.default.removeItem(at: folder) }
-            let data = Data("recursive fixture".utf8)
+            let data = Data(repeating: 0x71, count: 65536), second = Data(repeating: 0x91, count: 32768)
             try data.write(to: folder.appendingPathComponent("source/子目录/中文.txt"))
+            try second.write(to: folder.appendingPathComponent("source/second.bin"))
             try Data().write(to: folder.appendingPathComponent("source/empty"))
+            try FileManager.default.createDirectory(at: folder.appendingPathComponent("source/空目录"), withIntermediateDirectories: false)
             let target = "/tree-\(UUID().uuidString)"
-            try await remote.uploadTree(folder.appendingPathComponent("source"), to: target)
+            let store = ResumeTransferStore(directory: folder.appendingPathComponent("journals")), uploads = TreeProtocolProgress(), downloads = TreeProtocolProgress()
+            do { try await remote.uploadTree(folder.appendingPathComponent("source"), to: target, store: store) { uploads.record($0) } }
+            catch {
+                XCTFail("\(kind.rawValue) tree upload failed after \(uploads.values().last?.phase ?? "payload"): \(error)")
+                throw error
+            }
             let rootEntry = try await remote.list("/").first { $0.path == target }
             let entry = try XCTUnwrap(rootEntry)
-            try await remote.downloadTree(entry, to: folder.appendingPathComponent("download"))
+            try await remote.downloadTree(entry, to: folder.appendingPathComponent("download"), store: store) { downloads.record($0) }
             XCTAssertEqual(try Data(contentsOf: folder.appendingPathComponent("download/子目录/中文.txt")), data)
             XCTAssertEqual(try Data(contentsOf: folder.appendingPathComponent("download/empty")).count, 0)
+            XCTAssertEqual(try Data(contentsOf: folder.appendingPathComponent("download/second.bin")), second)
+            XCTAssertTrue(FileManager.default.fileExists(atPath: folder.appendingPathComponent("download/空目录").path))
+            for log in [uploads, downloads] {
+                let values = log.values(), last = try XCTUnwrap(values.last)
+                XCTAssertEqual(last.completed, 98304); XCTAssertEqual(last.total, 98304)
+                XCTAssertEqual(last.completedItems, 6); XCTAssertEqual(last.totalItems, 6); XCTAssertEqual(last.skippedItems, 0)
+                XCTAssertTrue(values.allSatisfy { $0.scope == .directory })
+                XCTAssertTrue(values.filter(\.hasKnownTotal).allSatisfy { $0.total == 98304 && $0.totalItems == 6 })
+                XCTAssertEqual(values.map(\.completed), values.map(\.completed).sorted())
+            }
+            let remaining = try await store.records(); XCTAssertTrue(remaining.isEmpty)
+            try await remote.uploadTree(folder.appendingPathComponent("source"), to: target, policy: .keepBoth, store: store)
+            let parentListing = try await remote.list("/")
+            XCTAssertTrue(parentListing.contains { $0.path == target + " (2)" })
+            try await remote.downloadTree(entry, to: folder.appendingPathComponent("download"), policy: .keepBoth, store: store)
+            XCTAssertEqual(try Data(contentsOf: folder.appendingPathComponent("download (2)/second.bin")), second)
             let file = try RemotePath.join(target, "empty")
-            try await remote.uploadTree(folder.appendingPathComponent("source/empty"), to: file, policy: .keepBoth)
+            try await remote.uploadTree(folder.appendingPathComponent("source/empty"), to: file, policy: .keepBoth, store: store)
             let entries = try await remote.list(target)
             XCTAssertTrue(entries.contains { $0.name == "empty (2)" })
+        }
+    }
+    func testDirectorySourceSizeChangeAfterScanRejectsBeforeFileWrite() async throws {
+        let remote = try client(.sftp), folder = FileManager.default.temporaryDirectory.appendingPathComponent("aethertransfer-tree-\(UUID())")
+        try FileManager.default.createDirectory(at: folder.appendingPathComponent("source"), withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let source = folder.appendingPathComponent("source/data"); try Data("old".utf8).write(to: source)
+        let target = "/changed-tree-\(UUID())", mutation = ManifestMutation(source)
+        let store = ResumeTransferStore(directory: folder.appendingPathComponent("journals"))
+        do {
+            try await remote.uploadTree(folder.appendingPathComponent("source"), to: target, store: store) { mutation.apply($0) }
+            XCTFail("Changed manifest source must reject")
+        } catch ResumeTransferError.sourceChanged { }
+        let listing = try await remote.list(target), records = try await store.records()
+        XCTAssertTrue(listing.isEmpty); XCTAssertTrue(records.isEmpty)
+    }
+    func testStaleTreeFileSizePreservesExistingDownload() async throws {
+        let remote = try client(.sftp), folder = FileManager.default.temporaryDirectory.appendingPathComponent("aethertransfer-tree-\(UUID())")
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: false)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let source = folder.appendingPathComponent("source"), destination = folder.appendingPathComponent("download")
+        try Data("source".utf8).write(to: source); let previous = Data("keep original".utf8); try previous.write(to: destination)
+        let target = "/stale-tree-file-\(UUID())"; try await remote.upload(source, to: target)
+        let entry = FileEntry(name: URL(fileURLWithPath: target).lastPathComponent, path: target, isDirectory: false, size: 1)
+        let store = ResumeTransferStore(directory: folder.appendingPathComponent("journals"))
+        do { try await remote.downloadTree(entry, to: destination, policy: .overwrite, store: store); XCTFail("Stale expected size must reject") }
+        catch ResumeTransferError.sourceChanged { }
+        XCTAssertEqual(try Data(contentsOf: destination), previous)
+        let records = try await store.records(); XCTAssertTrue(records.isEmpty)
+        XCTAssertFalse(try FileManager.default.contentsOfDirectory(atPath: folder.path).contains { $0.hasPrefix(".aethertransfer-resume-") })
+    }
+    func testDirectoryCancellationCleansActiveLeafAndDoesNotReportCompletion() async throws {
+        for kind in [TransferProtocol.ftp, .sftp, .ftpes, .ftps, .webdav, .webdavs] {
+            let remote = try client(kind), folder = FileManager.default.temporaryDirectory.appendingPathComponent("aethertransfer-tree-\(UUID())")
+            try FileManager.default.createDirectory(at: folder.appendingPathComponent("source"), withIntermediateDirectories: true)
+            defer { try? FileManager.default.removeItem(at: folder) }
+            let data = Data(repeating: 0x81, count: 1024 * 1024)
+            try data.write(to: folder.appendingPathComponent("source/partial.bin"))
+            let target = "/cancel-tree-\(UUID())", store = ResumeTransferStore(directory: folder.appendingPathComponent("journals"))
+            try await remote.uploadTree(folder.appendingPathComponent("source"), to: target, store: store)
+            let listing = try await remote.list("/"), entry = try XCTUnwrap(listing.first { $0.path == target })
+            let slow = RemoteClient(profile: remote.profile, credentials: remote.credentials, rateLimit: 256 * 1024, certificateAuthority: remote.certificateAuthority)
+            let started = expectation(description: "Directory payload started"), recorder = ProgressRecorder(started), log = TreeProtocolProgress()
+            let task = Task {
+                try await slow.downloadTree(entry, to: folder.appendingPathComponent("download"), store: store) {
+                    log.record($0); if $0.phase == nil { recorder.record($0) }
+                }
+            }
+            await fulfillment(of: [started], timeout: 8); task.cancel()
+            do { try await task.value; XCTFail("Cancelled directory must not succeed") }
+            catch is CancellationError { }
+            XCTAssertFalse(FileManager.default.fileExists(atPath: folder.appendingPathComponent("download/partial.bin").path))
+            let records = try await store.records(); XCTAssertTrue(records.isEmpty)
+            XCTAssertFalse(try FileManager.default.contentsOfDirectory(atPath: folder.appendingPathComponent("download").path).contains { $0.hasPrefix(".aethertransfer-resume-") })
+            XCTAssertFalse(log.values().contains { $0.phase == "目录处理完成" })
         }
     }
     func testSFTPRejectsUntrustedAndChangedHostKey() async throws {
