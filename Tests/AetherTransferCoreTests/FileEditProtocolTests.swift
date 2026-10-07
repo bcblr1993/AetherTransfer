@@ -82,7 +82,34 @@ extension ProtocolIntegrationTests {
             XCTAssertEqual(try Data(contentsOf: proof), Data("original".utf8))
             let draft = try await session.snapshot(); XCTAssertEqual(draft.text, text)
             let listing = try await remote.list(directory); XCTAssertEqual(listing.map(\.name), ["file.txt"])
-            try await session.close(); try await remote.remove(path, directory: false); try await remote.remove(directory, directory: true)
+            try await session.close()
+            if kind == .ftp {
+                // Cancel only after the editor's private download has actually received bytes.
+                try Data(text.utf8).write(to: local); try await remote.upload(local, to: path, overwrite: true)
+                let fm = FileManager.default, temporary = fm.temporaryDirectory
+                let before = Set(try fm.contentsOfDirectory(at: temporary, includingPropertiesForKeys: nil))
+                let opening = Task { try await FileEditSession.open(.remote(slow, path)) }
+                var pendingDirectory: URL?
+                for _ in 0..<100 {
+                    let current = Set(try fm.contentsOfDirectory(at: temporary, includingPropertiesForKeys: nil))
+                    for candidate in current.subtracting(before) where candidate.lastPathComponent.hasPrefix("aethertransfer-edit-") {
+                        let files = (try? fm.contentsOfDirectory(at: candidate.appendingPathComponent("work"), includingPropertiesForKeys: [.fileSizeKey])) ?? []
+                        if files.contains(where: { $0.pathExtension == "part" && ((try? $0.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0) > 0 }) {
+                            pendingDirectory = candidate; break
+                        }
+                    }
+                    if pendingDirectory != nil { break }
+                    try await Task.sleep(for: .milliseconds(100))
+                }
+                opening.cancel()
+                do { let opened = try await opening.value; try await opened.close(); XCTFail("Cancelled open must fail") }
+                catch is CancellationError { }
+                XCTAssertNotNil(pendingDirectory, "Cancellation must exercise a partially downloaded editor file")
+                if let pendingDirectory { XCTAssertFalse(fm.fileExists(atPath: pendingDirectory.path), "Cancelled open must clean its own private directory") }
+                try await remote.download(path, to: proof, overwrite: true)
+                XCTAssertEqual(try Data(contentsOf: proof), Data(text.utf8))
+            }
+            try await remote.remove(path, directory: false); try await remote.remove(directory, directory: true)
         }
     }
 }

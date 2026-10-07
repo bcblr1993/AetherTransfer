@@ -54,7 +54,8 @@ import XCTest
             do { _ = try await FileEditSession.open(.local(file)); XCTFail("Unsupported text must reject") }
             catch is FileEditError { }
         }
-        let empty = root.appendingPathComponent("empty.txt"); try Data().write(to: empty)
+        // Legitimate source names cannot collide with the session's internal work directory.
+        let empty = root.appendingPathComponent("work"); try Data().write(to: empty)
         let link = root.appendingPathComponent("link.txt")
         try FileManager.default.createSymbolicLink(at: link, withDestinationURL: empty)
         do { _ = try await FileEditSession.open(.local(link)); XCTFail("Symbolic source must reject") }

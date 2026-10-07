@@ -5,7 +5,7 @@
 | 能力 | 状态 | 证据或缺口 |
 | --- | --- | --- |
 | GitHub 项目、PR/Issue 模板、CI、主分支保护 | 已建立 | main 初始提交与 PR #2；保护要求 CI/PR，禁止强推/删除 |
-| 官网中英文产品与隐私页面 | 已上线 | 官网提交 b66bd8d；Cloudflare success；实际浏览中英文 WebDAV 开发候选内容 |
+| 官网中英文产品与隐私页面 | 已上线 | 官网提交 4d45dcb；Cloudflare success；实际浏览中英文 WebDAV、同步与文本编辑开发候选内容 |
 | 官网自动 Release 通知 | 配置待完成 | 工作流已提供；AETHERNATIVE_SITE_TOKEN 尚未配置 |
 | 原生 SwiftUI/AppKit / Liquid Glass | 基础界面可运行 | 真实窗口、工具栏、侧栏、玻璃按钮、连接表单与设置 |
 | macOS 26 兼容 | 构建与协议由 CI 校验 | macos-26 CI 执行单元、六种协议与 release 构建；最新提交状态以 PR #2 检查为准。本机界面运行于 macOS 27，完整 26 UI 验收仍待完成 |

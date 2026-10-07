@@ -46,24 +46,27 @@ public actor FileEditSession {
 
     private init(source: FileEditSource, directory: URL, data: Data) {
         self.source = source; self.directory = directory
-        draftURL = directory.appendingPathComponent(source.name)
+        draftURL = directory.appendingPathComponent("draft", isDirectory: true).appendingPathComponent(source.name)
         baseline = Self.digest(data); bom = data.starts(with: [0xef, 0xbb, 0xbf])
     }
     public static func open(_ source: FileEditSource) async throws -> FileEditSession {
         try RemotePath.validateName(source.name)
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent("aethertransfer-edit-\(UUID().uuidString)")
-        try await worker {
-            try FileManager.default.createDirectory(at: directory.appendingPathComponent("work"), withIntermediateDirectories: true,
-                                                    attributes: [.posixPermissions: 0o700])
-        }
         do {
+            try await worker {
+                try FileManager.default.createDirectory(at: directory.appendingPathComponent("work"), withIntermediateDirectories: true,
+                                                        attributes: [.posixPermissions: 0o700])
+                try FileManager.default.createDirectory(at: directory.appendingPathComponent("draft"), withIntermediateDirectories: false,
+                                                        attributes: [.posixPermissions: 0o700])
+            }
             let data = try await read(source, directory: directory)
             _ = try decode(data)
             let session = FileEditSession(source: source, directory: directory, data: data)
             try await session.write(data)
             return session
         } catch {
-            try? await worker { try FileManager.default.removeItem(at: directory) }
+            // Cleanup must still run when the caller cancelled the download/open operation.
+            await Task.detached { try? FileManager.default.removeItem(at: directory) }.value
             throw error
         }
     }

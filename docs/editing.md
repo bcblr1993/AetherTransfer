@@ -11,3 +11,5 @@
 限制：FTP/SFTP 及当前 WebDAV 保存没有服务器端原子条件写入/锁；其他客户端若在最后一次检查与提交之间更改文件，仍存在竞态，不能声称避免所有并发覆盖。断网后服务器最终状态可能不确定，暂存文件可能遗留，必须刷新核对。远程权限保留、UTF-16/其他编码、语法高亮、编辑器按扩展名配置、完整退出/重启草稿恢复、独立真实编辑器与服务矩阵仍待扩展。外部编辑器必须保持 UTF-8；大草稿或其他格式可在 Finder 中取出，不能无损转换后自动回传。
 
 实现依据：[Apple NSTextView](https://developer.apple.com/documentation/appkit/nstextview)、[NSWorkspace 打开文件](https://developer.apple.com/documentation/appkit/nsworkspace/open(_:withapplicationat:configuration:completionhandler:))、[Dispatch 文件系统事件](https://developer.apple.com/documentation/dispatch/dispatchsource)、[Transmit 外部编辑工作流](https://help.panic.com/transmit/transmit-editors/)。
+
+当前验收：21 项实际单元测试与 20 项真实隔离协议测试通过。取消打开文件在临时下载实际收到字节后触发，核对其私有目录清理、远端源文件完整；名为 `work` 的文件通过原生窗口保存，关闭后立即退出也确认目录移除。本机有一轮原有 HTTPS 暂停/恢复用例的初始上传出现 `unexpected eof`，新建隔离服务器后全套复测通过；根因尚未确认，未降低 TLS 校验。完整 macOS 26 UI 与独立服务的稳定性验收继续保持开放。
