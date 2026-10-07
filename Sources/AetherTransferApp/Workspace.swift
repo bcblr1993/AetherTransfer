@@ -15,6 +15,8 @@ struct ActivityItem: Identifiable {
     var canRetain = false
     var requiresRestart = false
     var phase: String?
+    var rate: TransferRateEstimate?
+    var rateEstimator = TransferRateEstimator()
 }
 
 @MainActor final class Workspace: ObservableObject {
@@ -306,7 +308,8 @@ struct ActivityItem: Identifiable {
     private func submit(_ id: UUID, operation: @escaping TransferQueue.Operation) {
         Task { [self] in
             await queue.enqueue(id: id, operation: operation) { [weak self] id, event in
-                Task { @MainActor in self?.receive(id, event) }
+                let time = ContinuousClock.now
+                Task { @MainActor in self?.receive(id, event, at: time) }
             }
         }
     }
@@ -362,15 +365,18 @@ struct ActivityItem: Identifiable {
         let rate = Int64(max(0, UserDefaults.standard.integer(forKey: "transferRateKiB"))) * 1024
         await enqueueResume(transfer, client: client, rateLimit: rate, restart: restart)
     }
-    private func receive(_ id: UUID, _ event: QueueEvent) {
+    private func receive(_ id: UUID, _ event: QueueEvent, at time: ContinuousClock.Instant) {
         switch event {
         case .queued: setState(id, "等待中")
         case .running: setState(id, "传输中")
         case .progress(let progress):
             guard let index = activities.firstIndex(where: { $0.id == id }), activities[index].state == "传输中" else { return }
-            activities[index].bytes = progress.completed; activities[index].total = progress.total
-            activities[index].progress = progress.total > 0 ? Double(progress.completed) / Double(progress.total) : 0
-            activities[index].phase = progress.phase
+            var item = activities[index]
+            item.bytes = progress.completed; item.total = progress.total
+            item.progress = progress.total > 0 ? min(1, max(0, Double(progress.completed) / Double(progress.total))) : 0
+            item.phase = progress.phase
+            item.rate = item.rateEstimator.observe(progress, at: time)
+            activities[index] = item
         case .completed: setState(id, "完成"); retryOperations[id] = nil; controls[id] = nil; resumeJobs[id] = nil; refreshLocal(); refreshRemote()
         case .suspended:
             setState(id, "待续传"); refreshLocal(); refreshRemote()
@@ -398,9 +404,11 @@ struct ActivityItem: Identifiable {
     }
     private func setState(_ id: UUID, _ state: String, error: String? = nil) {
         guard let index = activities.firstIndex(where: { $0.id == id }) else { return }
-        activities[index].state = state; activities[index].error = error
-        activities[index].phase = nil
-        if state == "完成" { activities[index].progress = 1 }
+        var item = activities[index]
+        item.state = state; item.error = error; item.phase = nil
+        item.rate = nil; item.rateEstimator.reset()
+        if state == "完成" { item.progress = 1 }
+        activities[index] = item
     }
     func cancel(_ id: UUID) {
         controls[id]?.resume()

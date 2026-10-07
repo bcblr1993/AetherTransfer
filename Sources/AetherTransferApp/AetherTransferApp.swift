@@ -313,6 +313,14 @@ struct ActivityView: View {
                                     if ["传输中", "已暂停", "待续传", "保留中"].contains(item.state) {
                                         ProgressView(value: item.progress).frame(maxWidth: 220)
                                         Text("\(item.direction == "同步" ? "同步总量" : "当前文件")：\(ByteCountFormatter.string(fromByteCount: item.bytes, countStyle: .file)) / \(ByteCountFormatter.string(fromByteCount: item.total, countStyle: .file))").font(.caption).foregroundStyle(.secondary)
+                                        if let rate = item.rate {
+                                            HStack(spacing: 8) {
+                                                Text("\(item.direction == "同步" ? "处理" : "传输") \(ByteCountFormatter.string(fromByteCount: Int64(min(rate.bytesPerSecond, Double(Int64.max).nextDown)), countStyle: .binary))/s")
+                                                if let remaining = rate.remainingSeconds {
+                                                    Text("预计剩余 \(Self.remainingText(remaining))")
+                                                }
+                                            }.font(.caption).foregroundStyle(.secondary).monospacedDigit()
+                                        }
                                         if let phase = item.phase { Text(phase).font(.caption).foregroundStyle(.secondary) }
                                     }
                                     if let error = item.error { Text(error).font(.caption).foregroundStyle(.red).lineLimit(2) }
@@ -343,6 +351,11 @@ struct ActivityView: View {
                 }
             }
         }
+    }
+    private static func remainingText(_ seconds: Double) -> String {
+        if seconds >= 3600 { return "约 \(Int(min(ceil(seconds / 3600), 9999))) 小时" }
+        if seconds >= 60 { return "约 \(Int(ceil(seconds / 60))) 分钟" }
+        return "约 \(Int(max(1, ceil(seconds)))) 秒"
     }
 }
 

@@ -11,3 +11,4 @@
 - Persistent single-file transfer checkpoints, verified FTP/FTPS/SFTP upload/download resume and HTTP/HTTPS ranged downloads; explicit restart for WebDAV uploads, recovery UI and owned-partial cleanup.
 - File preparation shares bounded queue slots and preserves early pause/retain requests; local downloads use atomic commit with exclusive no-clobber behavior and POSIX permission preservation.
 - Cancelled or failed initial editor loads remain read-only until a successful retry; unpublished editor sessions are cleaned independently of the cancelled reader.
+- Current-file transfer speed and estimated remaining time use bounded recent samples; pause, retry and verification reset estimates without adding an idle polling timer.

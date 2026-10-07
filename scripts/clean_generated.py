@@ -38,7 +38,8 @@ if args.scope == "all":
                      "reports/sync-ui-left", "reports/sync-ui-right", "reports/sync-ui-large",
                      "reports/webdav-ui-source", "reports/webdav-ui-download",
                      "reports/editor-ui-files", "reports/editor-fixture-port.json",
-                     "reports/resume-ui-files",
+                     "reports/resume-ui-files", "reports/editor-cancel-ui",
+                     "reports/rate-ui-download", "reports/rate-ui-retry",
                      ".build/curl-source", ".build/curl-8.22.0.tar.xz"]:
         remove(relative)
     for path in (root / ".build").glob("*.log"):
