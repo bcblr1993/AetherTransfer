@@ -47,10 +47,13 @@ struct ActivityItem: Identifiable {
     @Published var connectionPrompt: ServerProfile?
     @Published var showSync = false
     @Published var showRecovery = false
+    @Published var showInspector = false
+    @Published var focusedRemote = false
     private var credentials = Credentials()
     private let store = ProfileStore()
     private let queue: TransferQueue
     private let editors: FileEditorManager
+    private let previews: FilePreviewManager
     private var retryOperations: [UUID: TransferQueue.Operation] = [:]
     private var controls: [UUID: TransferControl] = [:]
     private struct ResumeJob {
@@ -74,8 +77,9 @@ struct ActivityItem: Identifiable {
     }
     var client: RemoteClient? { connectedProfile.map { RemoteClient(profile: $0, credentials: credentials) } }
 
-    init(queue: TransferQueue = TransferQueue(limit: 2), editors: FileEditorManager = FileEditorManager()) {
-        self.queue = queue; self.editors = editors
+    init(queue: TransferQueue = TransferQueue(limit: 2), editors: FileEditorManager = FileEditorManager(),
+         previews: FilePreviewManager = FilePreviewManager()) {
+        self.queue = queue; self.editors = editors; self.previews = previews
         do { profiles = try store.load() } catch { self.error = error.localizedDescription }
         refreshLocal()
     }
@@ -234,6 +238,16 @@ struct ActivityItem: Identifiable {
     func editSelection() {
         if let entry = remoteFiles.first(where: { remoteSelection.contains($0.id) }) { edit(entry, remote: true) }
         else if let entry = localFiles.first(where: { localSelection.contains($0.id) }) { edit(entry, remote: false) }
+    }
+    func preview(_ entry: FileEntry, remote: Bool) {
+        guard !entry.isDirectory, !entry.isSymbolicLink else { return }
+        if remote, let client { previews.open(entry, source: .remote(client, entry.path)) }
+        else if !remote { previews.open(entry, source: .local(URL(fileURLWithPath: entry.path))) }
+    }
+    func previewSelection(remote: Bool? = nil) {
+        let remote = remote ?? focusedRemote
+        let files = remote ? remoteFiles : localFiles, selection = remote ? remoteSelection : localSelection
+        if let entry = files.first(where: { selection.contains($0.id) }) { preview(entry, remote: remote) }
     }
     func chooseLocal() {
         let panel = NSOpenPanel(); panel.canChooseDirectories = true; panel.canChooseFiles = false

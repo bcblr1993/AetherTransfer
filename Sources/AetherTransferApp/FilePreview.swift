@@ -1,0 +1,186 @@
+import AppKit
+import SwiftUI
+import QuickLookUI
+import AetherTransferCore
+
+@MainActor final class FilePreviewManager {
+    private var controller: FilePreviewWindow?
+    private var pending: (FileEntry, FilePreviewSource)?
+    private var quitting = false
+    var hasWindow: Bool { controller != nil }
+    func open(_ entry: FileEntry, source: FilePreviewSource) {
+        guard !entry.isDirectory, !entry.isSymbolicLink else { return }
+        guard !quitting else { return }
+        if controller?.closing == true { pending = (entry, source); return }
+        if controller == nil {
+            controller = FilePreviewWindow { [weak self] in
+                guard let self else { return }
+                self.controller = nil
+                if let pending = self.pending { self.pending = nil; self.open(pending.0, source: pending.1) }
+            }
+        }
+        controller?.load(entry, source: source)
+        controller?.showWindow(nil); controller?.window?.makeKeyAndOrderFront(nil)
+    }
+    func shutdown() async {
+        quitting = true; pending = nil
+        guard let current = controller else { return }
+        current.window?.contentViewController = nil // Release the Quick Look renderer before removing its file.
+        await current.model.shutdown(); current.reportCleanupFailure(); current.close(); controller = nil
+    }
+}
+
+@MainActor private final class FilePreviewWindow: NSWindowController, NSWindowDelegate {
+    let model = FilePreviewModel()
+    private(set) var closing = false
+    private let didClose: () -> Void
+    init(didClose: @escaping () -> Void) {
+        self.didClose = didClose
+        let window = FilePreviewNativeWindow(contentRect: NSRect(x: 0, y: 0, width: 780, height: 620),
+                              styleMask: [.titled, .closable, .miniaturizable, .resizable], backing: .buffered, defer: false)
+        window.title = "快速查看"; window.minSize = NSSize(width: 500, height: 380)
+        window.isReleasedWhenClosed = false
+        super.init(window: window)
+        window.delegate = self; window.center()
+        window.contentViewController = NSHostingController(rootView: FilePreviewView(model: model))
+    }
+    required init?(coder: NSCoder) { fatalError("Not supported") }
+    func load(_ entry: FileEntry, source: FilePreviewSource) {
+        window?.title = "快速查看 · \(entry.name)"; model.load(entry, source: source)
+    }
+    func windowWillClose(_ notification: Notification) {
+        closing = true
+        window?.contentViewController = nil
+        Task { await model.shutdown(); reportCleanupFailure(); didClose() }
+    }
+    func reportCleanupFailure() {
+        guard let message = model.cleanupError else { return }
+        let alert = NSAlert(); alert.messageText = "临时预览清理未完成"
+        alert.informativeText = message; alert.addButton(withTitle: "确定"); alert.runModal()
+    }
+}
+
+@MainActor private final class FilePreviewModel: ObservableObject {
+    @Published var name = ""
+    @Published var url: URL?
+    @Published var loading = false
+    @Published var progress: TransferProgress?
+    @Published var error: String?
+    @Published var notice = ""
+    private(set) var cleanupError: String?
+    private var preview: FilePreview?
+    private var operation: Task<Void, Never>?
+    private var generation = UUID()
+    private var closed = false
+    private var source: FilePreviewSource?
+    private var entry: FileEntry?
+    private var shutdownTask: Task<Void, Never>?
+    func load(_ entry: FileEntry, source: FilePreviewSource) {
+        guard !closed else { return }
+        let previous = operation, token = UUID()
+        previous?.cancel(); generation = token
+        self.entry = entry; self.source = source
+        name = entry.name; url = nil; progress = nil; error = nil; loading = true; notice = "正在准备预览…"
+        operation = Task { [self] in
+            await previous?.value
+            var unpublished: FilePreview?
+            do {
+                try Task.checkCancellation()
+                if let preview { try await preview.close(); self.preview = nil }
+                let result = try await FilePreview.open(source) { [weak self] value in
+                    Task { @MainActor in
+                        guard let self, token == self.generation, self.loading else { return }
+                        self.progress = value
+                    }
+                }
+                unpublished = result
+                try Task.checkCancellation()
+                guard token == generation, !closed else { throw CancellationError() }
+                preview = result; unpublished = nil; url = result.url
+                notice = "\(ByteCountFormatter.string(fromByteCount: result.byteCount, countStyle: .file)) · Quick Look"
+            } catch is CancellationError {
+                if token == generation { notice = "预览已取消" }
+            } catch {
+                if token == generation { self.error = error.localizedDescription; notice = "预览未完成" }
+            }
+            if let unpublished {
+                do { try await unpublished.close() }
+                catch { if token == generation { self.error = "临时预览清理失败：\(error.localizedDescription)" } }
+            }
+            if token == generation { loading = false; progress = nil }
+        }
+    }
+    func cancel() { operation?.cancel() }
+    func retry() { if let entry, let source { load(entry, source: source) } }
+    func shutdown() async {
+        if let shutdownTask { await shutdownTask.value; return }
+        closed = true; generation = UUID(); url = nil
+        operation?.cancel()
+        let previous = operation
+        let task = Task {
+            await previous?.value; operation = nil
+            if let preview {
+                do { try await preview.close(); self.preview = nil }
+                catch { cleanupError = "\(error.localizedDescription)\n\(preview.directory?.path ?? "")" }
+            }
+        }
+        shutdownTask = task; await task.value
+    }
+}
+
+private struct FilePreviewView: View {
+    @ObservedObject var model: FilePreviewModel
+    var body: some View {
+        VStack(spacing: 0) {
+            if let url = model.url { NativeQuickLook(url: url).id(url) }
+            else {
+                VStack(spacing: 14) {
+                    Image(systemName: "doc.viewfinder").font(.system(size: 38)).foregroundStyle(.secondary)
+                    Text(model.name).font(.headline).lineLimit(2)
+                    if model.loading {
+                        if let progress = model.progress, progress.hasKnownTotal {
+                            ProgressView(value: progress.fraction).frame(width: 230)
+                        } else { ProgressView().controlSize(.small) }
+                        Text(model.progress?.phase ?? "正在读取文件…").font(.callout).foregroundStyle(.secondary)
+                        Button("取消预览") { model.cancel() }.buttonStyle(.glass)
+                    } else {
+                        Text(model.error ?? model.notice).foregroundStyle(model.error == nil ? Color.secondary : Color.red)
+                            .multilineTextAlignment(.center).frame(maxWidth: 420)
+                        Button("重新读取") { model.retry() }.buttonStyle(.glassProminent)
+                    }
+                }.padding(30).frame(maxWidth: .infinity, maxHeight: .infinity)
+            }
+            Divider()
+            HStack { Text(model.notice).lineLimit(1); Spacer(); Text("快速查看") }
+                .font(.caption).foregroundStyle(.secondary).padding(.horizontal, 16).padding(.vertical, 10)
+        }
+        .onExitCommand { NSApp.keyWindow?.performClose(nil) }
+    }
+}
+
+private final class QuickLookItem: NSObject, QLPreviewItem {
+    let previewItemURL: URL?
+    init(_ url: URL) { previewItemURL = url }
+}
+@MainActor private final class FilePreviewNativeWindow: NSWindow {
+    override func sendEvent(_ event: NSEvent) {
+        if event.type == .keyDown, event.keyCode == 53,
+           event.modifierFlags.intersection(.deviceIndependentFlagsMask).isEmpty {
+            performClose(nil); return
+        }
+        super.sendEvent(event)
+    }
+}
+private struct NativeQuickLook: NSViewRepresentable {
+    let url: URL
+    func makeNSView(context: Context) -> QLPreviewView {
+        let view = QLPreviewView(frame: .zero, style: .normal)!
+        // SwiftUI dismantling owns closure; automatic window closure would
+        // deactivate the same Quick Look view twice during hosting teardown.
+        view.autostarts = false; view.shouldCloseWithWindow = false
+        view.previewItem = QuickLookItem(url)
+        return view
+    }
+    func updateNSView(_ view: QLPreviewView, context: Context) { }
+    static func dismantleNSView(_ view: QLPreviewView, coordinator: ()) { view.close() }
+}

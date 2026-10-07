@@ -22,6 +22,8 @@ import AetherTransferCore
                 Button("下载所选文件") { tabs.current.downloadSelection() }.keyboardShortcut("d", modifiers: [.command, .shift])
                 Button("同步目录…") { tabs.current.showSync = true }.keyboardShortcut("s", modifiers: [.command, .shift])
                 Button("编辑所选文本…") { tabs.current.editSelection() }.keyboardShortcut("e")
+                Button("快速查看…") { tabs.current.previewSelection() }.keyboardShortcut("y")
+                Button("文件信息") { tabs.current.showInspector.toggle() }.keyboardShortcut("i")
                 Button("保留的传输…") { tabs.current.showRecovery = true }
             }
             CommandMenu("显示") {
@@ -114,40 +116,48 @@ struct MainView: View {
             }
             .navigationSplitViewColumnWidth(min: 180, ideal: 210, max: 280)
         } detail: {
-            VStack(spacing: 0) {
-                ScrollView(.horizontal) {
-                    GlassEffectContainer(spacing: 8) {
-                        HStack(spacing: 4) {
-                            ForEach(tabs.tabs) { tab in BrowserTabItem(id: tab.id, workspace: tab.workspace, tabs: tabs, namespace: tabGlass) }
-                            Button("新建标签页", systemImage: "plus") { tabs.add() }
-                                .labelStyle(.iconOnly).buttonStyle(.borderless).padding(.horizontal, 8)
-                        }.padding(.horizontal, 10).padding(.vertical, 7)
-                    }.animation(reduceMotion ? nil : .snappy(duration: 0.25), value: tabs.selected)
-                        .animation(reduceMotion ? nil : .snappy(duration: 0.25), value: tabs.tabs.count)
-                }.scrollIndicators(.hidden)
-                Divider()
-                HSplitView {
-                    FilePane(title: "本地", path: $workspace.localPath, files: workspace.localFiles,
-                             selection: $workspace.localSelection, loading: workspace.loadingLocal,
-                             query: query, remote: false, workspace: workspace)
-                    if workspace.connectedProfile != nil {
-                        FilePane(title: workspace.connectedProfile?.name.isEmpty == false ? workspace.connectedProfile!.name : "远程",
-                                 path: $workspace.remotePath, files: workspace.remoteFiles, selection: $workspace.remoteSelection,
-                                 loading: workspace.loadingRemote, query: query, remote: true, workspace: workspace)
-                    } else {
-                        ConnectionWelcomeView { showConnect = true }
-                            .frame(minWidth: 350, maxWidth: .infinity, maxHeight: .infinity)
-                    }
-                }.id(workspace.connectedProfile?.id).transaction { $0.animation = nil }
-                Divider()
-                ActivityView(workspace: workspace, expanded: $showActivities).frame(height: showActivities ? 170 : 44)
-                    .animation(reduceMotion ? nil : .snappy(duration: 0.25), value: showActivities)
-                Divider()
-                HStack {
-                    Text(workspace.connectedProfile.map { "\($0.protocolKind.title) · \($0.name.isEmpty ? $0.host : $0.name)" } ?? "未连接")
-                    Spacer()
-                    Text("\(workspace.localFiles.count) 个本地项目 · \(workspace.remoteFiles.count) 个远程项目")
-                }.font(.caption).foregroundStyle(.secondary).padding(.horizontal, 16).padding(.vertical, 8)
+            HStack(spacing: 0) {
+                VStack(spacing: 0) {
+                    ScrollView(.horizontal) {
+                        GlassEffectContainer(spacing: 8) {
+                            HStack(spacing: 4) {
+                                ForEach(tabs.tabs) { tab in BrowserTabItem(id: tab.id, workspace: tab.workspace, tabs: tabs, namespace: tabGlass) }
+                                Button("新建标签页", systemImage: "plus") { tabs.add() }
+                                    .labelStyle(.iconOnly).buttonStyle(.borderless).padding(.horizontal, 8)
+                            }.padding(.horizontal, 10).padding(.vertical, 7)
+                        }.animation(reduceMotion ? nil : .snappy(duration: 0.25), value: tabs.selected)
+                            .animation(reduceMotion ? nil : .snappy(duration: 0.25), value: tabs.tabs.count)
+                    }.scrollIndicators(.hidden)
+                    Divider()
+                    HSplitView {
+                        FilePane(title: "本地", path: $workspace.localPath, files: workspace.localFiles,
+                                 selection: $workspace.localSelection, loading: workspace.loadingLocal,
+                                 query: query, remote: false, workspace: workspace)
+                        if workspace.connectedProfile != nil {
+                            FilePane(title: workspace.connectedProfile?.name.isEmpty == false ? workspace.connectedProfile!.name : "远程",
+                                     path: $workspace.remotePath, files: workspace.remoteFiles, selection: $workspace.remoteSelection,
+                                     loading: workspace.loadingRemote, query: query, remote: true, workspace: workspace)
+                        } else {
+                            ConnectionWelcomeView { showConnect = true }
+                                .frame(minWidth: 350, maxWidth: .infinity, maxHeight: .infinity)
+                        }
+                    }.id(workspace.connectedProfile?.id).transaction { $0.animation = nil }
+                    Divider()
+                    ActivityView(workspace: workspace, expanded: $showActivities).frame(height: showActivities ? 170 : 44)
+                        .animation(reduceMotion ? nil : .snappy(duration: 0.25), value: showActivities)
+                    Divider()
+                    HStack {
+                        Text(workspace.connectedProfile.map { "\($0.protocolKind.title) · \($0.name.isEmpty ? $0.host : $0.name)" } ?? "未连接")
+                        Spacer()
+                        Text("\(workspace.localFiles.count) 个本地项目 · \(workspace.remoteFiles.count) 个远程项目")
+                    }.font(.caption).foregroundStyle(.secondary).padding(.horizontal, 16).padding(.vertical, 8)
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                if workspace.showInspector {
+                    Divider()
+                    FileInformationView(workspace: workspace).frame(width: 280)
+                        .background(.bar)
+                }
             }
         }
         .navigationTitle("AetherTransfer")
@@ -159,6 +169,7 @@ struct MainView: View {
                 Button("下载", systemImage: "arrow.down") { workspace.downloadSelection() }.disabled(workspace.remoteSelection.isEmpty)
             }
             ToolbarItem { Button("活动", systemImage: "list.bullet.rectangle") { showActivities.toggle() } }
+            ToolbarItem { Button("文件信息", systemImage: "info.circle") { workspace.showInspector.toggle() } }
             ToolbarItem { Button("同步", systemImage: "arrow.triangle.2.circlepath") { workspace.showSync = true } }
             ToolbarItem { Button("断开", systemImage: "eject") { workspace.disconnect() }.disabled(workspace.client == nil) }
         }

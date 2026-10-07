@@ -32,6 +32,16 @@ struct NativeFileTable: NSViewRepresentable {
         table.target = context.coordinator; table.doubleAction = #selector(Coordinator.openSelection)
         table.menuProvider = { [weak coordinator = context.coordinator] event in coordinator?.menu(event) }
         table.openSelected = { [weak coordinator = context.coordinator] in coordinator?.openKeyboardSelection() }
+        table.previewSelected = { [weak coordinator = context.coordinator] in
+            guard let coordinator else { return }
+            coordinator.parent.workspace.previewSelection(remote: coordinator.parent.remote)
+        }
+        table.focused = { [weak coordinator = context.coordinator] in
+            guard let coordinator else { return }
+            if coordinator.parent.workspace.focusedRemote != coordinator.parent.remote {
+                coordinator.parent.workspace.focusedRemote = coordinator.parent.remote
+            }
+        }
         table.setDraggingSourceOperationMask(.copy, forLocal: false)
         scroll.documentView = table
         context.coordinator.table = table
@@ -120,7 +130,9 @@ struct NativeFileTable: NSViewRepresentable {
         }
         func tableViewSelectionDidChange(_ notification: Notification) {
             guard !updating, let table else { return }
-            parent.selection = Set(table.selectedRowIndexes.compactMap { files.indices.contains($0) ? files[$0].id : nil })
+            let selection = Set(table.selectedRowIndexes.compactMap { files.indices.contains($0) ? files[$0].id : nil })
+            if parent.selection != selection { parent.selection = selection }
+            if parent.workspace.focusedRemote != parent.remote { parent.workspace.focusedRemote = parent.remote }
         }
         func tableView(_ tableView: NSTableView, sortDescriptorsDidChange oldDescriptors: [NSSortDescriptor]) {
             guard !updating, let descriptor = tableView.sortDescriptors.first else { return }
@@ -154,6 +166,8 @@ struct NativeFileTable: NSViewRepresentable {
             }
             add(entry.isDirectory ? "打开" : (parent.remote ? "下载" : "打开"), #selector(openItem(_:)))
             if !entry.isDirectory && !entry.isSymbolicLink { add("编辑文本…", #selector(editItem(_:))) }
+            add("快速查看", #selector(previewItem(_:)), enabled: !entry.isDirectory && !entry.isSymbolicLink)
+            add("文件信息", #selector(informationItem(_:)))
             if !parent.remote { add("上传", #selector(uploadItems), enabled: parent.workspace.client != nil) }
             menu.addItem(.separator())
             add("重命名…", #selector(renameItem(_:))); add("删除…", #selector(deleteItem(_:)))
@@ -163,6 +177,10 @@ struct NativeFileTable: NSViewRepresentable {
         @objc private func openItem(_ sender: NSMenuItem) { if let entry = sender.representedObject as? FileEntry { parent.workspace.open(entry, remote: parent.remote) } }
         @objc private func renameItem(_ sender: NSMenuItem) { if let entry = sender.representedObject as? FileEntry { parent.workspace.rename(entry, remote: parent.remote) } }
         @objc private func editItem(_ sender: NSMenuItem) { if let entry = sender.representedObject as? FileEntry { parent.workspace.edit(entry, remote: parent.remote) } }
+        @objc private func previewItem(_ sender: NSMenuItem) { if let entry = sender.representedObject as? FileEntry { parent.workspace.preview(entry, remote: parent.remote) } }
+        @objc private func informationItem(_ sender: NSMenuItem) {
+            parent.workspace.focusedRemote = parent.remote; parent.workspace.showInspector = true
+        }
         @objc private func deleteItem(_ sender: NSMenuItem) { if let entry = sender.representedObject as? FileEntry { parent.workspace.delete(entry, remote: parent.remote) } }
         @objc private func uploadItems() { parent.workspace.upload(files.filter { parent.selection.contains($0.id) }) }
     }
@@ -171,9 +189,17 @@ struct NativeFileTable: NSViewRepresentable {
 @MainActor final class BrowserTable: NSTableView {
     var menuProvider: ((NSEvent) -> NSMenu?)?
     var openSelected: (() -> Void)?
+    var previewSelected: (() -> Void)?
+    var focused: (() -> Void)?
+    override func becomeFirstResponder() -> Bool {
+        let result = super.becomeFirstResponder()
+        if result { focused?() }
+        return result
+    }
     override func menu(for event: NSEvent) -> NSMenu? { menuProvider?(event) }
     override func keyDown(with event: NSEvent) {
         if event.keyCode == 36 && event.modifierFlags.intersection(.deviceIndependentFlagsMask).isEmpty { openSelected?() }
+        else if event.keyCode == 49 && event.modifierFlags.intersection(.deviceIndependentFlagsMask).isEmpty { previewSelected?() }
         else { super.keyDown(with: event) }
     }
 }

@@ -41,9 +41,12 @@ import AetherTransferCore
             alert.addButton(withTitle: "返回传输")
             alert.runModal(); return .terminateCancel
         }
-        guard let editors, editors.hasWindows else { return .terminateNow }
-        guard editors.approveQuit() else { return .terminateCancel }
-        Task { await editors.shutdown(); sender.reply(toApplicationShouldTerminate: true) }
+        guard editors?.approveQuit() != false else { return .terminateCancel }
+        guard editors?.hasWindows == true || tabs?.previews.hasWindow == true else { return .terminateNow }
+        Task {
+            await tabs?.previews.shutdown(); await editors?.shutdown()
+            sender.reply(toApplicationShouldTerminate: true)
+        }
         return .terminateLater
     }
 }

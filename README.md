@@ -4,7 +4,7 @@
 
 **状态：v0.1.0 开发中，尚未发布。** [官网](https://www.aethernative.com/apps/aethertransfer/) · [首版范围](docs/first-version.md)
 
-开发候选已包含单向/双向目录差异预览、逐项方向选择和明确的镜像删除确认，支持本地与已连接远程目录的组合。使用方法和当前限制见 [目录同步](docs/synchronization.md)。
+开发候选已包含单向/双向目录差异预览、逐项方向选择和明确的镜像删除确认，支持本地与已连接远程目录的组合。使用方法和当前限制见 [目录同步](docs/synchronization.md)。文件查看入口与缓存边界见 [快速查看与文件信息](docs/file-preview.md)。
 
 本地与远程 UTF-8 文本可在原生窗口编辑，或选择本机编辑器后保存自动回传；内容冲突会保留草稿。编码、大小与并发写入限制见 [文本编辑](docs/editing.md)。
 

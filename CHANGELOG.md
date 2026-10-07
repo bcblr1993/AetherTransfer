@@ -15,3 +15,5 @@
 - Directory transfers scan bounded manifests and report overall bytes, processed items and skips; each file is verified and committed, and cancellation cleans its active partial.
 - Incremental Dock progress aggregates tasks across tabs, retains completed work until the active batch ends and clears at idle; system Dock visual acceptance remains pending.
 - Preserve an explicit zero-byte SFTP stat size in the bundled curl runtime so safe version checks support empty files.
+- Native Quick Look for local files and verified remote snapshots up to 128 MiB, with cancellable preparation and owned temporary-file cleanup.
+- Native file information inspector follows the focused pane and selection; folder totals and metadata editing remain pending.
