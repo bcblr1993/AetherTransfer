@@ -170,6 +170,21 @@ with tempfile.TemporaryDirectory(prefix='aethertransfer-fixture-') as directory:
             'dir_browser': {'enable': False}, 'logging': {'enable': False}, 'verbose': 0,
         })
         def faults(environ, start_response):
+            original_start = start_response
+            def start_response(status, headers, exc_info=None):
+                if status.startswith('401 '):
+                    # WsgiDAV rejects authentication without consuming the request body.
+                    # Cheroot only drains it when keeping the connection alive; closing an
+                    # unread upload can reset TCP and discard the challenge before curl sees it.
+                    stream = environ['wsgi.input']
+                    remaining = getattr(stream, 'remaining', 0)
+                    while remaining > 0:
+                        chunk = stream.read(min(remaining, 64 * 1024))
+                        if not chunk: break  # A deliberately cancelled client may have closed.
+                        remaining -= len(chunk)
+                    if environ['PATH_INFO'].startswith('/__aether_fixture_close_auth__'):
+                        headers = headers + [('Connection', 'close')]
+                return original_start(status, headers, exc_info)
             # Independent fault responses verify that redirects and partial mutation failures cannot be reported as success.
             if environ['PATH_INFO'].rstrip('/') == '/__aether_fixture_redirect__':
                 start_response('307 Temporary Redirect', [('Location', 'http://127.0.0.1:1/downgrade'), ('Content-Length', '0')])

@@ -28,7 +28,7 @@ private final class ProgressRecorder: @unchecked Sendable {
                             credentials: Credentials(password: "fixture-only"),
                             certificateAuthority: kind.usesTLS ? env["AT_TLS_CA"].map { URL(fileURLWithPath: $0) } : nil)
     }
-    func roundTrip(_ kind: TransferProtocol) async throws {
+    func roundTrip(_ kind: TransferProtocol, rootPrefix: String? = nil) async throws {
         let remote = try client(kind)
         let folder = FileManager.default.temporaryDirectory.appendingPathComponent("aethertransfer-test-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
@@ -36,7 +36,7 @@ private final class ProgressRecorder: @unchecked Sendable {
         let source = folder.appendingPathComponent("source")
         let data = Data((0..<(1024 * 1024)).map { UInt8($0 % 251) })
         try data.write(to: source)
-        let path = "/\(kind.rawValue)-\(UUID().uuidString) 空格"
+        let path = "/\(rootPrefix ?? kind.rawValue)-\(UUID().uuidString) 空格"
         try await remote.mkdir(path)
         let target = try RemotePath.join(path, "中文 # 文件.txt")
         try await remote.upload(source, to: target)
@@ -66,7 +66,8 @@ private final class ProgressRecorder: @unchecked Sendable {
     func testImplicitTLSRoundTrip() async throws { try await roundTrip(.ftps) }
     func testWebDAVHTTPRoundTrip() async throws { try await roundTrip(.webdav) }
     func testWebDAVHTTPSDigestRoundTrip() async throws {
-        for _ in 0..<3 { try await roundTrip(.webdavs) }
+        for _ in 0..<20 { try await roundTrip(.webdavs) }
+        try await roundTrip(.webdavs, rootPrefix: "__aether_fixture_close_auth__")
     }
     func testTLSRejectsUntrustedCertificatesHostMismatchAndPlaintextServer() async throws {
         for kind in [TransferProtocol.ftpes, .ftps, .webdavs] {
