@@ -13,7 +13,8 @@ struct NativeFileIcons: NSViewRepresentable {
 
     func makeCoordinator() -> Coordinator { Coordinator(self) }
     func makeNSView(context: Context) -> NSScrollView {
-        let scroll = NSScrollView()
+        let scroll = FileBrowserScrollView()
+        scroll.workspace = workspace; scroll.remote = remote
         scroll.hasVerticalScroller = true; scroll.hasHorizontalScroller = false
         scroll.autohidesScrollers = true; scroll.borderType = .noBorder
         let grid = BrowserIconGrid()
@@ -28,6 +29,7 @@ struct NativeFileIcons: NSViewRepresentable {
         grid.register(FileIconItem.self, forItemWithIdentifier: FileIconItem.identifier)
         grid.delegate = context.coordinator; grid.dataSource = context.coordinator
         grid.setDraggingSourceOperationMask(.copy, forLocal: false)
+        grid.setDraggingSourceOperationMask(.copy, forLocal: true)
         grid.menuProvider = { [weak coordinator = context.coordinator] event in coordinator?.menu(event) }
         grid.openSelected = { [weak coordinator = context.coordinator] in coordinator?.openSelection() }
         grid.openClicked = { [weak coordinator = context.coordinator] index in coordinator?.open(index) }
@@ -50,6 +52,9 @@ struct NativeFileIcons: NSViewRepresentable {
     }
     func updateNSView(_ scroll: NSScrollView, context: Context) {
         let coordinator = context.coordinator; coordinator.parent = self
+        if let drop = scroll as? FileBrowserScrollView {
+            drop.workspace = workspace; drop.remote = remote; drop.isDropEnabled = context.environment.isEnabled
+        }
         guard let grid = coordinator.grid else { return }
         grid.isEnabled = context.environment.isEnabled
         grid.setAccessibilityEnabled(grid.isEnabled)

@@ -148,7 +148,10 @@ struct ActivityItem: Identifiable {
     func reloadProfiles() {
         do { profiles = try store.load() } catch { self.error = error.localizedDescription }
     }
+    var canReceiveUpload: Bool { client != nil && !connecting && !loadingRemote }
     func uploadURLs(_ urls: [URL]) {
+        guard canReceiveUpload, !urls.isEmpty, urls.allSatisfy(\.isFileURL), let client else { return }
+        let destination = remotePath, remoteNames = Set(remoteFiles.map(\.name))
         Task {
             do {
                 let entries = try await Task.detached {
@@ -158,7 +161,7 @@ struct ActivityItem: Identifiable {
                                          isSymbolicLink: info.isSymbolicLink == true, size: Int64(info.fileSize ?? 0))
                     }
                 }.value
-                upload(entries)
+                upload(entries, client: client, destination: destination, remoteNames: remoteNames)
             } catch { self.error = error.localizedDescription }
         }
     }
@@ -270,11 +273,13 @@ struct ActivityItem: Identifiable {
     }
     func upload(_ entries: [FileEntry]) {
         guard let client else { return }
+        upload(entries, client: client, destination: remotePath, remoteNames: Set(remoteFiles.map(\.name)))
+    }
+    private func upload(_ entries: [FileEntry], client: RemoteClient, destination: String, remoteNames: Set<String>) {
         let rateLimit = Int64(max(0, UserDefaults.standard.integer(forKey: "transferRateKiB"))) * 1024
-        let remoteNames = Set(remoteFiles.map(\.name))
         for entry in entries {
             do {
-                let target = try RemotePath.join(remotePath, entry.name)
+                let target = try RemotePath.join(destination, entry.name)
                 let exists = remoteNames.contains(entry.name)
                 guard let policy = exists ? conflictPolicy(entry.name, directory: entry.isDirectory) : .reject else { continue }
                 if !entry.isDirectory {

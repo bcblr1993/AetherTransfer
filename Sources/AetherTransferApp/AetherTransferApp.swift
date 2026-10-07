@@ -299,7 +299,7 @@ struct FilePane: View {
                 }
             }
                 .disabled(loading || presenting)
-                .overlay { if filtered.isEmpty && !loading && !presenting { ContentUnavailableView("没有文件", systemImage: "folder", description: Text(query.isEmpty ? "此目录为空。" : "没有匹配的项目。")) } }
+                .overlay { if filtered.isEmpty && !loading && !presenting { ContentUnavailableView("没有文件", systemImage: "folder", description: Text(query.isEmpty ? "此目录为空。" : "没有匹配的项目。")) .allowsHitTesting(false) } }
 
         }.frame(minWidth: 350, maxWidth: .infinity, maxHeight: .infinity)
         .onChange(of: viewMode.wrappedValue) { _, _ in workspace.focusedRemote = remote }
@@ -319,7 +319,7 @@ struct FilePane: View {
             } catch is CancellationError { } catch { presenting = false }
         }
         .dropDestination(for: URL.self) { urls, _ in
-            guard remote, workspace.client != nil, urls.allSatisfy(\.isFileURL) else { return false }
+            guard remote, workspace.canReceiveUpload, !urls.isEmpty, urls.allSatisfy(\.isFileURL) else { return false }
             workspace.uploadURLs(urls); return true
         }
     }

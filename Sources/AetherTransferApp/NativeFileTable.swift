@@ -14,7 +14,8 @@ struct NativeFileTable: NSViewRepresentable {
 
     func makeCoordinator() -> Coordinator { Coordinator(self) }
     func makeNSView(context: Context) -> NSScrollView {
-        let scroll = NSScrollView()
+        let scroll = FileBrowserScrollView()
+        scroll.workspace = workspace; scroll.remote = remote
         scroll.hasVerticalScroller = true; scroll.hasHorizontalScroller = false
         scroll.autohidesScrollers = true; scroll.borderType = .noBorder
         let table = BrowserTable()
@@ -47,6 +48,7 @@ struct NativeFileTable: NSViewRepresentable {
             return coordinator.parent.workspace.focusedRemote == coordinator.parent.remote
         }
         table.setDraggingSourceOperationMask(.copy, forLocal: false)
+        table.setDraggingSourceOperationMask(.copy, forLocal: true)
         scroll.documentView = table
         context.coordinator.table = table
         return scroll
@@ -54,6 +56,9 @@ struct NativeFileTable: NSViewRepresentable {
     func updateNSView(_ scroll: NSScrollView, context: Context) {
         let coordinator = context.coordinator
         coordinator.parent = self
+        if let drop = scroll as? FileBrowserScrollView {
+            drop.workspace = workspace; drop.remote = remote; drop.isDropEnabled = context.environment.isEnabled
+        }
         guard let table = coordinator.table else { return }
         table.isEnabled = context.environment.isEnabled
         coordinator.updating = true
@@ -146,7 +151,7 @@ struct NativeFileTable: NSViewRepresentable {
             parent.descending = !descriptor.ascending
         }
         func tableView(_ tableView: NSTableView, pasteboardWriterForRow row: Int) -> (any NSPasteboardWriting)? {
-            guard !parent.remote, files.indices.contains(row) else { return nil }
+            guard table?.isEnabled == true, !parent.remote, files.indices.contains(row) else { return nil }
             return URL(fileURLWithPath: files[row].path) as NSURL
         }
         @objc func openSelection() {

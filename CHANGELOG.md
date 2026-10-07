@@ -19,3 +19,4 @@
 - Native file information inspector follows the focused pane and selection; folder totals and metadata editing remain pending.
 - Startup recovery of abandoned preview caches uses locked ownership records, bounded cancellable cleanup and descriptor-relative deletion; active previews and unrecognized data are preserved.
 - Native reusable icon browsing with independent pane/tab modes, preserved selection and keyboard focus, sorting and shared list/icon context menus. Drag-and-drop acceptance remains pending.
+- Shared native file URL drop receiver for list/icon panes, copy-only local sources, loading/disabled guards and empty-state input passthrough. URL uploads capture the connection and destination before reading local metadata. Diagnostic-build internal drags transferred verified bytes; final-build and Finder drag acceptance remains pending.
