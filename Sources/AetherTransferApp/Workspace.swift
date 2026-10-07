@@ -11,6 +11,7 @@ struct ActivityItem: Identifiable {
     var total: Int64 = 0
     var state: String = "等待中"
     var error: String?
+    var canRetry = true
 }
 
 @MainActor final class Workspace: ObservableObject {
@@ -33,6 +34,7 @@ struct ActivityItem: Identifiable {
     @Published var hostChallenge: HostChallenge?
     @Published var connectedProfile: ServerProfile?
     @Published var connectionPrompt: ServerProfile?
+    @Published var showSync = false
     private var credentials = Credentials()
     private let store = ProfileStore()
     private let queue: TransferQueue
@@ -208,6 +210,13 @@ struct ActivityItem: Identifiable {
     }
     func uploadSelection() { upload(localFiles.filter { localSelection.contains($0.id) }) }
     func downloadSelection() { download(remoteFiles.filter { remoteSelection.contains($0.id) }) }
+    func enqueueSync(_ plan: SyncPlan, left: SyncRoot, right: SyncRoot, selected: Set<String>, resolutions: [String: SyncDirection]) {
+        let rate = Int64(max(0, UserDefaults.standard.integer(forKey: "transferRateKiB"))) * 1024
+        enqueue(name: "\(selected.count) 个同步操作", direction: "同步", retryable: false) { control, progress in
+            _ = try await SyncEngine.execute(plan, left: left, right: right, selected: selected, resolutions: resolutions,
+                                             control: control, rateLimit: rate, progress: progress)
+        }
+    }
     func upload(_ entries: [FileEntry]) {
         guard let client else { return }
         let rateLimit = Int64(max(0, UserDefaults.standard.integer(forKey: "transferRateKiB"))) * 1024
@@ -248,12 +257,12 @@ struct ActivityItem: Identifiable {
         default: return nil
         }
     }
-    private func enqueue(name: String, direction: String,
+    private func enqueue(name: String, direction: String, retryable: Bool = true,
                          operation: @escaping @Sendable (TransferControl, @escaping @Sendable (TransferProgress) -> Void) async throws -> Void) {
-        let id = UUID(); activities.insert(ActivityItem(id: id, name: name, direction: direction), at: 0)
+        let id = UUID(); activities.insert(ActivityItem(id: id, name: name, direction: direction, canRetry: retryable), at: 0)
         let control = TransferControl(); controls[id] = control
         let wrapped: TransferQueue.Operation = { progress in try await operation(control, progress) }
-        retryOperations[id] = wrapped
+        if retryable { retryOperations[id] = wrapped }
         submit(id, operation: wrapped)
     }
     private func submit(_ id: UUID, operation: @escaping TransferQueue.Operation) {

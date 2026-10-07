@@ -4,6 +4,8 @@
 
 **状态：v0.1.0 开发中，尚未发布。** [官网](https://www.aethernative.com/apps/aethertransfer/) · [首版范围](docs/first-version.md)
 
+开发候选已包含单向/双向目录差异预览、逐项方向选择和明确的镜像删除确认，支持本地与已连接远程目录的组合。使用方法和当前限制见 [目录同步](docs/synchronization.md)。
+
 ## 开发
 
 要求 Apple Silicon、macOS 26+、Xcode 26+ / Swift 6。协议库在项目自己的 `.build` 中构建，不修改本机 Homebrew curl：
@@ -12,6 +14,7 @@
 brew install openssl@3 libssh2
 ./scripts/build_protocol_runtime.sh
 ./scripts/test_core.sh
+python3 scripts/clean_generated.py swift
 swift run AetherTransfer
 ```
 

@@ -25,6 +25,7 @@ public final class TransferControl: @unchecked Sendable {
     public init() {}
     public func pause() { setPaused(true) }
     public func resume() { setPaused(false) }
+    public var isPaused: Bool { lock.lock(); defer { lock.unlock() }; return paused }
     private func setPaused(_ value: Bool) {
         lock.lock(); defer { lock.unlock() }
         paused = value

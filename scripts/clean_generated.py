@@ -31,6 +31,7 @@ if args.scope in ("app", "all"):
 if args.scope == "all":
     for relative in ["reports/ui-animation.trace", "reports/performance-files", "reports/ui-source",
                      "reports/ui-download", "reports/native-ui-download", "reports/fixture.json",
+                     "reports/sync-ui-left", "reports/sync-ui-right", "reports/sync-ui-large",
                      ".build/curl-source", ".build/curl-8.22.0.tar.xz",
                      ".build/site-checkout/node_modules", ".build/site-checkout/dist", ".build/site-checkout/.astro"]:
         remove(relative)

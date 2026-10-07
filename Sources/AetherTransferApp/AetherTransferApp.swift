@@ -18,6 +18,7 @@ import AetherTransferCore
                 Button("刷新") { tabs.current.refreshLocal(); tabs.current.refreshRemote() }.keyboardShortcut("r")
                 Button("上传所选文件") { tabs.current.uploadSelection() }.keyboardShortcut("u", modifiers: [.command, .shift])
                 Button("下载所选文件") { tabs.current.downloadSelection() }.keyboardShortcut("d", modifiers: [.command, .shift])
+                Button("同步目录…") { tabs.current.showSync = true }.keyboardShortcut("s", modifiers: [.command, .shift])
             }
             CommandMenu("显示") {
                 Button("显示 / 隐藏隐藏文件") { tabs.current.showHidden.toggle() }.keyboardShortcut(".", modifiers: [.command, .shift])
@@ -148,10 +149,12 @@ struct MainView: View {
                 Button("下载", systemImage: "arrow.down") { workspace.downloadSelection() }.disabled(workspace.remoteSelection.isEmpty)
             }
             ToolbarItem { Button("活动", systemImage: "list.bullet.rectangle") { showActivities.toggle() } }
+            ToolbarItem { Button("同步", systemImage: "arrow.triangle.2.circlepath") { workspace.showSync = true } }
             ToolbarItem { Button("断开", systemImage: "eject") { workspace.disconnect() }.disabled(workspace.client == nil) }
         }
         .searchable(text: $query, prompt: "筛选当前目录")
         .sheet(isPresented: $showConnect) { ConnectionView(workspace: workspace) }
+        .sheet(isPresented: $workspace.showSync) { SyncReviewView(workspace: workspace, tabs: tabs) }
         .sheet(item: $editingProfile) { profile in ConnectionView(workspace: workspace, initial: profile, editing: true) }
         .sheet(item: $workspace.connectionPrompt) { profile in ConnectionView(workspace: workspace, initial: profile, loadSaved: true) }
         .alert("操作失败", isPresented: Binding(get: { workspace.error != nil }, set: { if !$0 { workspace.error = nil } })) {
@@ -287,12 +290,12 @@ struct ActivityView: View {
             } else if expanded {
                 List(workspace.activities) { item in
                     HStack {
-                        Image(systemName: item.direction == "上传" ? "arrow.up.circle" : "arrow.down.circle")
+                        Image(systemName: item.direction == "同步" ? "arrow.triangle.2.circlepath" : (item.direction == "上传" ? "arrow.up.circle" : "arrow.down.circle"))
                         VStack(alignment: .leading, spacing: 3) {
                             Text(item.name).lineLimit(1)
                             if item.state == "传输中" || item.state == "已暂停" {
                                 ProgressView(value: item.progress).frame(maxWidth: 220)
-                                Text("当前文件：\(ByteCountFormatter.string(fromByteCount: item.bytes, countStyle: .file)) / \(ByteCountFormatter.string(fromByteCount: item.total, countStyle: .file))").font(.caption).foregroundStyle(.secondary)
+                                Text("\(item.direction == "同步" ? "同步总量" : "当前文件")：\(ByteCountFormatter.string(fromByteCount: item.bytes, countStyle: .file)) / \(ByteCountFormatter.string(fromByteCount: item.total, countStyle: .file))").font(.caption).foregroundStyle(.secondary)
                             }
                             if let error = item.error { Text(error).font(.caption).foregroundStyle(.red).lineLimit(2) }
                         }
@@ -302,7 +305,13 @@ struct ActivityView: View {
                         if item.state == "传输中" { Button("暂停", systemImage: "pause.circle") { workspace.pause(item.id) }.labelStyle(.iconOnly).buttonStyle(.borderless) }
                         if item.state == "已暂停" { Button("继续", systemImage: "play.circle") { workspace.resume(item.id) }.labelStyle(.iconOnly).buttonStyle(.borderless) }
                         if item.state == "传输中" || item.state == "等待中" || item.state == "已暂停" { Button("取消", systemImage: "xmark.circle") { workspace.cancel(item.id) }.labelStyle(.iconOnly).buttonStyle(.borderless) }
-                        if item.state == "失败" || item.state == "已取消" { Button("重试", systemImage: "arrow.clockwise") { workspace.retry(item.id) }.labelStyle(.iconOnly).buttonStyle(.borderless) }
+                        if item.state == "失败" || item.state == "已取消" {
+                            if item.canRetry {
+                                Button("重试", systemImage: "arrow.clockwise") { workspace.retry(item.id) }.labelStyle(.iconOnly).buttonStyle(.borderless)
+                            } else {
+                                Button("重新预览", systemImage: "arrow.triangle.2.circlepath") { workspace.showSync = true }.buttonStyle(.borderless)
+                            }
+                        }
                     }
                 }.listStyle(.plain)
             }

@@ -23,4 +23,6 @@
 
 当前性能目标：大目录交互后的空闲 CPU < 1% 单核、RSS < 300 MiB；自然排序/筛选 < 30 ms；1 万条 LIST 解析 < 150 ms。这些是开发门槛，需要扩展到更多机型与 macOS 26，尚不是发布承诺。仍待验收：长时运行、并发大文件传输、内存泄漏、能耗、动画 hitches、VoiceOver 和减少透明度。
 
+同步预览复用固定 28 pt 行高 AppKit 表格；方向菜单只在同名冲突行创建，普通复制/新建/删除行使用文本单元格。实际载入 10,000 个零字节本地文件的差异，滚动到最后一项、切换该项选择、全不选/全选后，稳定 5.01 秒采样 CPU 累计时间未增加、RSS 259.80 MiB（`ps` CPU 时间精度 0.01 秒）；此样本只反映短时空闲，不证明长时能耗或动画帧率。先前组合流程的 RSS 为 339.80 MiB，按需创建冲突菜单后复测降低。浅色大目录与深色冲突预览已实际检查；开发构建运行于 macOS 27，macOS 26 UI 仍需独立验收。
+
 实现依据：[Apple Liquid Glass](https://developer.apple.com/documentation/swiftui/applying-liquid-glass-to-custom-views)、[AppKit view reuse](https://developer.apple.com/documentation/appkit/nstableview/makeview(withidentifier:owner:))。

@@ -46,6 +46,11 @@ features:
       body:
         zh: 连接配置保存在本地，密码与口令由 Keychain 管理。SFTP 核对主机密钥，TLS 验证证书。
         en: Local connection profiles with passwords and passphrases in Keychain. SFTP verifies host keys and TLS validates certificates.
+    - kicker: { zh: 同步, en: Sync }
+      title: { zh: 看清差异，再决定同步, en: Review differences before syncing }
+      body:
+        zh: 开发候选已加入本地与远程目录的单向、双向差异预览，逐项选择方向与操作。镜像删除默认不选中，预览后文件变化会要求重新比较。
+        en: The development candidate includes one-way and two-way previews across local and remote folders, with per-item direction and action choices. Mirror deletions start unchecked; changed files require a new preview.
 faq:
   eyebrow: FAQ
   title: { zh: 常见问题, en: Questions }
