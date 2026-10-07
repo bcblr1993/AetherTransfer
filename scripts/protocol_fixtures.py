@@ -7,6 +7,8 @@ import socket
 import subprocess
 import tempfile
 import threading
+import json
+import sys
 
 import paramiko
 from pyftpdlib.authorizers import DummyAuthorizer
@@ -74,7 +76,12 @@ with tempfile.TemporaryDirectory(prefix='aethertransfer-fixture-') as directory:
     class Handler(FTPHandler): pass
     Handler.authorizer = authorizer
     ftp = FTPServer(('127.0.0.1', 0), Handler)
-    threading.Thread(target=ftp.serve_forever, kwargs={'timeout': .1}, daemon=True).start()
+    stopping = threading.Event()
+    def serve_ftp():
+        while not stopping.is_set():
+            ftp.serve_forever(timeout=.1, blocking=False, handle_exit=False)
+    ftp_thread = threading.Thread(target=serve_ftp, daemon=True)
+    ftp_thread.start()
     key = paramiko.RSAKey.generate(2048)
     listener = socket.socket()
     listener.bind(('127.0.0.1', 0)); listener.listen(16)
@@ -96,8 +103,18 @@ with tempfile.TemporaryDirectory(prefix='aethertransfer-fixture-') as directory:
     env.update(AT_FTP_PORT=str(ftp.socket.getsockname()[1]), AT_SFTP_PORT=str(listener.getsockname()[1]),
                AT_SFTP_KEY=key.get_base64())
     try:
-        result = subprocess.run(['swift', 'test', '--filter', 'ProtocolIntegrationTests'], env=env)
+        if '--serve' in sys.argv:
+            report = Path('reports/fixture.json')
+            report.parent.mkdir(exist_ok=True)
+            report.write_text(json.dumps({'ftp': int(env['AT_FTP_PORT']), 'sftp': int(env['AT_SFTP_PORT']), 'key': env['AT_SFTP_KEY'], 'root': str(root)}))
+            print('Disposable loopback protocol fixtures ready.', flush=True)
+            try: threading.Event().wait()
+            except KeyboardInterrupt: pass
+            result = None
+        else:
+            result = subprocess.run(['swift', 'test', '--filter', 'ProtocolIntegrationTests'], env=env)
     finally:
+        stopping.set(); ftp_thread.join(timeout=2)
         ftp.close_all(); listener.close()
         for transport in transports: transport.close()
-    raise SystemExit(result.returncode)
+    raise SystemExit(result.returncode if result else 0)

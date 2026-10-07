@@ -32,6 +32,11 @@ import XCTest
         XCTAssertEqual(try Data(contentsOf: download), data)
         do { try await remote.upload(source, to: target); XCTFail("Conflict must reject") }
         catch TransferError.conflict { }
+        let replacement = Data("replacement contents".utf8)
+        try replacement.write(to: source)
+        try await remote.upload(source, to: target, overwrite: true)
+        try await remote.download(target, to: download, overwrite: true)
+        XCTAssertEqual(try Data(contentsOf: download), replacement)
         let renamed = try RemotePath.join(path, "renamed.txt")
         try await remote.rename(target, to: renamed)
         try await remote.remove(renamed, directory: false)
@@ -41,6 +46,28 @@ import XCTest
     }
     func testFTPRoundTrip() async throws { try await roundTrip(.ftp) }
     func testSFTPRoundTrip() async throws { try await roundTrip(.sftp) }
+    func testRecursiveTransfersAndKeepBoth() async throws {
+        for kind in [TransferProtocol.ftp, .sftp] {
+            let remote = try client(kind)
+            let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+            try FileManager.default.createDirectory(at: folder.appendingPathComponent("source/子目录"), withIntermediateDirectories: true)
+            defer { try? FileManager.default.removeItem(at: folder) }
+            let data = Data("recursive fixture".utf8)
+            try data.write(to: folder.appendingPathComponent("source/子目录/中文.txt"))
+            try Data().write(to: folder.appendingPathComponent("source/empty"))
+            let target = "/tree-\(UUID().uuidString)"
+            try await remote.uploadTree(folder.appendingPathComponent("source"), to: target)
+            let rootEntry = try await remote.list("/").first { $0.path == target }
+            let entry = try XCTUnwrap(rootEntry)
+            try await remote.downloadTree(entry, to: folder.appendingPathComponent("download"))
+            XCTAssertEqual(try Data(contentsOf: folder.appendingPathComponent("download/子目录/中文.txt")), data)
+            XCTAssertEqual(try Data(contentsOf: folder.appendingPathComponent("download/empty")).count, 0)
+            let file = try RemotePath.join(target, "empty")
+            try await remote.uploadTree(folder.appendingPathComponent("source/empty"), to: file, policy: .keepBoth)
+            let entries = try await remote.list(target)
+            XCTAssertTrue(entries.contains { $0.name == "empty (2)" })
+        }
+    }
     func testSFTPRejectsUntrustedAndChangedHostKey() async throws {
         let untrusted = try client(.sftp, trusted: false)
         do { _ = try await untrusted.list("/"); XCTFail("Untrusted host must be rejected") }

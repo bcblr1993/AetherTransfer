@@ -3,21 +3,22 @@ import AppKit
 import AetherTransferCore
 
 @main struct AetherTransferApp: App {
-    @StateObject private var workspace = Workspace()
+    @StateObject private var tabs = BrowserTabs()
     var body: some Scene {
         WindowGroup("AetherTransfer") {
-            MainView(workspace: workspace).frame(minWidth: 1000, minHeight: 640)
+            MainView(workspace: tabs.current, tabs: tabs).id(tabs.selected).frame(minWidth: 1000, minHeight: 640)
         }
         .defaultSize(width: 1240, height: 800)
         .commands {
             CommandGroup(after: .newItem) {
-                Button("选择本地文件夹…") { workspace.chooseLocal() }.keyboardShortcut("o")
-                Button("刷新") { workspace.refreshLocal(); workspace.refreshRemote() }.keyboardShortcut("r")
-                Button("上传所选文件") { workspace.uploadSelection() }.keyboardShortcut("u", modifiers: [.command, .shift])
-                Button("下载所选文件") { workspace.downloadSelection() }.keyboardShortcut("d", modifiers: [.command, .shift])
+                Button("新建标签页") { tabs.add() }.keyboardShortcut("t")
+                Button("选择本地文件夹…") { tabs.current.chooseLocal() }.keyboardShortcut("o")
+                Button("刷新") { tabs.current.refreshLocal(); tabs.current.refreshRemote() }.keyboardShortcut("r")
+                Button("上传所选文件") { tabs.current.uploadSelection() }.keyboardShortcut("u", modifiers: [.command, .shift])
+                Button("下载所选文件") { tabs.current.downloadSelection() }.keyboardShortcut("d", modifiers: [.command, .shift])
             }
             CommandMenu("显示") {
-                Toggle("显示隐藏文件", isOn: $workspace.showHidden).keyboardShortcut(".", modifiers: [.command, .shift])
+                Button("显示 / 隐藏隐藏文件") { tabs.current.showHidden.toggle() }.keyboardShortcut(".", modifiers: [.command, .shift])
             }
         }
     }
@@ -25,6 +26,7 @@ import AetherTransferCore
 
 struct MainView: View {
     @ObservedObject var workspace: Workspace
+    @ObservedObject var tabs: BrowserTabs
     @State private var showConnect = false
     @State private var showActivities = true
     @State private var query = ""
@@ -49,6 +51,13 @@ struct MainView: View {
             .navigationSplitViewColumnWidth(min: 180, ideal: 210, max: 280)
         } detail: {
             VStack(spacing: 0) {
+                ScrollView(.horizontal) {
+                    HStack(spacing: 4) {
+                        ForEach(tabs.tabs) { tab in BrowserTabItem(id: tab.id, workspace: tab.workspace, tabs: tabs) }
+                        Button("新建标签页", systemImage: "plus") { tabs.add() }.labelStyle(.iconOnly).buttonStyle(.borderless).padding(.horizontal, 8)
+                    }.padding(.horizontal, 10).padding(.vertical, 6)
+                }.scrollIndicators(.hidden)
+                Divider()
                 HSplitView {
                     FilePane(title: "本地", path: $workspace.localPath, files: workspace.localFiles,
                              selection: $workspace.localSelection, loading: workspace.loadingLocal,
@@ -64,7 +73,7 @@ struct MainView: View {
                         actions: { Button("快速连接", systemImage: "bolt") { showConnect = true }.buttonStyle(.glassProminent) }
                         .frame(minWidth: 350, maxWidth: .infinity, maxHeight: .infinity)
                     }
-                }
+                }.id(workspace.connectedProfile?.id)
                 if showActivities {
                     Divider()
                     ActivityView(workspace: workspace).frame(height: 170)
@@ -106,6 +115,7 @@ struct MainView: View {
             }.padding(28).frame(width: 570)
         }
         .onChange(of: workspace.showHidden) { workspace.refreshLocal() }
+        .onAppear { workspace.reloadProfiles() }
     }
 }
 
@@ -118,7 +128,10 @@ struct FilePane: View {
     let query: String
     let remote: Bool
     @ObservedObject var workspace: Workspace
-    var filtered: [FileEntry] { files.filter { (workspace.showHidden || !$0.name.hasPrefix(".")) && (query.isEmpty || $0.name.localizedCaseInsensitiveContains(query)) } }
+    @State private var sortOrder = [KeyPathComparator(\FileEntry.name, comparator: .localizedStandard)]
+    var filtered: [FileEntry] {
+        files.filter { (workspace.showHidden || !$0.name.hasPrefix(".")) && (query.isEmpty || $0.name.localizedCaseInsensitiveContains(query)) }.sorted(using: sortOrder)
+    }
     var body: some View {
         VStack(spacing: 0) {
             HStack {
@@ -133,21 +146,23 @@ struct FilePane: View {
             TextField("路径", text: $path).textFieldStyle(.roundedBorder).font(.system(.body, design: .monospaced))
                 .onSubmit { if remote { workspace.refreshRemote() } else { workspace.refreshLocal() } }
                 .padding(.horizontal, 12).padding(.bottom, 10)
-            Table(filtered, selection: $selection) {
-                TableColumn("名称") { entry in
+            Table(filtered, selection: $selection, sortOrder: $sortOrder) {
+                TableColumn("名称", value: \.name) { entry in
                     Label { Text(entry.name) } icon: {
                         Image(systemName: entry.isDirectory ? "folder.fill" : "doc").foregroundStyle(entry.isDirectory ? Color.accentColor : Color.secondary)
                     }
+                        .modifier(LocalFileDrag(url: remote ? nil : URL(fileURLWithPath: entry.path)))
                         .onTapGesture(count: 2) { workspace.open(entry, remote: remote) }
                 }.width(min: 140, ideal: 240)
-                TableColumn("大小") { entry in
+                TableColumn("大小", value: \.size) { entry in
                     Text(entry.isDirectory ? "—" : ByteCountFormatter.string(fromByteCount: entry.size, countStyle: .file))
                         .foregroundStyle(.secondary).monospacedDigit()
                 }.width(80)
-                TableColumn("修改日期") { entry in
+                TableColumn("修改日期", value: \.modifiedSortValue) { entry in
                     Text(entry.modified?.formatted(date: .numeric, time: .shortened) ?? "—").foregroundStyle(.secondary)
                 }.width(min: 100, ideal: 150)
             }
+            .disabled(loading)
             .contextMenu(forSelectionType: String.self) { ids in
                 if let entry = files.first(where: { ids.contains($0.id) }) {
                     Button(entry.isDirectory ? "打开" : (remote ? "下载" : "打开")) { workspace.open(entry, remote: remote) }
@@ -160,6 +175,17 @@ struct FilePane: View {
             }
             .overlay { if filtered.isEmpty && !loading { ContentUnavailableView("没有文件", systemImage: "folder", description: Text(query.isEmpty ? "此目录为空。" : "没有匹配的项目。")) } }
         }.frame(minWidth: 350, maxWidth: .infinity, maxHeight: .infinity)
+        .dropDestination(for: URL.self) { urls, _ in
+            guard remote, workspace.client != nil, urls.allSatisfy(\.isFileURL) else { return false }
+            workspace.uploadURLs(urls); return true
+        }
+    }
+}
+
+private struct LocalFileDrag: ViewModifier {
+    let url: URL?
+    @ViewBuilder func body(content: Content) -> some View {
+        if let url { content.draggable(url) } else { content }
     }
 }
 
@@ -181,7 +207,8 @@ struct ActivityView: View {
                         }
                         Spacer()
                         Text(item.state).foregroundStyle(item.state == "失败" ? .red : .secondary)
-                        if item.state == "传输中" { Button("取消", systemImage: "xmark.circle") { workspace.cancel(item.id) }.labelStyle(.iconOnly).buttonStyle(.borderless) }
+                        if item.state == "传输中" || item.state == "等待中" { Button("取消", systemImage: "xmark.circle") { workspace.cancel(item.id) }.labelStyle(.iconOnly).buttonStyle(.borderless) }
+                        if item.state == "失败" || item.state == "已取消" { Button("重试", systemImage: "arrow.clockwise") { workspace.retry(item.id) }.labelStyle(.iconOnly).buttonStyle(.borderless) }
                     }
                 }.listStyle(.plain)
             }

@@ -32,7 +32,8 @@ struct ActivityItem: Identifiable {
     @Published var connectedProfile: ServerProfile?
     private var credentials = Credentials()
     private let store = ProfileStore()
-    private var tasks: [UUID: Task<Void, Never>] = [:]
+    private let queue: TransferQueue
+    private var retryOperations: [UUID: TransferQueue.Operation] = [:]
     private var browseTask: Task<Void, Never>?
     private var localTask: Task<Void, Never>?
     private var localGeneration = UUID()
@@ -45,13 +46,15 @@ struct ActivityItem: Identifiable {
     }
     var client: RemoteClient? { connectedProfile.map { RemoteClient(profile: $0, credentials: credentials) } }
 
-    init() {
+    init(queue: TransferQueue = TransferQueue(limit: 2)) {
+        self.queue = queue
         do { profiles = try store.load() } catch { self.error = error.localizedDescription }
         refreshLocal()
     }
     func persist() { do { try store.save(profiles) } catch { self.error = error.localizedDescription } }
     func save(_ profile: ServerProfile, credentials: Credentials, remember: Bool) throws {
         try profile.validate()
+        profiles = try store.load()
         if remember {
             try CredentialStore.save(credentials.password, id: profile.id)
             try CredentialStore.save(credentials.passphrase, id: profile.id, kind: "passphrase")
@@ -59,6 +62,23 @@ struct ActivityItem: Identifiable {
         if let index = profiles.firstIndex(where: { $0.id == profile.id }) { profiles[index] = profile }
         else { profiles.append(profile) }
         try store.save(profiles)
+    }
+    func reloadProfiles() {
+        do { profiles = try store.load() } catch { self.error = error.localizedDescription }
+    }
+    func uploadURLs(_ urls: [URL]) {
+        Task {
+            do {
+                let entries = try await Task.detached {
+                    try urls.filter(\.isFileURL).map { url in
+                        let info = try url.resourceValues(forKeys: [.isDirectoryKey, .isSymbolicLinkKey, .fileSizeKey])
+                        return FileEntry(name: url.lastPathComponent, path: url.path, isDirectory: info.isDirectory == true,
+                                         isSymbolicLink: info.isSymbolicLink == true, size: Int64(info.fileSize ?? 0))
+                    }
+                }.value
+                upload(entries)
+            } catch { self.error = error.localizedDescription }
+        }
     }
     func connectSaved(_ profile: ServerProfile) {
         do {
@@ -92,7 +112,9 @@ struct ActivityItem: Identifiable {
                 let files = try await Task.detached { try LocalFiles.list(URL(fileURLWithPath: path), showHidden: hidden) }.value
                 guard generation == localGeneration else { return }
                 localFiles = files; localSelection = []
-            } catch { if generation == localGeneration { self.error = error.localizedDescription } }
+            } catch {
+                if generation == localGeneration { localFiles = []; localSelection = []; self.error = error.localizedDescription }
+            }
             if generation == localGeneration { loadingLocal = false }
         }
     }
@@ -108,11 +130,14 @@ struct ActivityItem: Identifiable {
                 remoteFiles = files; remoteSelection = []
             } catch let failure as TransferError {
                 guard generation == remoteGeneration else { return }
+                remoteFiles = []; remoteSelection = []
                 if case .hostKeyRequired(let key, let changed) = failure, !changed {
                     hostChallenge = HostChallenge(key: key, profile: client.profile)
                 } else { error = failure.localizedDescription }
             } catch is CancellationError { }
-            catch { if generation == remoteGeneration { self.error = error.localizedDescription } }
+            catch {
+                if generation == remoteGeneration { remoteFiles = []; remoteSelection = []; self.error = error.localizedDescription }
+            }
             if generation == remoteGeneration { loadingRemote = false; connecting = false }
         }
     }
@@ -136,13 +161,12 @@ struct ActivityItem: Identifiable {
     func upload(_ entries: [FileEntry]) {
         guard let client else { return }
         for entry in entries {
-            if entry.isDirectory { error = "递归目录传输正在开发，请先选择文件。"; continue }
             do {
                 let target = try RemotePath.join(remotePath, entry.name)
-                let overwrite = remoteFiles.contains { $0.name == entry.name }
-                if overwrite && !confirmOverwrite(entry.name) { continue }
+                let exists = remoteFiles.contains { $0.name == entry.name }
+                guard let policy = exists ? conflictPolicy(entry.name, directory: entry.isDirectory) : .reject else { continue }
                 enqueue(name: entry.name, direction: "上传") { progress in
-                    try await client.upload(URL(fileURLWithPath: entry.path), to: target, overwrite: overwrite, progress: progress)
+                    try await client.uploadTree(URL(fileURLWithPath: entry.path), to: target, policy: policy, progress: progress)
                 }
             } catch { self.error = error.localizedDescription }
         }
@@ -150,38 +174,50 @@ struct ActivityItem: Identifiable {
     func download(_ entries: [FileEntry]) {
         guard let client else { return }
         for entry in entries {
-            if entry.isDirectory { error = "递归目录传输正在开发，请先选择文件。"; continue }
             let target = URL(fileURLWithPath: localPath).appendingPathComponent(entry.name)
-            let overwrite = FileManager.default.fileExists(atPath: target.path)
-            if overwrite && !confirmOverwrite(entry.name) { continue }
+            let exists = FileManager.default.fileExists(atPath: target.path)
+            guard let policy = exists ? conflictPolicy(entry.name, directory: entry.isDirectory) : .reject else { continue }
             enqueue(name: entry.name, direction: "下载") { progress in
-                try await client.download(entry.path, to: target, overwrite: overwrite, progress: progress)
+                try await client.downloadTree(entry, to: target, policy: policy, progress: progress)
             }
         }
     }
-    private func confirmOverwrite(_ name: String) -> Bool {
-        let alert = NSAlert(); alert.messageText = "覆盖 \(name)？"
-        alert.informativeText = "目标文件已经存在。传输完成后将替换它。"
-        alert.addButton(withTitle: "覆盖"); alert.addButton(withTitle: "取消")
-        return alert.runModal() == .alertFirstButtonReturn
+    private func conflictPolicy(_ name: String, directory: Bool) -> ConflictPolicy? {
+        let alert = NSAlert(); alert.messageText = "目标已存在：\(name)"
+        alert.informativeText = directory ? "合并目录将覆盖其中同名文件。也可以保留两份或跳过。" : "请选择覆盖、保留两份或跳过。"
+        alert.addButton(withTitle: directory ? "合并并覆盖" : "覆盖")
+        alert.addButton(withTitle: "保留两份"); alert.addButton(withTitle: "跳过"); alert.addButton(withTitle: "取消")
+        switch alert.runModal() {
+        case .alertFirstButtonReturn: return .overwrite
+        case .alertSecondButtonReturn: return .keepBoth
+        case .alertThirdButtonReturn: return .skip
+        default: return nil
+        }
     }
     private func enqueue(name: String, direction: String,
                          operation: @escaping @Sendable (@escaping @Sendable (TransferProgress) -> Void) async throws -> Void) {
         let id = UUID(); activities.insert(ActivityItem(id: id, name: name, direction: direction), at: 0)
-        tasks[id] = Task { [self] in
-            setState(id, "传输中")
-            do {
-                try await operation { [weak self] progress in
-                    Task { @MainActor in
-                        guard let self, let index = self.activities.firstIndex(where: { $0.id == id }), self.activities[index].state == "传输中" else { return }
-                        self.activities[index].bytes = progress.completed; self.activities[index].total = progress.total
-                        self.activities[index].progress = progress.total > 0 ? Double(progress.completed) / Double(progress.total) : 0
-                    }
-                }
-                setState(id, "完成")
-            } catch is CancellationError { setState(id, "已取消") }
-            catch { setState(id, "失败", error: error.localizedDescription) }
-            tasks[id] = nil; refreshLocal(); refreshRemote()
+        retryOperations[id] = operation
+        submit(id, operation: operation)
+    }
+    private func submit(_ id: UUID, operation: @escaping TransferQueue.Operation) {
+        Task { [self] in
+            await queue.enqueue(id: id, operation: operation) { [weak self] id, event in
+                Task { @MainActor in self?.receive(id, event) }
+            }
+        }
+    }
+    private func receive(_ id: UUID, _ event: QueueEvent) {
+        switch event {
+        case .queued: setState(id, "等待中")
+        case .running: setState(id, "传输中")
+        case .progress(let progress):
+            guard let index = activities.firstIndex(where: { $0.id == id }), activities[index].state == "传输中" else { return }
+            activities[index].bytes = progress.completed; activities[index].total = progress.total
+            activities[index].progress = progress.total > 0 ? Double(progress.completed) / Double(progress.total) : 0
+        case .completed: setState(id, "完成"); retryOperations[id] = nil; refreshLocal(); refreshRemote()
+        case .cancelled: setState(id, "已取消"); refreshLocal(); refreshRemote()
+        case .failed(let error): setState(id, "失败", error: error); refreshLocal(); refreshRemote()
         }
     }
     private func setState(_ id: UUID, _ state: String, error: String? = nil) {
@@ -189,7 +225,11 @@ struct ActivityItem: Identifiable {
         activities[index].state = state; activities[index].error = error
         if state == "完成" { activities[index].progress = 1 }
     }
-    func cancel(_ id: UUID) { tasks[id]?.cancel() }
+    func cancel(_ id: UUID) { Task { await queue.cancel(id) } }
+    func retry(_ id: UUID) {
+        guard let operation = retryOperations[id] else { return }
+        setState(id, "等待中"); submit(id, operation: operation)
+    }
     func createFolder(remote: Bool) {
         guard let name = askName(title: "新建文件夹", initial: "新文件夹") else { return }
         do {

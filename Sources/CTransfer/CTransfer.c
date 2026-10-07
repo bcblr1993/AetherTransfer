@@ -6,6 +6,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
+#include <time.h>
 
 struct ATRequest {
     CURL *curl;
@@ -17,6 +18,7 @@ struct ATRequest {
     char *fingerprint;
     ATProgress progress;
     void *context;
+    double last_progress;
 };
 static pthread_once_t initialized = PTHREAD_ONCE_INIT;
 static void initialize(void) { curl_global_init(CURL_GLOBAL_DEFAULT); }
@@ -34,7 +36,13 @@ static size_t collect(char *data, size_t size, size_t count, void *ctx) {
 }
 static int progress(void *ctx, curl_off_t dt, curl_off_t dn, curl_off_t ut, curl_off_t un) {
     ATRequest *r = ctx;
-    if (r->progress) r->progress(r->context, dn + un, dt + ut);
+    struct timespec now;
+    clock_gettime(CLOCK_MONOTONIC, &now);
+    double seconds = now.tv_sec + now.tv_nsec / 1000000000.0;
+    if (r->progress && (seconds - r->last_progress >= 0.1 || (dn + un == dt + ut && dt + ut > 0))) {
+        r->last_progress = seconds;
+        r->progress(r->context, dn + un, dt + ut);
+    }
     return atomic_load(&r->cancelled);
 }
 static int hostkey(void *ctx, int type, const char *key, size_t length) {

@@ -94,6 +94,7 @@ public enum RemotePath {
 
 public struct FileEntry: Identifiable, Hashable, Sendable {
     public var id: String { path }
+    public var modifiedSortValue: Double { modified?.timeIntervalSince1970 ?? -.infinity }
     public let name: String
     public let path: String
     public let isDirectory: Bool
