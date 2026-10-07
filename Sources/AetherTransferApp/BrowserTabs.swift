@@ -11,11 +11,13 @@ import AetherTransferCore
     private let queue: TransferQueue
     var current: Workspace { tabs.first(where: { $0.id == selected })!.workspace }
     init() {
-        let queue = TransferQueue(limit: 2)
+        let savedLimit = UserDefaults.standard.integer(forKey: "maxConcurrentTransfers")
+        let queue = TransferQueue(limit: savedLimit == 0 ? 2 : savedLimit)
         self.queue = queue
         let tab = Tab(id: UUID(), workspace: Workspace(queue: queue))
         tabs = [tab]; selected = tab.id
     }
+    func setConcurrency(_ value: Int) { Task { await queue.setLimit(value) } }
     func add() {
         let tab = Tab(id: UUID(), workspace: Workspace(queue: queue))
         tabs.append(tab); selected = tab.id
@@ -24,7 +26,7 @@ import AetherTransferCore
         guard tabs.count > 1, let index = tabs.firstIndex(where: { $0.id == id }) else { return }
         let workspace = tabs[index].workspace
         // Active file operations must remain visible until the user cancels or finishes them.
-        if workspace.activities.contains(where: { $0.state == "传输中" || $0.state == "等待中" }) {
+        if workspace.activities.contains(where: { $0.state == "传输中" || $0.state == "等待中" || $0.state == "已暂停" }) {
             workspace.error = "此标签页仍有传输任务，请先完成或取消任务。"
             return
         }

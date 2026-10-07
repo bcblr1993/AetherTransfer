@@ -17,10 +17,37 @@ private final class RequestBox: @unchecked Sendable {
     func cancel() { at_cancel(pointer) }
 }
 
+/// Pause is forwarded to the worker through an atomic native flag, never a cross-thread curl call.
+public final class TransferControl: @unchecked Sendable {
+    private let lock = NSLock()
+    private var paused = false
+    private var request: RequestBox?
+    public init() {}
+    public func pause() { setPaused(true) }
+    public func resume() { setPaused(false) }
+    private func setPaused(_ value: Bool) {
+        lock.lock(); defer { lock.unlock() }
+        paused = value
+        if let request { at_pause(request.pointer, value ? 1 : 0) }
+    }
+    fileprivate func attach(_ request: RequestBox) {
+        lock.lock(); defer { lock.unlock() }
+        self.request = request; at_pause(request.pointer, paused ? 1 : 0)
+    }
+    fileprivate func detach() {
+        lock.lock(); defer { lock.unlock() }
+        request = nil
+    }
+}
+
 public struct RemoteClient: Sendable {
     public let profile: ServerProfile
     public let credentials: Credentials
-    public init(profile: ServerProfile, credentials: Credentials) { self.profile = profile; self.credentials = credentials }
+    public let control: TransferControl?
+    public let rateLimit: Int64
+    public init(profile: ServerProfile, credentials: Credentials, control: TransferControl? = nil, rateLimit: Int64 = 0) {
+        self.profile = profile; self.credentials = credentials; self.control = control; self.rateLimit = max(0, rateLimit)
+    }
 
     public static func fingerprint(_ key: String) -> String {
         guard let data = Data(base64Encoded: key) else { return "Invalid key" }
@@ -38,6 +65,9 @@ public struct RemoteClient: Sendable {
         }}}
         guard let request else { throw TransferError.remote("无法创建传输连接。") }
         let box = RequestBox(pointer: request, callback: progress)
+        at_rate_limit(request, rateLimit)
+        control?.attach(box)
+        defer { control?.detach() }
         return try await withTaskCancellationHandler {
             try await Task.detached {
                 let context = Unmanaged.passUnretained(box).toOpaque()
@@ -89,7 +119,8 @@ public struct RemoteClient: Sendable {
             try await rename(temporary, to: remote)
         } catch {
             // Cleanup is independent of the cancelled task. Never delete the user's final destination.
-            _ = try? await Task.detached { try await self.remove(temporary, directory: false) }.value
+            let cleanup = RemoteClient(profile: profile, credentials: credentials)
+            _ = try? await Task.detached { try await cleanup.remove(temporary, directory: false) }.value
             throw error
         }
     }

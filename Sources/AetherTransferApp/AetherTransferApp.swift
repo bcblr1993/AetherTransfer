@@ -21,6 +21,31 @@ import AetherTransferCore
                 Button("显示 / 隐藏隐藏文件") { tabs.current.showHidden.toggle() }.keyboardShortcut(".", modifiers: [.command, .shift])
             }
         }
+        Settings { TransferSettingsView(tabs: tabs) }
+    }
+}
+
+struct TransferSettingsView: View {
+    @ObservedObject var tabs: BrowserTabs
+    @AppStorage("maxConcurrentTransfers") private var concurrency = 2
+    @AppStorage("transferRateKiB") private var rate = 0
+    var body: some View {
+        Form {
+            Section("传输") {
+                Picker("同时进行的任务", selection: $concurrency) {
+                    ForEach(1...8, id: \.self) { Text("\($0)").tag($0) }
+                }
+                Picker("每个任务的速度上限", selection: $rate) {
+                    Text("不限速").tag(0)
+                    Text("256 KiB/s").tag(256)
+                    Text("1 MiB/s").tag(1024)
+                    Text("5 MiB/s").tag(5120)
+                    Text("20 MiB/s").tag(20480)
+                }
+                Text("速度上限对新任务生效。降低并发数时，已开始的任务会继续运行。").font(.caption).foregroundStyle(.secondary)
+            }
+        }.formStyle(.grouped).frame(width: 480, height: 260)
+        .onChange(of: concurrency) { _, value in tabs.setConcurrency(value) }
     }
 }
 
@@ -202,12 +227,17 @@ struct ActivityView: View {
                         Image(systemName: item.direction == "上传" ? "arrow.up.circle" : "arrow.down.circle")
                         VStack(alignment: .leading, spacing: 3) {
                             Text(item.name).lineLimit(1)
-                            if item.state == "传输中" { ProgressView(value: item.progress).frame(maxWidth: 220) }
+                            if item.state == "传输中" || item.state == "已暂停" {
+                                ProgressView(value: item.progress).frame(maxWidth: 220)
+                                Text("当前文件：\(ByteCountFormatter.string(fromByteCount: item.bytes, countStyle: .file)) / \(ByteCountFormatter.string(fromByteCount: item.total, countStyle: .file))").font(.caption).foregroundStyle(.secondary)
+                            }
                             if let error = item.error { Text(error).font(.caption).foregroundStyle(.red).lineLimit(2) }
                         }
                         Spacer()
                         Text(item.state).foregroundStyle(item.state == "失败" ? .red : .secondary)
-                        if item.state == "传输中" || item.state == "等待中" { Button("取消", systemImage: "xmark.circle") { workspace.cancel(item.id) }.labelStyle(.iconOnly).buttonStyle(.borderless) }
+                        if item.state == "传输中" { Button("暂停", systemImage: "pause.circle") { workspace.pause(item.id) }.labelStyle(.iconOnly).buttonStyle(.borderless) }
+                        if item.state == "已暂停" { Button("继续", systemImage: "play.circle") { workspace.resume(item.id) }.labelStyle(.iconOnly).buttonStyle(.borderless) }
+                        if item.state == "传输中" || item.state == "等待中" || item.state == "已暂停" { Button("取消", systemImage: "xmark.circle") { workspace.cancel(item.id) }.labelStyle(.iconOnly).buttonStyle(.borderless) }
                         if item.state == "失败" || item.state == "已取消" { Button("重试", systemImage: "arrow.clockwise") { workspace.retry(item.id) }.labelStyle(.iconOnly).buttonStyle(.borderless) }
                     }
                 }.listStyle(.plain)

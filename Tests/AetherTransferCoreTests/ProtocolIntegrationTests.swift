@@ -2,6 +2,20 @@ import Foundation
 import XCTest
 @testable import AetherTransferCore
 
+private final class ProgressRecorder: @unchecked Sendable {
+    private let lock = NSLock()
+    private var value: Int64 = 0
+    private var announced = false
+    let started: XCTestExpectation
+    init(_ started: XCTestExpectation) { self.started = started }
+    func record(_ progress: TransferProgress) {
+        lock.lock(); defer { lock.unlock() }
+        value = progress.completed
+        if value > 0 && !announced { announced = true; started.fulfill() }
+    }
+    func snapshot() -> Int64 { lock.lock(); defer { lock.unlock() }; return value }
+}
+
 @MainActor final class ProtocolIntegrationTests: XCTestCase {
     func client(_ kind: TransferProtocol, trusted: Bool = true) throws -> RemoteClient {
         let env = ProcessInfo.processInfo.environment
@@ -46,6 +60,41 @@ import XCTest
     }
     func testFTPRoundTrip() async throws { try await roundTrip(.ftp) }
     func testSFTPRoundTrip() async throws { try await roundTrip(.sftp) }
+    func testPauseResumeAndCancellationPreserveFiles() async throws {
+        for kind in [TransferProtocol.ftp, .sftp] {
+            let remote = try client(kind)
+            let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+            try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+            defer { try? FileManager.default.removeItem(at: folder) }
+            let data = Data(repeating: 91, count: 256 * 1024)
+            let source = folder.appendingPathComponent("source"), target = "/pause-\(UUID().uuidString)"
+            try data.write(to: source); try await remote.upload(source, to: target)
+            let control = TransferControl()
+            let slow = RemoteClient(profile: remote.profile, credentials: remote.credentials, control: control, rateLimit: 64 * 1024)
+            let started = expectation(description: "\(kind) transfer started"), recorder = ProgressRecorder(started)
+            let destination = folder.appendingPathComponent("download")
+            let operation = Task { try await slow.download(target, to: destination, progress: { recorder.record($0) }) }
+            await fulfillment(of: [started], timeout: 3)
+            control.pause()
+            try await Task.sleep(for: .milliseconds(300))
+            let paused = recorder.snapshot()
+            try await Task.sleep(for: .milliseconds(300))
+            XCTAssertEqual(recorder.snapshot(), paused, "Paused transfer must stop advancing")
+            XCTAssertFalse(FileManager.default.fileExists(atPath: destination.path), "Partial download cannot become the final file")
+            control.resume(); try await operation.value
+            XCTAssertEqual(try Data(contentsOf: destination), data)
+            let cancelControl = TransferControl(); cancelControl.pause()
+            let cancelledClient = RemoteClient(profile: remote.profile, credentials: remote.credentials, control: cancelControl, rateLimit: 64 * 1024)
+            let missing = folder.appendingPathComponent("cancelled")
+            let cancelled = Task { try await cancelledClient.download(target, to: missing) }
+            try await Task.sleep(for: .milliseconds(150)); cancelled.cancel()
+            do { try await cancelled.value; XCTFail("Cancelled operation must not succeed") }
+            catch is CancellationError { }
+            XCTAssertFalse(FileManager.default.fileExists(atPath: missing.path))
+            let leftovers = try FileManager.default.contentsOfDirectory(atPath: folder.path).filter { $0.hasSuffix(".part") }
+            XCTAssertTrue(leftovers.isEmpty)
+        }
+    }
     func testRecursiveTransfersAndKeepBoth() async throws {
         for kind in [TransferProtocol.ftp, .sftp] {
             let remote = try client(kind)

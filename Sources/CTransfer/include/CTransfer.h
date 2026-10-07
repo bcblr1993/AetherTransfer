@@ -8,6 +8,8 @@ ATRequest *at_create(const char *url, const char *user, const char *password,
                      const char *private_key, const char *passphrase, const char *fingerprint);
 void at_destroy(ATRequest *request);
 void at_cancel(ATRequest *request);
+void at_pause(ATRequest *request, int paused);
+void at_rate_limit(ATRequest *request, int64_t bytes_per_second);
 // mode: 0 listing, 1 download, 2 upload, 3 quote commands
 int at_perform(ATRequest *request, int mode, const char *local_path, const char *commands,
                ATProgress progress, void *context);

@@ -34,6 +34,7 @@ struct ActivityItem: Identifiable {
     private let store = ProfileStore()
     private let queue: TransferQueue
     private var retryOperations: [UUID: TransferQueue.Operation] = [:]
+    private var controls: [UUID: TransferControl] = [:]
     private var browseTask: Task<Void, Never>?
     private var localTask: Task<Void, Never>?
     private var localGeneration = UUID()
@@ -160,25 +161,29 @@ struct ActivityItem: Identifiable {
     func downloadSelection() { download(remoteFiles.filter { remoteSelection.contains($0.id) }) }
     func upload(_ entries: [FileEntry]) {
         guard let client else { return }
+        let rateLimit = Int64(max(0, UserDefaults.standard.integer(forKey: "transferRateKiB"))) * 1024
         for entry in entries {
             do {
                 let target = try RemotePath.join(remotePath, entry.name)
                 let exists = remoteFiles.contains { $0.name == entry.name }
                 guard let policy = exists ? conflictPolicy(entry.name, directory: entry.isDirectory) : .reject else { continue }
-                enqueue(name: entry.name, direction: "上传") { progress in
-                    try await client.uploadTree(URL(fileURLWithPath: entry.path), to: target, policy: policy, progress: progress)
+                enqueue(name: entry.name, direction: "上传") { control, progress in
+                    let controlled = RemoteClient(profile: client.profile, credentials: client.credentials, control: control, rateLimit: rateLimit)
+                    try await controlled.uploadTree(URL(fileURLWithPath: entry.path), to: target, policy: policy, progress: progress)
                 }
             } catch { self.error = error.localizedDescription }
         }
     }
     func download(_ entries: [FileEntry]) {
         guard let client else { return }
+        let rateLimit = Int64(max(0, UserDefaults.standard.integer(forKey: "transferRateKiB"))) * 1024
         for entry in entries {
             let target = URL(fileURLWithPath: localPath).appendingPathComponent(entry.name)
             let exists = FileManager.default.fileExists(atPath: target.path)
             guard let policy = exists ? conflictPolicy(entry.name, directory: entry.isDirectory) : .reject else { continue }
-            enqueue(name: entry.name, direction: "下载") { progress in
-                try await client.downloadTree(entry, to: target, policy: policy, progress: progress)
+            enqueue(name: entry.name, direction: "下载") { control, progress in
+                let controlled = RemoteClient(profile: client.profile, credentials: client.credentials, control: control, rateLimit: rateLimit)
+                try await controlled.downloadTree(entry, to: target, policy: policy, progress: progress)
             }
         }
     }
@@ -195,10 +200,12 @@ struct ActivityItem: Identifiable {
         }
     }
     private func enqueue(name: String, direction: String,
-                         operation: @escaping @Sendable (@escaping @Sendable (TransferProgress) -> Void) async throws -> Void) {
+                         operation: @escaping @Sendable (TransferControl, @escaping @Sendable (TransferProgress) -> Void) async throws -> Void) {
         let id = UUID(); activities.insert(ActivityItem(id: id, name: name, direction: direction), at: 0)
-        retryOperations[id] = operation
-        submit(id, operation: operation)
+        let control = TransferControl(); controls[id] = control
+        let wrapped: TransferQueue.Operation = { progress in try await operation(control, progress) }
+        retryOperations[id] = wrapped
+        submit(id, operation: wrapped)
     }
     private func submit(_ id: UUID, operation: @escaping TransferQueue.Operation) {
         Task { [self] in
@@ -215,7 +222,7 @@ struct ActivityItem: Identifiable {
             guard let index = activities.firstIndex(where: { $0.id == id }), activities[index].state == "传输中" else { return }
             activities[index].bytes = progress.completed; activities[index].total = progress.total
             activities[index].progress = progress.total > 0 ? Double(progress.completed) / Double(progress.total) : 0
-        case .completed: setState(id, "完成"); retryOperations[id] = nil; refreshLocal(); refreshRemote()
+        case .completed: setState(id, "完成"); retryOperations[id] = nil; controls[id] = nil; refreshLocal(); refreshRemote()
         case .cancelled: setState(id, "已取消"); refreshLocal(); refreshRemote()
         case .failed(let error): setState(id, "失败", error: error); refreshLocal(); refreshRemote()
         }
@@ -225,9 +232,12 @@ struct ActivityItem: Identifiable {
         activities[index].state = state; activities[index].error = error
         if state == "完成" { activities[index].progress = 1 }
     }
-    func cancel(_ id: UUID) { Task { await queue.cancel(id) } }
+    func cancel(_ id: UUID) { controls[id]?.resume(); Task { await queue.cancel(id) } }
+    func pause(_ id: UUID) { controls[id]?.pause(); setState(id, "已暂停") }
+    func resume(_ id: UUID) { controls[id]?.resume(); setState(id, "传输中") }
     func retry(_ id: UUID) {
         guard let operation = retryOperations[id] else { return }
+        controls[id]?.resume()
         setState(id, "等待中"); submit(id, operation: operation)
     }
     func createFolder(remote: Bool) {

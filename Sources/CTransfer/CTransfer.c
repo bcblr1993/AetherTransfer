@@ -11,6 +11,7 @@
 struct ATRequest {
     CURL *curl;
     atomic_int cancelled;
+    atomic_int paused;
     char error[CURL_ERROR_SIZE];
     char *result;
     size_t length;
@@ -72,6 +73,7 @@ ATRequest *at_create(const char *url, const char *user, const char *password,
     ATRequest *r = calloc(1, sizeof(*r));
     if (!r) return NULL;
     atomic_init(&r->cancelled, 0);
+    atomic_init(&r->paused, 0);
     r->curl = curl_easy_init();
     if (!r->curl) { free(r); return NULL; }
     if (fingerprint && *fingerprint) r->fingerprint = strdup(fingerprint);
@@ -100,6 +102,11 @@ ATRequest *at_create(const char *url, const char *user, const char *password,
     return r;
 }
 void at_cancel(ATRequest *r) { atomic_store(&r->cancelled, 1); }
+void at_pause(ATRequest *r, int paused) { atomic_store(&r->paused, paused); }
+void at_rate_limit(ATRequest *r, int64_t rate) {
+    curl_easy_setopt(r->curl, CURLOPT_MAX_SEND_SPEED_LARGE, (curl_off_t)rate);
+    curl_easy_setopt(r->curl, CURLOPT_MAX_RECV_SPEED_LARGE, (curl_off_t)rate);
+}
 void at_destroy(ATRequest *r) {
     if (!r) return;
     curl_easy_cleanup(r->curl);
@@ -135,7 +142,33 @@ int at_perform(ATRequest *r, int mode, const char *local, const char *commands, 
         curl_easy_setopt(r->curl, CURLOPT_WRITEFUNCTION, collect);
         curl_easy_setopt(r->curl, CURLOPT_WRITEDATA, r);
     }
-    CURLcode code = curl_easy_perform(r->curl);
+    CURLcode code = CURLE_FAILED_INIT;
+    CURLM *multi = curl_multi_init();
+    if (multi && curl_multi_add_handle(multi, r->curl) == CURLM_OK) {
+        int running = 1, applied_pause = 0;
+        while (running) {
+            if (atomic_load(&r->cancelled)) { code = CURLE_ABORTED_BY_CALLBACK; break; }
+            if (curl_multi_perform(multi, &running) != CURLM_OK) { code = CURLE_RECV_ERROR; break; }
+            int desired_pause = atomic_load(&r->paused);
+            if (desired_pause != applied_pause && running) {
+                // libcurl APIs remain on the owning worker; the UI only changes an atomic flag.
+                code = curl_easy_pause(r->curl, desired_pause ? CURLPAUSE_ALL : CURLPAUSE_CONT);
+                if (code != CURLE_OK) break;
+                applied_pause = desired_pause;
+            }
+            if (!running) {
+                int messages;
+                CURLMsg *message;
+                while ((message = curl_multi_info_read(multi, &messages))) {
+                    if (message->msg == CURLMSG_DONE) code = message->data.result;
+                }
+                break;
+            }
+            if (curl_multi_poll(multi, NULL, 0, 100, NULL) != CURLM_OK) { code = CURLE_RECV_ERROR; break; }
+        }
+        curl_multi_remove_handle(multi, r->curl);
+    }
+    if (multi) curl_multi_cleanup(multi);
     if (f && fclose(f) != 0 && code == CURLE_OK) { snprintf(r->error, sizeof(r->error), "Cannot flush local file"); code = CURLE_WRITE_ERROR; }
     curl_slist_free_all(quotes);
     if (code != CURLE_OK && !r->error[0]) snprintf(r->error, sizeof(r->error), "%s", curl_easy_strerror(code));

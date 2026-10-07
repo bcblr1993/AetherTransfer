@@ -13,10 +13,14 @@ public actor TransferQueue {
         let operation: Operation
         let observer: Observer
     }
-    private let limit: Int
+    private var limit: Int
     private var pending: [Job] = []
     private var running: [UUID: Task<Void, Never>] = [:]
     public init(limit: Int = 2) { self.limit = max(1, min(limit, 16)) }
+    public func setLimit(_ value: Int) {
+        limit = max(1, min(value, 16))
+        startNext()
+    }
     public func enqueue(id: UUID, operation: @escaping Operation, observer: @escaping Observer) {
         guard !pending.contains(where: { $0.id == id }), running[id] == nil else { return }
         pending.append(Job(id: id, operation: operation, observer: observer))
