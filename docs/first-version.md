@@ -15,6 +15,6 @@
 - [ ] GitHub 仓库规范、CI、首版源码与可安装开发候选。
 - [ ] 官网双语产品页上线，内容与实际版本状态一致。
 
-同步已进入开发候选，范围与限制见 `synchronization.md`。后续仍包括 S3/R2、WebDAV、完整同步规则/报告、外部编辑器回传、ApexTerm 联动、iPhone。
+同步与 WebDAV 已进入开发候选，范围与限制见 `synchronization.md`、`webdav.md`。后续仍包括 S3/R2、完整同步规则/报告、外部编辑器回传、ApexTerm 联动、iPhone。
 
 正式公共发行需独立验证签名、公证、DMG、SHA-256 与公开下载；开发完成不等于已公开发行。

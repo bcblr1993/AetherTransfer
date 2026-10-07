@@ -1,6 +1,6 @@
 # AetherTransfer
 
-为 Apple 芯片打造的原生 macOS 文件传输工作台。双栏浏览本地与远程文件，连接 FTP / FTPS / SFTP 服务器，管理传输任务。
+为 Apple 芯片打造的原生 macOS 文件传输工作台。双栏浏览本地与远程文件，连接 FTP / FTPS / SFTP / WebDAV（HTTP、HTTPS）服务器，管理传输任务。
 
 **状态：v0.1.0 开发中，尚未发布。** [官网](https://www.aethernative.com/apps/aethertransfer/) · [首版范围](docs/first-version.md)
 

@@ -27,6 +27,14 @@ var results = [try measure("Remote LIST parse with Unicode and dates", items: co
     let parsed = try DirectoryListing.parse(listing, parent: "/data")
     guard parsed.count == count else { fatalError("Incomplete parse") }
 }]
+let davItems = (0..<count).map { index in
+    "<d:response><d:href>/data/file%20\(index).txt</d:href><d:propstat><d:prop><d:resourcetype/><d:getcontentlength>\(index)</d:getcontentlength><d:getlastmodified>Wed, 07 Oct 2026 10:30:00 GMT</d:getlastmodified></d:prop><d:status>HTTP/1.1 200 OK</d:status></d:propstat></d:response>"
+}.joined()
+let davListing = "<d:multistatus xmlns:d=\"DAV:\"><d:response><d:href>/data/</d:href><d:propstat><d:prop><d:resourcetype><d:collection/></d:resourcetype></d:prop><d:status>HTTP/1.1 200 OK</d:status></d:propstat></d:response>" + davItems + "</d:multistatus>"
+results.append(try measure("WebDAV XML parse with dates and direct-child validation", items: count) {
+    let parsed = try WebDAVListing.parse(davListing, parent: "/data", origin: "https://example.test/data/")
+    precondition(parsed.count == count && parsed.last?.size == 9999 && parsed.first?.modified != nil)
+})
 results.append(measure("Natural name sort", items: count) {
     let sorted = FilePresentation.entries(entries.reversed(), query: "", showHidden: true)
     precondition(sorted.count == count && sorted.first?.name == "中文 file 0.txt")

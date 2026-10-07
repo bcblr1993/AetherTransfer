@@ -26,7 +26,7 @@ private final class ProgressRecorder: @unchecked Sendable {
         return RemoteClient(profile: ServerProfile(host: "127.0.0.1", port: number, username: "fixture", protocolKind: kind,
                                                   trustedHostKey: trusted && kind == .sftp ? env["AT_SFTP_KEY"] : nil),
                             credentials: Credentials(password: "fixture-only"),
-                            certificateAuthority: (kind == .ftps || kind == .ftpes) ? env["AT_TLS_CA"].map { URL(fileURLWithPath: $0) } : nil)
+                            certificateAuthority: kind.usesTLS ? env["AT_TLS_CA"].map { URL(fileURLWithPath: $0) } : nil)
     }
     func roundTrip(_ kind: TransferProtocol) async throws {
         let remote = try client(kind)
@@ -64,8 +64,10 @@ private final class ProgressRecorder: @unchecked Sendable {
     func testSFTPRoundTrip() async throws { try await roundTrip(.sftp) }
     func testExplicitTLSRoundTrip() async throws { try await roundTrip(.ftpes) }
     func testImplicitTLSRoundTrip() async throws { try await roundTrip(.ftps) }
+    func testWebDAVHTTPRoundTrip() async throws { try await roundTrip(.webdav) }
+    func testWebDAVHTTPSDigestRoundTrip() async throws { try await roundTrip(.webdavs) }
     func testTLSRejectsUntrustedCertificatesHostMismatchAndPlaintextServer() async throws {
-        for kind in [TransferProtocol.ftpes, .ftps] {
+        for kind in [TransferProtocol.ftpes, .ftps, .webdavs] {
             let trusted = try client(kind)
             let untrusted = RemoteClient(profile: trusted.profile, credentials: trusted.credentials)
             do { _ = try await untrusted.list("/"); XCTFail("Untrusted certificate must fail") }
@@ -93,7 +95,7 @@ private final class ProgressRecorder: @unchecked Sendable {
         catch TransferError.remote { }
     }
     func testPauseResumeAndCancellationPreserveFiles() async throws {
-        for kind in [TransferProtocol.ftp, .sftp] {
+        for kind in [TransferProtocol.ftp, .sftp, .webdav, .webdavs] {
             let remote = try client(kind)
             let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
             try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
@@ -102,7 +104,8 @@ private final class ProgressRecorder: @unchecked Sendable {
             let source = folder.appendingPathComponent("source"), target = "/pause-\(UUID().uuidString)"
             try data.write(to: source); try await remote.upload(source, to: target)
             let control = TransferControl()
-            let slow = RemoteClient(profile: remote.profile, credentials: remote.credentials, control: control, rateLimit: 64 * 1024)
+            let slow = RemoteClient(profile: remote.profile, credentials: remote.credentials, control: control, rateLimit: 64 * 1024,
+                                    certificateAuthority: remote.certificateAuthority)
             let started = expectation(description: "\(kind) transfer started"), recorder = ProgressRecorder(started)
             let destination = folder.appendingPathComponent("download")
             let operation = Task { try await slow.download(target, to: destination, progress: { recorder.record($0) }) }
@@ -116,7 +119,8 @@ private final class ProgressRecorder: @unchecked Sendable {
             control.resume(); try await operation.value
             XCTAssertEqual(try Data(contentsOf: destination), data)
             let cancelControl = TransferControl(); cancelControl.pause()
-            let cancelledClient = RemoteClient(profile: remote.profile, credentials: remote.credentials, control: cancelControl, rateLimit: 64 * 1024)
+            let cancelledClient = RemoteClient(profile: remote.profile, credentials: remote.credentials, control: cancelControl, rateLimit: 64 * 1024,
+                                               certificateAuthority: remote.certificateAuthority)
             let missing = folder.appendingPathComponent("cancelled")
             let cancelled = Task { try await cancelledClient.download(target, to: missing) }
             try await Task.sleep(for: .milliseconds(150)); cancelled.cancel()

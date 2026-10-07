@@ -1,4 +1,4 @@
-"""Run Swift integration tests against disposable loopback FTP/SFTP servers."""
+"""Run Swift integration tests against disposable loopback FTP/SFTP/WebDAV servers."""
 import errno
 import logging
 import os
@@ -20,6 +20,9 @@ from cryptography.hazmat.primitives.asymmetric import rsa
 from pyftpdlib.authorizers import DummyAuthorizer
 from pyftpdlib.handlers import FTPHandler, TLS_FTPHandler
 from pyftpdlib.servers import FTPServer
+from wsgidav.wsgidav_app import WsgiDAVApp
+from cheroot.wsgi import Server as DAVServer
+from cheroot.ssl.builtin import BuiltinSSLAdapter
 
 logging.disable(logging.CRITICAL)
 
@@ -134,15 +137,45 @@ with tempfile.TemporaryDirectory(prefix='aethertransfer-fixture-') as directory:
             except OSError: return
             threading.Thread(target=handle, args=(connection,), daemon=True).start()
     threading.Thread(target=accept, daemon=True).start()
+    dav_servers = []
+    dav_threads = []
+    def serve_dav(tls=False, digest=False):
+        app = WsgiDAVApp({
+            'provider_mapping': {'/': str(root)},
+            'simple_dc': {'user_mapping': {'*': {'fixture': {'password': 'fixture-only'}}}},
+            'http_authenticator': {'accept_basic': not digest, 'accept_digest': digest, 'default_to_digest': digest},
+            'dir_browser': {'enable': False}, 'logging': {'enable': False}, 'verbose': 0,
+        })
+        def faults(environ, start_response):
+            # Independent fault responses verify that redirects and partial mutation failures cannot be reported as success.
+            if environ['PATH_INFO'].rstrip('/') == '/__aether_fixture_redirect__':
+                start_response('307 Temporary Redirect', [('Location', 'http://127.0.0.1:1/downgrade'), ('Content-Length', '0')])
+                return [b'']
+            if environ['PATH_INFO'] == '/__aether_fixture_partial__' and environ['REQUEST_METHOD'] == 'DELETE':
+                body = b'<d:multistatus xmlns:d="DAV:"><d:response><d:href>/missing</d:href><d:status>HTTP/1.1 403 Forbidden</d:status></d:response></d:multistatus>'
+                start_response('207 Multi-Status', [('Content-Type', 'application/xml'), ('Content-Length', str(len(body)))])
+                return [body]
+            return app(environ, start_response)
+        server = DAVServer(('127.0.0.1', 0), faults, numthreads=4)
+        if tls: server.ssl_adapter = BuiltinSSLAdapter(str(cert_file), str(key_file))
+        server.prepare()
+        thread = threading.Thread(target=server.serve, daemon=True); thread.start()
+        dav_servers.append(server); dav_threads.append(thread)
+        return server.socket.getsockname()[1]
+    dav_port = serve_dav()
+    dav_tls_port = serve_dav(tls=True, digest=True)
+    dav_digest_port = serve_dav(digest=True)
     env = os.environ.copy()
     env.update(AT_FTP_PORT=str(ftp.socket.getsockname()[1]), AT_SFTP_PORT=str(listener.getsockname()[1]),
                AT_SFTP_KEY=key.get_base64(), AT_FTPES_PORT=str(ftpes.socket.getsockname()[1]),
-               AT_FTPS_PORT=str(ftps.socket.getsockname()[1]), AT_TLS_CA=str(cert_file), AT_SFTP_PRIVATE_KEY=str(client_key_file))
+               AT_FTPS_PORT=str(ftps.socket.getsockname()[1]), AT_TLS_CA=str(cert_file), AT_SFTP_PRIVATE_KEY=str(client_key_file),
+               AT_WEBDAV_PORT=str(dav_port), AT_WEBDAVS_PORT=str(dav_tls_port), AT_WEBDAV_DIGEST_PORT=str(dav_digest_port))
     try:
         if '--serve' in sys.argv:
             report = Path('reports/fixture.json')
             report.parent.mkdir(exist_ok=True)
-            report.write_text(json.dumps({'ftp': int(env['AT_FTP_PORT']), 'sftp': int(env['AT_SFTP_PORT']), 'key': env['AT_SFTP_KEY'], 'root': str(root)}))
+            report.write_text(json.dumps({'ftp': int(env['AT_FTP_PORT']), 'sftp': int(env['AT_SFTP_PORT']), 'webdav': dav_port,
+                                         'webdavs': dav_tls_port, 'key': env['AT_SFTP_KEY'], 'root': str(root)}))
             print('Disposable loopback protocol fixtures ready.', flush=True)
             try: threading.Event().wait()
             except KeyboardInterrupt: pass
@@ -153,4 +186,6 @@ with tempfile.TemporaryDirectory(prefix='aethertransfer-fixture-') as directory:
         stopping.set(); ftp_thread.join(timeout=2)
         ftp.close_all(); ftpes.close_all(); ftps.close_all(); listener.close()
         for transport in transports: transport.close()
+        for server in dav_servers: server.stop()
+        for thread in dav_threads: thread.join(timeout=2)
     raise SystemExit(result.returncode if result else 0)

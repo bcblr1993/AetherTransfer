@@ -1,12 +1,32 @@
 import Foundation
 
 public enum TransferProtocol: String, Codable, CaseIterable, Sendable {
-    case sftp, ftp, ftps, ftpes
-    public var defaultPort: Int { self == .sftp ? 22 : (self == .ftps ? 990 : 21) }
+    case sftp, ftp, ftps, ftpes, webdavs, webdav
+    public var defaultPort: Int {
+        switch self {
+        case .sftp: 22
+        case .ftps: 990
+        case .webdavs: 443
+        case .webdav: 80
+        default: 21
+        }
+    }
+    public var isWebDAV: Bool { self == .webdav || self == .webdavs }
+    public var usesTLS: Bool { self == .ftps || self == .ftpes || self == .webdavs }
+    public var urlScheme: String {
+        switch self {
+        case .webdav: "http"
+        case .webdavs: "https"
+        case .ftpes: "ftp"
+        default: rawValue
+        }
+    }
     public var title: String {
         switch self {
         case .ftps: "FTPS · 隐式 TLS"
         case .ftpes: "FTP · 显式 TLS"
+        case .webdav: "WebDAV · HTTP"
+        case .webdavs: "WebDAV · HTTPS"
         default: rawValue.uppercased()
         }
     }
@@ -39,11 +59,11 @@ public struct ServerProfile: Identifiable, Codable, Hashable, Sendable {
     public func url(path: String, directory: Bool = false) throws -> String {
         try validate(); try RemotePath.validate(path)
         var components = URLComponents()
-        components.scheme = protocolKind == .ftpes ? "ftp" : protocolKind.rawValue
+        components.scheme = protocolKind.urlScheme
         components.host = host; components.port = port
         let absolute = RemotePath.normalize(path)
         // FTP URLs need a second slash to address an absolute server path.
-        components.path = (protocolKind == .sftp ? "" : "/") + absolute + (directory && absolute != "/" ? "/" : "")
+        components.path = (protocolKind == .sftp || protocolKind.isWebDAV ? "" : "/") + absolute + (directory && absolute != "/" ? "/" : "")
         guard let url = components.url else { throw TransferError.invalidConnection }
         return url.absoluteString
     }

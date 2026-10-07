@@ -39,8 +39,8 @@ features:
     - kicker: { zh: 传输, en: Transfer }
       title: { zh: 可靠传输与可见进度, en: Reliable transfers and visible progress }
       body:
-        zh: 正在构建 FTP / FTPS / SFTP、任务队列、冲突处理与恢复能力；完成校验后才将文件标记为成功。
-        en: Building FTP / FTPS / SFTP support, a task queue, conflict handling and recovery. Files are only marked successful after completion checks.
+        zh: 开发候选已加入 FTP / FTPS / SFTP 和 WebDAV（HTTP、HTTPS），提供任务队列、冲突处理与暂停取消；断点续传和完整云服务仍在开发。
+        en: The development candidate includes FTP / FTPS / SFTP and WebDAV (HTTP, HTTPS), with a task queue, conflict handling, pause and cancellation. Resumable transfers and the full cloud service range remain in development.
     - kicker: { zh: 隐私, en: Privacy }
       title: { zh: 凭据留在系统钥匙串, en: Credentials in system Keychain }
       body:

@@ -3,7 +3,7 @@ import XCTest
 
 extension ProtocolIntegrationTests {
     func testSyncPreviewRoundTripAndExplicitMirrorForEveryProtocol() async throws {
-        for kind in [TransferProtocol.ftp, .sftp, .ftpes, .ftps] {
+        for kind in [TransferProtocol.ftp, .sftp, .ftpes, .ftps, .webdav, .webdavs] {
             let client = try client(kind)
             let directory = FileManager.default.temporaryDirectory.appendingPathComponent("aethertransfer-sync-protocol-\(UUID().uuidString)")
             defer { try? FileManager.default.removeItem(at: directory) }

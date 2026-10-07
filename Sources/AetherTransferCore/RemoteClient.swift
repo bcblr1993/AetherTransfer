@@ -59,6 +59,7 @@ public struct RemoteClient: Sendable {
     }
 
     private func perform(path: String, directory: Bool = false, mode: Int32, local: String = "", commands: String = "",
+                         httpMethod: String? = nil, httpHeaders: [String] = [],
                          progress: @escaping @Sendable (TransferProgress) -> Void = { _ in }) async throws -> String {
         try Task.checkCancellation()
         let url = try profile.url(path: path, directory: directory)
@@ -73,6 +74,20 @@ public struct RemoteClient: Sendable {
             at_tls(request, profile.protocolKind == .ftpes || profile.protocolKind == .ftps ? 1 : 0, $0)
         }
         guard tlsCode == 0 else { throw TransferError.remote("无法配置 TLS 证书验证。") }
+        let method = httpMethod ?? (mode == 0 ? "PROPFIND" : (mode == 2 ? "PUT" : "GET"))
+        if profile.protocolKind.isWebDAV {
+            var headers = httpHeaders + ["Expect:"]
+            let body: String?
+            if method == "PROPFIND" {
+                headers += ["Depth: 1", "Content-Type: application/xml; charset=utf-8"]
+                body = "<?xml version=\"1.0\" encoding=\"utf-8\"?><d:propfind xmlns:d=\"DAV:\"><d:prop><d:resourcetype/><d:getcontentlength/><d:getlastmodified/></d:prop></d:propfind>"
+            } else { body = nil }
+            let configuration = method.withCString { method in headers.joined(separator: "\n").withCString { headers in
+                if let body { return body.withCString { at_http(request, method, headers, $0) } }
+                return at_http(request, method, headers, nil)
+            }}
+            guard configuration == 0 else { throw TransferError.remote("无法配置 WebDAV 请求。") }
+        }
         at_rate_limit(request, rateLimit)
         control?.attach(box)
         defer { control?.detach() }
@@ -87,6 +102,36 @@ public struct RemoteClient: Sendable {
                     }, context)
                 }}
                 if code == 42 { throw CancellationError() }
+                if profile.protocolKind.isWebDAV {
+                    let status = at_response_code(box.pointer)
+                    if status == 412 { throw TransferError.conflict(URL(fileURLWithPath: path).lastPathComponent) }
+                    if status >= 300 {
+                        let message: String
+                        switch status {
+                        case 301...399: message = "服务器重定向了请求。请直接填写最终 WebDAV 地址。"
+                        case 401: message = "WebDAV 认证失败，请检查用户名和密码。"
+                        case 403: message = "WebDAV 服务器拒绝了操作。"
+                        case 404: message = "WebDAV 文件或目录不存在。"
+                        case 409: message = "WebDAV 目标目录不存在或操作发生冲突。"
+                        case 423: message = "WebDAV 文件被锁定，暂时无法修改。"
+                        default: message = "WebDAV 请求失败（HTTP \(status)）。"
+                        }
+                        throw TransferError.remote(message)
+                    }
+                    if code == 0 {
+                        let accepted: Set<Int> = switch method {
+                        case "PROPFIND": [207]
+                        case "GET": [200]
+                        case "PUT", "MOVE", "COPY": [201, 204]
+                        case "MKCOL": [201]
+                        case "DELETE": [200, 204]
+                        default: []
+                        }
+                        guard accepted.contains(status) else {
+                            throw TransferError.remote("WebDAV 返回了不支持的结果（HTTP \(status)）；请刷新目录核对服务器状态。")
+                        }
+                    }
+                }
                 if code != 0 {
                     let key = String(cString: at_host_key(box.pointer))
                     if !key.isEmpty && key != profile.trustedHostKey {
@@ -100,7 +145,12 @@ public struct RemoteClient: Sendable {
     }
 
     public func list(_ path: String) async throws -> [FileEntry] {
-        try DirectoryListing.parse(await perform(path: path, directory: true, mode: 0), parent: RemotePath.normalize(path))
+        let response = try await perform(path: path, directory: true, mode: 0)
+        if profile.protocolKind.isWebDAV {
+            let origin = try profile.url(path: path, directory: true)
+            return try await Task.detached { try WebDAVListing.parse(response, parent: path, origin: origin) }.value
+        }
+        return try DirectoryListing.parse(response, parent: RemotePath.normalize(path))
     }
     public func download(_ remote: String, to destination: URL, overwrite: Bool = false,
                          progress: @escaping @Sendable (TransferProgress) -> Void = { _ in }) async throws {
@@ -124,7 +174,7 @@ public struct RemoteClient: Sendable {
         do {
             _ = try await perform(path: temporary, mode: 2, local: local.path, progress: progress)
             try Task.checkCancellation()
-            try await rename(temporary, to: remote)
+            try await rename(temporary, to: remote, overwrite: overwrite)
         } catch {
             // Cleanup is independent of the cancelled task. Never delete the user's final destination.
             let cleanup = RemoteClient(profile: profile, credentials: credentials, certificateAuthority: certificateAuthority)
@@ -133,13 +183,34 @@ public struct RemoteClient: Sendable {
         }
     }
     public func mkdir(_ path: String) async throws {
+        if profile.protocolKind.isWebDAV {
+            _ = try await perform(path: path, directory: true, mode: 4, httpMethod: "MKCOL")
+            return
+        }
         try await command(sftp: "mkdir \(RemotePath.quoted(path))", ftp: "MKD \(path)")
     }
-    public func rename(_ source: String, to destination: String) async throws {
+    public func rename(_ source: String, to destination: String, overwrite: Bool = false) async throws {
         try RemotePath.validate(source); try RemotePath.validate(destination)
+        if profile.protocolKind.isWebDAV {
+            do {
+                _ = try await perform(path: source, mode: 4, httpMethod: "MOVE",
+                                      httpHeaders: ["Destination: \(try profile.url(path: destination))", "Overwrite: \(overwrite ? "T" : "F")"])
+            } catch TransferError.conflict {
+                throw TransferError.conflict(URL(fileURLWithPath: destination).lastPathComponent)
+            }
+            return
+        }
         try await command(sftp: "rename \(RemotePath.quoted(source)) \(RemotePath.quoted(destination))", ftp: "RNFR \(source)\nRNTO \(destination)")
     }
     public func remove(_ path: String, directory: Bool) async throws {
+        if profile.protocolKind.isWebDAV {
+            guard RemotePath.normalize(path) != "/" else { throw TransferError.invalidPath }
+            if directory, !(try await list(path)).isEmpty {
+                throw TransferError.remote("文件夹仍有内容，请先逐项确认删除。")
+            }
+            _ = try await perform(path: path, directory: directory, mode: 4, httpMethod: "DELETE")
+            return
+        }
         try await command(sftp: "\(directory ? "rmdir" : "rm") \(RemotePath.quoted(path))", ftp: "\(directory ? "RMD" : "DELE") \(path)")
     }
     private func command(sftp: String, ftp: String) async throws {

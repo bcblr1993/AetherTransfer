@@ -7,6 +7,7 @@
 #include <string.h>
 #include <sys/stat.h>
 #include <time.h>
+#include <unistd.h>
 
 struct ATRequest {
     CURL *curl;
@@ -21,6 +22,8 @@ struct ATRequest {
     void *context;
     double last_progress;
     int64_t last_completed;
+    struct curl_slist *headers;
+    FILE *download;
 };
 static pthread_once_t initialized = PTHREAD_ONCE_INIT;
 static void initialize(void) { curl_global_init(CURL_GLOBAL_DEFAULT); }
@@ -35,6 +38,20 @@ static size_t collect(char *data, size_t size, size_t count, void *ctx) {
     r->length += n;
     p[r->length] = 0;
     return n;
+}
+static size_t response_header(char *data, size_t size, size_t count, void *ctx) {
+    ATRequest *r = ctx;
+    size_t n = size * count;
+    // Authentication may produce multiple responses. Only retain the final response body.
+    if (n >= 5 && memcmp(data, "HTTP/", 5) == 0) {
+        r->length = 0;
+        if (r->result) r->result[0] = 0;
+        if (r->download && (fseek(r->download, 0, SEEK_SET) != 0 || ftruncate(fileno(r->download), 0) != 0)) return 0;
+    }
+    return n;
+}
+static int seek_upload(void *ctx, curl_off_t offset, int origin) {
+    return fseeko(ctx, (off_t)offset, origin) == 0 ? CURL_SEEKFUNC_OK : CURL_SEEKFUNC_FAIL;
 }
 static int progress(void *ctx, curl_off_t dt, curl_off_t dn, curl_off_t ut, curl_off_t un) {
     ATRequest *r = ctx;
@@ -90,7 +107,7 @@ ATRequest *at_create(const char *url, const char *user, const char *password,
     curl_easy_setopt(r->curl, CURLOPT_NOPROGRESS, 0L);
     curl_easy_setopt(r->curl, CURLOPT_XFERINFOFUNCTION, progress);
     curl_easy_setopt(r->curl, CURLOPT_XFERINFODATA, r);
-    curl_easy_setopt(r->curl, CURLOPT_PROTOCOLS_STR, "ftp,ftps,sftp");
+    curl_easy_setopt(r->curl, CURLOPT_PROTOCOLS_STR, "ftp,ftps,sftp,http,https");
     curl_easy_setopt(r->curl, CURLOPT_PROXY, "");
     if (strncmp(url, "sftp:", 5) == 0) {
         curl_easy_setopt(r->curl, CURLOPT_SSH_HOSTKEYFUNCTION, hostkey);
@@ -102,6 +119,31 @@ ATRequest *at_create(const char *url, const char *user, const char *password,
         } else curl_easy_setopt(r->curl, CURLOPT_SSH_AUTH_TYPES, CURLSSH_AUTH_PASSWORD);
     }
     return r;
+}
+int at_http(ATRequest *r, const char *method, const char *headers, const char *body) {
+    char *copy = strdup(headers);
+    if (!copy) return CURLE_OUT_OF_MEMORY;
+    char *save = NULL;
+    for (char *line = strtok_r(copy, "\n", &save); line; line = strtok_r(NULL, "\n", &save)) {
+        struct curl_slist *next = curl_slist_append(r->headers, line);
+        if (!next) { free(copy); return CURLE_OUT_OF_MEMORY; }
+        r->headers = next;
+    }
+    free(copy);
+    CURLcode code = curl_easy_setopt(r->curl, CURLOPT_CUSTOMREQUEST, method);
+    if (code == CURLE_OK) code = curl_easy_setopt(r->curl, CURLOPT_HTTPHEADER, r->headers);
+    if (code == CURLE_OK) code = curl_easy_setopt(r->curl, CURLOPT_HTTPAUTH, (long)(CURLAUTH_BASIC | CURLAUTH_DIGEST));
+    if (code == CURLE_OK) code = curl_easy_setopt(r->curl, CURLOPT_FOLLOWLOCATION, 0L);
+    if (code == CURLE_OK) code = curl_easy_setopt(r->curl, CURLOPT_FAILONERROR, 1L);
+    if (code == CURLE_OK) code = curl_easy_setopt(r->curl, CURLOPT_HEADERFUNCTION, response_header);
+    if (code == CURLE_OK) code = curl_easy_setopt(r->curl, CURLOPT_HEADERDATA, r);
+    if (code == CURLE_OK && body) code = curl_easy_setopt(r->curl, CURLOPT_COPYPOSTFIELDS, body);
+    return code;
+}
+long at_response_code(ATRequest *r) {
+    long code = 0;
+    curl_easy_getinfo(r->curl, CURLINFO_RESPONSE_CODE, &code);
+    return code;
 }
 void at_cancel(ATRequest *r) { atomic_store(&r->cancelled, 1); }
 void at_pause(ATRequest *r, int paused) { atomic_store(&r->paused, paused); }
@@ -120,6 +162,7 @@ int at_tls(ATRequest *r, int required, const char *certificate_authority) {
 void at_destroy(ATRequest *r) {
     if (!r) return;
     curl_easy_cleanup(r->curl);
+    curl_slist_free_all(r->headers);
     free(r->result); free(r->host_key); free(r->fingerprint); free(r);
 }
 int at_perform(ATRequest *r, int mode, const char *local, const char *commands, ATProgress p, void *ctx) {
@@ -132,16 +175,21 @@ int at_perform(ATRequest *r, int mode, const char *local, const char *commands, 
     } else if (mode == 1 || mode == 2) {
         f = fopen(local, mode == 1 ? "wbx" : "rb");
         if (!f) { snprintf(r->error, sizeof(r->error), "Cannot open local transfer file"); return CURLE_READ_ERROR; }
-        if (mode == 1) curl_easy_setopt(r->curl, CURLOPT_WRITEDATA, f);
+        if (mode == 1) { r->download = f; curl_easy_setopt(r->curl, CURLOPT_WRITEDATA, f); }
         else {
             struct stat st;
             if (fstat(fileno(f), &st) != 0) { fclose(f); return CURLE_READ_ERROR; }
             curl_easy_setopt(r->curl, CURLOPT_UPLOAD, 1L);
             curl_easy_setopt(r->curl, CURLOPT_READDATA, f);
+            curl_easy_setopt(r->curl, CURLOPT_SEEKFUNCTION, seek_upload);
+            curl_easy_setopt(r->curl, CURLOPT_SEEKDATA, f);
             curl_easy_setopt(r->curl, CURLOPT_INFILESIZE_LARGE, (curl_off_t)st.st_size);
             curl_easy_setopt(r->curl, CURLOPT_WRITEFUNCTION, collect);
             curl_easy_setopt(r->curl, CURLOPT_WRITEDATA, r);
         }
+    } else if (mode == 4) {
+        curl_easy_setopt(r->curl, CURLOPT_WRITEFUNCTION, collect);
+        curl_easy_setopt(r->curl, CURLOPT_WRITEDATA, r);
     } else {
         char *copy = strdup(commands);
         char *save = NULL;
@@ -180,6 +228,7 @@ int at_perform(ATRequest *r, int mode, const char *local, const char *commands, 
     }
     if (multi) curl_multi_cleanup(multi);
     if (f && fclose(f) != 0 && code == CURLE_OK) { snprintf(r->error, sizeof(r->error), "Cannot flush local file"); code = CURLE_WRITE_ERROR; }
+    r->download = NULL;
     curl_slist_free_all(quotes);
     if (code != CURLE_OK && !r->error[0]) snprintf(r->error, sizeof(r->error), "%s", curl_easy_strerror(code));
     return code;

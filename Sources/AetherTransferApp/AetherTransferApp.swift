@@ -193,7 +193,7 @@ private struct ConnectionWelcomeView: View {
                     .font(.callout).foregroundStyle(.secondary).multilineTextAlignment(.center)
             }
             HStack(spacing: 8) {
-                ForEach(["SFTP", "FTP", "FTPS"], id: \.self) { name in
+                ForEach(["SFTP", "FTP", "FTPS", "WebDAV"], id: \.self) { name in
                     Text(name).font(.caption.weight(.medium)).foregroundStyle(.secondary)
                         .padding(.horizontal, 10).padding(.vertical, 5)
                         .background(.quaternary, in: Capsule())
@@ -361,6 +361,8 @@ struct ConnectionView: View {
                     if !editing { Toggle("保存服务器收藏", isOn: $save) }
                     Toggle("将密码 / 口令保存到钥匙串", isOn: $remember)
                     if profile.protocolKind == .ftp { Text("FTP 会以明文传输认证和文件内容。建议优先选择 SFTP 或 FTPS。").font(.caption).foregroundStyle(.secondary) }
+                    if profile.protocolKind == .webdav { Text("HTTP 会以明文传输认证和文件内容。建议优先选择 WebDAV · HTTPS。").font(.caption).foregroundStyle(.secondary) }
+                    if profile.protocolKind.isWebDAV { Text("填写服务器主机和 WebDAV 起始路径；如 /remote.php/dav/files/用户名/。HTTPS 会验证服务器证书。").font(.caption).foregroundStyle(.secondary) }
                     if let error { Text(error).foregroundStyle(.red) }
                 }
             }.formStyle(.grouped)
@@ -376,6 +378,7 @@ struct ConnectionView: View {
                         dismiss()
                     } catch { self.error = error.localizedDescription }
                 }.buttonStyle(.glassProminent).keyboardShortcut(.defaultAction)
+                    .disabled((try? profile.url(path: profile.initialPath)) == nil)
             }.padding(20)
         }.frame(width: 540, height: 640)
         .task {
