@@ -28,6 +28,7 @@ public struct ProfileStore: Sendable {
             try profile.validate()
             // Importing must not authorize a host, local key or the local agent.
             profile.trustedHostKey = nil; profile.privateKeyPath = ""; profile.sshAuthentication = nil
+            profile.sshConfiguration = nil; profile.sshUseConfiguredPort = nil; profile.sshTrustedEndpoint = nil
             profile.s3CertificateAuthorityPath = nil
             // An imported UUID must never select credentials already stored on this Mac.
             profile.credentialID = UUID(); profile.retiredCredentialIDs = nil

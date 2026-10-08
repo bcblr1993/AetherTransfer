@@ -79,11 +79,14 @@ struct ActivityItem: Identifiable {
     private var localGeneration = UUID()
     private var remoteGeneration = UUID()
     private var authenticationGeneration = UUID()
+    private var connectionPreparation: Task<Void, Never>?
+    private var preparedConnection: SSHPreparedConnection?
 
     struct HostChallenge: Identifiable {
         let id = UUID()
         let key: String
         let profile: ServerProfile
+        let prepared: SSHPreparedConnection?
     }
     var client: RemoteClient? {
         guard let profile = connectedProfile, profile.protocolKind != .s3 else { return nil }
@@ -212,7 +215,33 @@ struct ActivityItem: Identifiable {
     }
     func connect(_ profile: ServerProfile, credentials: Credentials) {
         guard !permissionBusy else { error = L10n.text("请先完成或停止权限操作。"); return }
-        authenticationGeneration = UUID(); hostChallenge = nil
+        let generation = UUID(); authenticationGeneration = generation; hostChallenge = nil
+        connectionPreparation?.cancel(); browseTask?.cancel(); remoteGeneration = UUID()
+        connectedProfile = nil; preparedConnection = nil; self.credentials = Credentials()
+        selectedServer = profile.id
+        remoteFiles = []; remoteSelection = []; remoteRevision = UUID(); connecting = true; loadingRemote = false
+        connectionRevision = UUID()
+        connectionPreparation = Task {
+            do {
+                let prepared = try await SSHConnectionPreparation.prepare(profile)
+                guard generation == authenticationGeneration else { return }
+                startConnection(prepared, credentials: credentials)
+            } catch is CancellationError { }
+            catch {
+                guard generation == authenticationGeneration else { return }
+                self.error = error.localizedDescription; connecting = false
+            }
+        }
+    }
+    func connect(_ prepared: SSHPreparedConnection, credentials: Credentials) {
+        guard !permissionBusy else { error = L10n.text("请先完成或停止权限操作。"); return }
+        authenticationGeneration = UUID(); hostChallenge = nil; connectionPreparation?.cancel()
+        browseTask?.cancel(); remoteGeneration = UUID(); remoteSelection = []
+        startConnection(prepared, credentials: credentials)
+    }
+    private func startConnection(_ prepared: SSHPreparedConnection, credentials: Credentials) {
+        let profile = prepared.profile
+        preparedConnection = prepared
         browseTask?.cancel()
         connectionRevision = UUID()
         connectedProfile = profile; self.credentials = credentials.forProfile(profile)
@@ -224,18 +253,20 @@ struct ActivityItem: Identifiable {
     func disconnect() {
         guard !permissionBusy else { error = L10n.text("请先完成或停止权限操作。"); return }
         authenticationGeneration = UUID()
+        connectionPreparation?.cancel(); connectionPreparation = nil; preparedConnection = nil; hostChallenge = nil
         browseTask?.cancel(); remoteGeneration = UUID(); connectionRevision = UUID(); connectedProfile = nil; remoteFiles = []
         remoteSelection = []; remoteRevision = UUID(); connecting = false; loadingRemote = false; credentials = Credentials()
     }
     func approveHostKey() {
         guard let challenge = hostChallenge else { return }
-        var profile = challenge.profile; profile.trustedHostKey = challenge.key
+        guard let prepared = challenge.prepared else { return }
+        let trusted = prepared.trusting(challenge.key)
         profileGeneration = UUID()
         Task {
-            do { profiles = try await repository.trust(profile) }
+            do { profiles = try await repository.trust(trusted.source) }
             catch { self.error = error.localizedDescription }
         }
-        hostChallenge = nil; connect(profile, credentials: credentials)
+        hostChallenge = nil; startConnection(trusted, credentials: credentials)
     }
     func refreshLocal() {
         localTask?.cancel()
@@ -274,7 +305,7 @@ struct ActivityItem: Identifiable {
                 guard generation == remoteGeneration else { return }
                 remoteListingPath = path; remoteFiles = []; remoteRevision = UUID(); remoteSelection = []
                 if case .hostKeyRequired(let key, let changed) = failure, !changed, let client {
-                    hostChallenge = HostChallenge(key: key, profile: client.profile)
+                    hostChallenge = HostChallenge(key: key, profile: client.profile, prepared: preparedConnection)
                 } else { error = failure.localizedDescription }
             } catch is CancellationError { }
             catch {

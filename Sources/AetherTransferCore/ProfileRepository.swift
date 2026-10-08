@@ -13,6 +13,7 @@ public actor ProfileRepository {
         let previous = profiles.first(where: { $0.id == profile.id })
         if let previous, previous.connectionIdentity != profile.connectionIdentity {
             profile.trustedHostKey = nil
+            profile.sshTrustedEndpoint = nil
         }
         let stagedID = UUID(); profile.credentialID = stagedID
         let retired = Set((previous?.retiredCredentialIDs ?? []) + (previous.map { [$0.credentialID ?? $0.id] } ?? []))
@@ -47,6 +48,7 @@ public actor ProfileRepository {
         var profiles = try store.load()
         if let index = profiles.firstIndex(where: { $0.id == profile.id && $0.credentialIdentity == profile.credentialIdentity }) {
             profiles[index].trustedHostKey = profile.trustedHostKey
+            profiles[index].sshTrustedEndpoint = profile.sshTrustedEndpoint
             try store.save(profiles)
         }
         return profiles

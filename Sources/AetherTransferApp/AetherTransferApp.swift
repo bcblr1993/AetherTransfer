@@ -132,6 +132,11 @@ struct MainView: View {
                             FilePane(title: workspace.connectedProfile?.name.isEmpty == false ? workspace.connectedProfile!.name : L10n.text("远程"),
                                      path: $workspace.remotePath, files: workspace.remoteFiles, selection: $workspace.remoteSelection,
                                      loading: workspace.loadingRemote, query: query, remote: true, workspace: workspace)
+                        } else if workspace.connecting {
+                            VStack(spacing: InterfaceStyle.fieldGap) {
+                                ProgressView(L10n.text("正在连接…"))
+                                Button(L10n.text("取消")) { workspace.disconnect() }
+                            }.frame(minWidth: 350, maxWidth: .infinity, maxHeight: .infinity)
                         } else {
                             ConnectionWelcomeView { showConnect = true }
                                 .frame(minWidth: 350, maxWidth: .infinity, maxHeight: .infinity)
@@ -144,7 +149,7 @@ struct MainView: View {
                         .transaction { $0.animation = nil }
                     Divider()
                     InterfaceStatusBar {
-                        Text(workspace.connectedProfile.map { "\($0.protocolKind.title) · \($0.name.isEmpty ? $0.host : $0.name)" } ?? L10n.text("未连接"))
+                        Text(workspace.connecting ? L10n.text("正在连接…") : workspace.connectedProfile.map { "\($0.protocolKind.title) · \($0.name.isEmpty ? $0.host : $0.name)" } ?? L10n.text("未连接"))
                             .lineLimit(1).truncationMode(.middle)
                         Spacer()
                         Text(L10n.format("%@ 个本地项目 · %@ 个远程项目", String(describing: workspace.localFiles.count), String(describing: workspace.remoteFiles.count)))
@@ -170,7 +175,7 @@ struct MainView: View {
             ToolbarItem { Button(L10n.text("活动"), systemImage: "list.bullet.rectangle") { showActivities.toggle() } }
             ToolbarItem { Button(L10n.text("文件信息"), systemImage: "info.circle") { workspace.showInspector.toggle() } }
             ToolbarItem { Button(L10n.text("同步"), systemImage: "arrow.triangle.2.circlepath") { workspace.showSync = true } }
-            ToolbarItem { Button(L10n.text("断开"), systemImage: "eject") { workspace.disconnect() }.disabled(!workspace.hasRemoteConnection) }
+            ToolbarItem { Button(L10n.text("断开"), systemImage: "eject") { workspace.disconnect() }.disabled(!workspace.hasRemoteConnection && !workspace.connecting) }
         }
         .searchable(text: $query, prompt: L10n.text("筛选当前目录"))
         .sheet(isPresented: $showConnect) { ConnectionView(workspace: workspace) }
@@ -188,10 +193,14 @@ struct MainView: View {
                             subtitle: L10n.text("请通过可信渠道核对服务器的 SHA-256 指纹。确认后才会进行认证和文件操作。"),
                             symbol: "lock.shield")
                 Divider()
-                Text(RemoteClient.fingerprint(challenge.key)).font(.system(.body, design: .monospaced))
-                    .textSelection(.enabled).padding(12).frame(maxWidth: .infinity, alignment: .leading)
-                    .background(.quaternary, in: RoundedRectangle(cornerRadius: InterfaceStyle.cornerRadius))
-                    .padding(InterfaceStyle.pageInset)
+                VStack(alignment: .leading, spacing: InterfaceStyle.fieldGap) {
+                    FormFieldRow(title: L10n.text("服务器地址")) { Text(challenge.profile.host).textSelection(.enabled) }
+                    FormFieldRow(title: L10n.text("端口")) { Text(String(challenge.profile.port)).monospacedDigit() }
+                    FormFieldRow(title: L10n.text("用户名")) { Text(challenge.profile.username).textSelection(.enabled) }
+                    Text(RemoteClient.fingerprint(challenge.key)).font(.system(.body, design: .monospaced))
+                        .textSelection(.enabled).padding(12).frame(maxWidth: .infinity, alignment: .leading)
+                        .background(.quaternary, in: RoundedRectangle(cornerRadius: InterfaceStyle.cornerRadius))
+                }.padding(InterfaceStyle.pageInset)
                 Divider()
                 SheetActions {
                     Button(L10n.text("取消")) { workspace.hostChallenge = nil; workspace.disconnect() }.keyboardShortcut(.cancelAction)
@@ -510,8 +519,22 @@ struct ConnectionView: View {
                             inputRow(L10n.text("协议")) {
                                 Picker(L10n.text("协议"), selection: $profile.protocolKind) { ForEach(TransferProtocol.allCases, id: \.self) { Text($0.title).tag($0) } }.labelsHidden()
                             }
-                            inputRow(L10n.text("服务器地址")) { TextField(L10n.text("服务器地址"), text: $profile.host, prompt: Text(L10n.text("例如 files.example.com"))).labelsHidden().focused($focusedField, equals: .host) }
-                            inputRow(L10n.text("端口")) { TextField(L10n.text("端口"), value: $profile.port, format: .number.grouping(.never)).labelsHidden() }
+                            if profile.protocolKind == .sftp {
+                                inputRow(L10n.text("SSH 配置")) {
+                                    Toggle(L10n.text("读取本机 SSH 配置"), isOn: Binding(get: { profile.sshConfiguration == true }, set: { profile.sshConfiguration = $0 ? true : nil }))
+                                }
+                            }
+                            inputRow(L10n.text("服务器地址")) { TextField(L10n.text("服务器地址"), text: $profile.host, prompt: Text(profile.protocolKind == .sftp && profile.sshConfiguration == true ? L10n.text("主机名或 SSH 配置别名") : L10n.text("例如 files.example.com"))).labelsHidden().focused($focusedField, equals: .host) }
+                            if profile.protocolKind == .sftp && profile.sshConfiguration == true {
+                                inputRow(L10n.text("端口")) {
+                                    VStack(alignment: .leading, spacing: InterfaceStyle.fieldGap) {
+                                        Toggle(L10n.text("使用配置中的端口"), isOn: Binding(get: { profile.sshUseConfiguredPort != false }, set: { profile.sshUseConfiguredPort = $0 }))
+                                        if profile.sshUseConfiguredPort == false { TextField(L10n.text("端口"), value: $profile.port, format: .number.grouping(.never)).labelsHidden() }
+                                    }
+                                }
+                            } else {
+                                inputRow(L10n.text("端口")) { TextField(L10n.text("端口"), value: $profile.port, format: .number.grouping(.never)).labelsHidden() }
+                            }
                             if profile.protocolKind == .s3 {
                                 inputRow(L10n.text("存储桶")) { TextField(L10n.text("存储桶"), text: Binding(get: { profile.s3Bucket ?? "" }, set: { profile.s3Bucket = $0 }), prompt: Text(L10n.text("存储桶名称"))).labelsHidden() }
                                 inputRow(L10n.text("区域")) { TextField(L10n.text("区域"), text: Binding(get: { profile.s3Region ?? "us-east-1" }, set: { profile.s3Region = $0 })).labelsHidden() }
@@ -527,7 +550,7 @@ struct ConnectionView: View {
                                         }
                                     } }
                             } else {
-                                inputRow(L10n.text("用户名")) { TextField(L10n.text("用户名"), text: $profile.username, prompt: Text(L10n.text("登录用户名"))).labelsHidden() }
+                                inputRow(L10n.text("用户名")) { TextField(L10n.text("用户名"), text: $profile.username, prompt: Text(profile.protocolKind == .sftp && profile.sshConfiguration == true ? L10n.text("留空使用配置或本机用户名") : L10n.text("登录用户名"))).labelsHidden() }
                                 if profile.protocolKind == .sftp {
                                     inputRow(L10n.text("认证方式")) {
                                         Picker(L10n.text("认证方式"), selection: Binding(get: { profile.effectiveSSHAuthentication }, set: { profile.sshAuthentication = $0 })) {
@@ -542,7 +565,7 @@ struct ConnectionView: View {
                             }
                             if profile.protocolKind == .sftp && profile.effectiveSSHAuthentication == .privateKey {
                                 inputRow(L10n.text("SSH 私钥")) { HStack {
-                                        TextField(L10n.text("SSH 私钥"), text: $profile.privateKeyPath, prompt: Text(L10n.text("私钥文件路径"))).labelsHidden()
+                                        TextField(L10n.text("SSH 私钥"), text: $profile.privateKeyPath, prompt: Text(profile.sshConfiguration == true ? L10n.text("留空使用配置中的私钥文件") : L10n.text("私钥文件路径"))).labelsHidden()
                                         Button(L10n.text("选择…")) {
                                             let panel = NSOpenPanel(); panel.showsHiddenFiles = true
                                             if panel.runModal() == .OK { profile.privateKeyPath = panel.url?.path ?? "" }
@@ -562,6 +585,9 @@ struct ConnectionView: View {
                             }
                             if profile.protocolKind == .sftp && profile.effectiveSSHAuthentication == .agent {
                                 SupportingText(L10n.text("使用系统 SSH agent 中已加载的密钥。认证失败时不会改用密码或私钥文件；仍须核对服务器指纹。"))
+                            }
+                            if profile.protocolKind == .sftp && profile.sshConfiguration == true {
+                                SupportingText(L10n.text("读取主机别名、用户名、端口与私钥文件。所选认证方式保持不变；连接前仍须核对实际服务器指纹。代理和 Match 配置暂不支持。"))
                             }
                             if profile.protocolKind == .ftp { SupportingText(L10n.text("FTP 会以明文传输认证和文件内容。建议优先选择 SFTP 或 FTPS。")) }
                             if profile.protocolKind == .webdav { SupportingText(L10n.text("HTTP 会以明文传输认证和文件内容。建议优先选择 WebDAV · HTTPS。")) }
@@ -590,8 +616,9 @@ struct ConnectionView: View {
                             let credentials = Credentials(password: password, passphrase: passphrase, accessKey: accessKey, secretKey: secretKey, sessionToken: sessionToken)
                             try profile.validate()
                             if profile.protocolKind == .s3 && (!editing || remember) { try credentials.s3.validate() }
+                            let prepared = !editing ? try await SSHConnectionPreparation.prepare(profile) : nil
                             if save || editing { profile = try await workspace.save(profile, credentials: credentials, remember: remember) }
-                            if !editing { workspace.connect(profile, credentials: credentials) }
+                            if let prepared { workspace.connect(try prepared.withSavedSource(profile), credentials: credentials) }
                             dismiss()
                         } catch { self.error = error.localizedDescription }
                     }
@@ -621,6 +648,9 @@ struct ConnectionView: View {
         }
         .onChange(of: profile.privateKeyPath) { old, new in
             if old != new { passphrase = "" }
+        }
+        .onChange(of: profile.sshConfiguration) { old, new in
+            if old != new { password = ""; passphrase = ""; remember = false }
         }
         .onChange(of: profile.protocolKind) { old, kind in
             profile.port = kind.defaultPort

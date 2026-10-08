@@ -45,6 +45,9 @@ public struct ServerProfile: Identifiable, Codable, Hashable, Sendable {
     public var initialPath: String
     public var privateKeyPath: String
     public var sshAuthentication: SSHAuthentication?
+    public var sshConfiguration: Bool?
+    public var sshUseConfiguredPort: Bool?
+    public var sshTrustedEndpoint: SSHHostIdentity?
     public var trustedHostKey: String?
     public var s3Bucket: String?
     public var s3Region: String?
@@ -59,6 +62,7 @@ public struct ServerProfile: Identifiable, Codable, Hashable, Sendable {
         self.username = username; self.protocolKind = protocolKind; self.initialPath = initialPath
         self.privateKeyPath = privateKeyPath; self.trustedHostKey = trustedHostKey
         self.sshAuthentication = sshAuthentication
+        self.sshConfiguration = nil; self.sshUseConfiguredPort = nil; self.sshTrustedEndpoint = nil
         self.s3Bucket = s3Bucket; self.s3Region = s3Region; self.s3CertificateAuthorityPath = s3CertificateAuthorityPath
         self.credentialID = nil; self.retiredCredentialIDs = nil
     }
@@ -69,7 +73,8 @@ public struct ServerProfile: Identifiable, Codable, Hashable, Sendable {
         sshAuthentication ?? (privateKeyPath.isEmpty ? .password : .privateKey)
     }
     public var connectionIdentity: [String] {
-        [host, String(port), protocolKind.rawValue, username, s3Bucket ?? "", s3Region ?? "", s3CertificateAuthorityPath ?? ""]
+        [host, String(port), protocolKind.rawValue, username, s3Bucket ?? "", s3Region ?? "", s3CertificateAuthorityPath ?? ""] +
+        (protocolKind == .sftp && sshConfiguration == true ? ["ssh-config", sshUseConfiguredPort == false ? "manual-port" : "configured-port"] : [])
     }
     public var credentialIdentity: [String] {
         connectionIdentity + (protocolKind == .sftp ? [effectiveSSHAuthentication.rawValue,
@@ -81,16 +86,19 @@ public struct ServerProfile: Identifiable, Codable, Hashable, Sendable {
             return
         }
         guard !host.isEmpty, !host.contains(where: { $0.isWhitespace }), !host.contains("/"),
-              !host.contains("@"), !host.contains("?"), !host.contains("#"), (1...65535).contains(port),
-              !username.isEmpty else { throw TransferError.invalidConnection }
+              !host.contains("@"), !host.contains("?"), !host.contains("#"),
+              (1...65535).contains(port) || (protocolKind == .sftp && sshConfiguration == true && sshUseConfiguredPort != false),
+              !host.utf8.contains(0), !username.utf8.contains(0),
+              !username.isEmpty || (protocolKind == .sftp && sshConfiguration == true) else { throw TransferError.invalidConnection }
         if protocolKind == .sftp && effectiveSSHAuthentication == .privateKey {
-            guard !privateKeyPath.isEmpty, !privateKeyPath.utf8.contains(0) else { throw SSHAuthenticationError.privateKeyRequired }
+            guard (!privateKeyPath.isEmpty || sshConfiguration == true), !privateKeyPath.utf8.contains(0) else { throw SSHAuthenticationError.privateKeyRequired }
         }
         try RemotePath.validate(initialPath)
     }
     public func url(path: String, directory: Bool = false) throws -> String {
         // A file-server client must never normalize or authenticate an S3 object key.
         guard protocolKind != .s3 else { throw TransferError.invalidConnection }
+        guard protocolKind != .sftp || sshConfiguration != true else { throw SSHConfigurationError.preparationRequired }
         try validate(); try RemotePath.validate(path)
         var components = URLComponents()
         components.scheme = protocolKind.urlScheme
