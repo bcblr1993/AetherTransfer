@@ -28,7 +28,8 @@ import AetherTransferCore
                 Button(L10n.text("文件信息")) { tabs.current.showInspector.toggle() }.keyboardShortcut("i")
                 Button(L10n.text("保留的传输…")) { tabs.current.showRecovery = true }
             }
-            CommandMenu(L10n.text("显示")) {
+            CommandGroup(after: .sidebar) {
+                Divider()
                 Button(L10n.text("图标视图")) { tabs.current.setViewMode(.icons) }.keyboardShortcut("1")
                 Button(L10n.text("列表视图")) { tabs.current.setViewMode(.list) }.keyboardShortcut("2")
                 Divider()
@@ -124,9 +125,12 @@ struct MainView: View {
                         }
                     }
                     Button { showConnect = true } label: { Label(L10n.text("添加服务器"), systemImage: "plus") }.buttonStyle(.plain)
-                    Menu(L10n.text("管理收藏"), systemImage: "ellipsis.circle") {
+                    Menu {
                         Button(L10n.text("导入收藏…")) { workspace.importProfiles() }
                         Button(L10n.text("导出收藏…")) { workspace.exportProfiles() }.disabled(workspace.profiles.isEmpty)
+                    } label: {
+                        Label(L10n.text("管理收藏"), systemImage: "ellipsis.circle")
+                            .foregroundStyle(.primary)
                     }.menuStyle(.borderlessButton)
                 }
             }

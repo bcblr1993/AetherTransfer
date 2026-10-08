@@ -20,7 +20,7 @@ struct NativeFileTable: NSViewRepresentable {
         scroll.autohidesScrollers = true; scroll.borderType = .noBorder
         let table = BrowserTable()
         table.style = .inset; table.rowHeight = InterfaceStyle.listRowHeight; table.usesAutomaticRowHeights = false
-        table.usesAlternatingRowBackgroundColors = true; table.allowsMultipleSelection = true
+        table.usesAlternatingRowBackgroundColors = false; table.allowsMultipleSelection = true
         table.allowsEmptySelection = true; table.columnAutoresizingStyle = .firstColumnOnlyAutoresizingStyle
         table.autoresizingMask = [.width]; table.intercellSpacing = NSSize(width: 6, height: 2)
         for (key, title, width) in [("name", L10n.text("名称"), 250.0), ("size", L10n.text("大小"), 90.0), ("modified", L10n.text("修改日期"), 140.0)] {

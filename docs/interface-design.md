@@ -11,7 +11,7 @@ AetherTransfer 的界面目标是原生、清晰、精致、紧凑。中文和�
 | 正文与说明 | 正文 body/callout，辅助说明 caption/secondary；重要错误使用图标和文字，不只靠颜色 |
 | 路径、指纹、代码 | 系统等宽字体；路径中间截断；指纹可选择复制 |
 | 间距 | 页面边距 20 pt、分组 16 pt、表单行间距 12 pt、控件间距 8–12 pt |
-| 文件与同步列表 | 28 pt 固定行高、原生表头与选择背景、单元格复用；长文件名中间截断 |
+| 文件与同步列表 | 28 pt 固定行高、原生表头与选择背景、单元格复用；长文件名中间截断；文件列表空白区域使用连续背景 |
 | 表单 | 可编辑字段使用原生圆角输入框；150 pt 标签列；连接窗口宽 600 pt；正文可滚动，操作区固定 |
 | 按钮 | 每个弹窗至多一个主要动作使用 glassProminent；次要操作使用系统普通按钮，图标工具使用 borderless |
 | 玻璃 | 用于工具栏、按钮与选中的标签；文件行、正文与大量内容不叠加玻璃 |
@@ -44,6 +44,8 @@ AetherTransfer 的界面目标是原生、清晰、精致、紧凑。中文和�
 - 辅助功能：图标有语义标签，键盘可达；减少动态效果、减少透明度、VoiceOver 单独验收。
 - 资源键与插值一致、核心及真实协议测试、arm64 release 打包与签名验证。
 
-本次尚未完成全部视觉矩阵和动画门禁。原生界面控制辅助进程崩溃，恢复后必须对最终开发包实际运行验收；编译通过不能作为“好看、丝滑”的完成证明。
+双语开发包已从清理入口完成构建、语言资源及签名校验，并在本机实际启动。中文深色主窗口已检查：自建目录中的中英文名称、大小、日期、路径和空连接状态正常显示。系统“显示”菜单合并视图命令，避免同名菜单；文件列表使用连续背景，避免空白区域出现条纹。这两处后续修整通过核心测试和 release 编译，尚待替换运行包后复查。
+
+全部视觉矩阵、表单输入与动画门禁仍未完成。读取连接弹窗时，原生界面控制辅助进程再次崩溃，应用仍运行；崩溃栈是辅助进程的 `Array.remove(at:)`，不作为应用崩溃或动画结果。重连失败后未强制退出或覆盖运行中的应用。恢复控制并正常退出后继续验收；编译通过不能作为“好看、丝滑”的完成证明。
 
 实现依据：[Apple 的 Liquid Glass 指南](https://developer.apple.com/documentation/swiftui/applying-liquid-glass-to-custom-views)、[显式本地化查找与 Locale](https://developer.apple.com/documentation/swift/string/init(localized:options:table:bundle:locale:comment:))、[ByteCountFormatStyle](https://developer.apple.com/documentation/foundation/bytecountformatstyle)。
