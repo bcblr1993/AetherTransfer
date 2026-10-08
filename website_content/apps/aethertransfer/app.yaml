@@ -71,7 +71,7 @@ faq:
     - q: { zh: 与 AetherTerm 有什么不同？, en: How does it differ from AetherTerm? }
       a: { zh: AetherTerm 专注 SSH 终端与运维；AetherTransfer 专注文件浏览、批量传输、任务管理与目录同步。, en: AetherTerm focuses on SSH terminals and operations. AetherTransfer focuses on file browsing, batch transfers, task management and folder sync. }
     - q: { zh: 界面支持哪些语言和外观？, en: Which languages and appearances are available? }
-      a: { zh: 开发候选提供跟随系统、简体中文与 English，并支持系统浅深色外观。中英文共用原生布局与交互，文件名和路径保持原样；完整窗口与无障碍矩阵仍在验收。, en: The development candidate offers system language, Simplified Chinese and English, with system light and dark appearances. Both languages share native layouts and interactions while preserving file names and paths. The full window and accessibility matrix is still being validated. }
+      a: { zh: 开发候选提供跟随系统、简体中文与 English，并支持系统浅深色外观。中英文共用原生布局与交互，文件名和路径保持原样；完整窗口与无障碍矩阵仍在验收。, en: "The development candidate offers system language, Simplified Chinese and English, with system light and dark appearances. Both languages share native layouts and interactions while preserving file names and paths. The full window and accessibility matrix is still being validated." }
     - q: { zh: 是否已经支持全部云服务？, en: Are all cloud services supported already? }
       a: { zh: 还没有。完整目标包含多种云服务，但每一种都需要独立实现与真实验证，未来版本会明确列出支持范围。, en: Not yet. The goal includes multiple cloud services, each requiring its own implementation and real validation. Future releases will specify actual support. }
 cta:
