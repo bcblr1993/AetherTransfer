@@ -82,6 +82,7 @@ struct PermissionEditorView: View {
     @Environment(\.dismiss) private var dismiss
     @StateObject private var model: PermissionEditorModel
     @FocusState private var octalFocused: Bool
+    @State private var requestedInitialFocus = false
     init(request: PermissionRequest, workspace: Workspace) {
         _model = StateObject(wrappedValue: PermissionEditorModel(request, workspace: workspace))
     }
@@ -105,12 +106,7 @@ struct PermissionEditorView: View {
                             .toggleStyle(.checkbox)
                     }
                     SupportingText(model.recursive ? L10n.text("包括隐藏项目；文件和文件夹应用相同权限，符号链接跳过。") : L10n.text("仅修改所选项目，不递归修改文件夹中的内容。"))
-                    if model.loading {
-                        ProgressView(model.recursive ? L10n.text("扫描权限范围…") : L10n.text("读取权限…"))
-                        if model.recursive {
-                            Text(L10n.format("已扫描 %@ 项", String(model.scanned))).font(.caption).foregroundStyle(.secondary).monospacedDigit()
-                        }
-                    } else if let plan = model.plan {
+                    if !model.loading, let plan = model.plan {
                         Text(L10n.format("应用范围：%@ 个文件，%@ 个文件夹", String(plan.fileCount), String(plan.folderCount)))
                             .font(.callout).monospacedDigit()
                         if plan.skippedSymbolicLinks > 0 {
@@ -145,23 +141,13 @@ struct PermissionEditorView: View {
                             }.toggleStyle(.checkbox).padding(.top, 8)
                         }
                     }
-                    if model.applying {
-                        ProgressView(value: Double(model.completed), total: Double(max(1, model.count)))
-                        Text(model.completed == 0 ? L10n.text("检查范围并应用权限…") : L10n.format("已核对完成 %@ / %@", String(model.completed), String(model.count))).font(.caption).monospacedDigit()
-                    }
-                    if let result = model.result {
-                        Label(result.error == nil && !result.cancelled ? L10n.text("权限已应用") : (result.cancelled ? L10n.text("权限操作已停止") : L10n.text("权限操作未全部完成")),
-                              systemImage: result.error == nil && !result.cancelled ? "checkmark.circle" : "exclamationmark.circle")
-                        SupportingText(L10n.format("已核对完成 %@ / %@；已完成的修改不会回滚。", String(result.completed), String(result.total)))
-                        if result.cancelled || result.error != nil {
-                            SupportingText(L10n.text("未核对的项目可能已写入，请重新读取实际权限。"))
-                        }
-                        if let error = result.error { InterfaceMessage(text: error) }
-                    }
-                    if let error = model.error { InterfaceMessage(text: error) }
                 }.padding(InterfaceStyle.pageInset)
-            }.disabled(model.applying)
+            }.scrollBounceBehavior(.basedOnSize).disabled(model.applying)
             Divider()
+            if model.loading || model.applying || model.result != nil || model.error != nil {
+                SheetFeedback { feedback }
+                Divider()
+            }
             SheetActions {
                 Button(model.applying ? L10n.text("停止") : (model.result != nil ? L10n.text("完成") : L10n.text("取消"))) {
                     if model.applying { model.cancel() } else { model.cancel(); dismiss() }
@@ -176,9 +162,37 @@ struct PermissionEditorView: View {
             }
         }.frame(width: InterfaceStyle.connectionWidth, height: 560)
             .interactiveDismissDisabled(model.applying)
-            .task { model.load(); octalFocused = true }
-            .onChange(of: model.loading) { _, loading in if !loading { octalFocused = true } }
+            .task { model.load() }
+            .onChange(of: model.loading) { _, loading in
+                if !loading, model.plan != nil, !requestedInitialFocus {
+                    requestedInitialFocus = true
+                    octalFocused = true
+                }
+            }
             .onDisappear { model.cancel() }
+    }
+    @ViewBuilder private var feedback: some View {
+        if model.loading {
+            ProgressView(model.recursive ? L10n.text("扫描权限范围…") : L10n.text("读取权限…")).controlSize(.small)
+            if model.recursive {
+                Text(L10n.format("已扫描 %@ 项", String(model.scanned))).font(.caption).foregroundStyle(.secondary).monospacedDigit()
+            }
+        }
+        if model.applying {
+            ProgressView(value: Double(model.completed), total: Double(max(1, model.count)))
+            Text(model.completed == 0 ? L10n.text("检查范围并应用权限…") : L10n.format("已核对完成 %@ / %@", String(model.completed), String(model.count)))
+                .font(.caption).monospacedDigit()
+        }
+        if let result = model.result {
+            Label(result.error == nil && !result.cancelled ? L10n.text("权限已应用") : (result.cancelled ? L10n.text("权限操作已停止") : L10n.text("权限操作未全部完成")),
+                  systemImage: result.error == nil && !result.cancelled ? "checkmark.circle" : "exclamationmark.circle")
+            SupportingText(L10n.format("已核对完成 %@ / %@；已完成的修改不会回滚。", String(result.completed), String(result.total)))
+            if result.cancelled || result.error != nil {
+                SupportingText(L10n.text("未核对的项目可能已写入，请重新读取实际权限。"))
+            }
+            if let error = result.error { InterfaceMessage(text: error) }
+        }
+        if let error = model.error { InterfaceMessage(text: error) }
     }
     private func permissionRow(_ name: String, shift: Int) -> some View {
         GridRow {

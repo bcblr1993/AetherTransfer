@@ -78,6 +78,7 @@ struct MainView: View {
     @ObservedObject var tabs: BrowserTabs
     @State private var showConnect = false
     @State private var showActivities = false
+    @State private var activityCount = 0
     @State private var query = ""
     @State private var editingProfile: ServerProfile?
     private var groups: [String] { Set(workspace.profiles.map(\.group)).sorted() }
@@ -211,7 +212,10 @@ struct MainView: View {
             }.frame(width: InterfaceStyle.connectionWidth)
         }
         .onChange(of: tabs.selected) { workspace.reloadProfiles() }
-        .onChange(of: workspace.activities.count) { old, new in if new > old { showActivities = true } }
+        .onReceive(workspace.activityStore.itemCountChanges) { count in
+            if count > activityCount { showActivities = true }
+            activityCount = count
+        }
         .onReceive(NotificationCenter.default.publisher(for: .init("AetherTransferEditedFile"))) { _ in
             workspace.refreshLocal(); workspace.refreshRemote()
         }
@@ -392,8 +396,14 @@ struct FilePane: View {
 struct ActivityView: View {
     @Environment(\.locale) private var interfaceLocale
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @ObservedObject var workspace: Workspace
+    let workspace: Workspace
+    @ObservedObject private var activities: TransferActivities
     @Binding var expanded: Bool
+    init(workspace: Workspace, expanded: Binding<Bool>) {
+        self.workspace = workspace
+        _activities = ObservedObject(wrappedValue: workspace.activityStore)
+        _expanded = expanded
+    }
     var body: some View {
         let _ = interfaceLocale
         VStack(alignment: .leading, spacing: 6) {
@@ -409,15 +419,15 @@ struct ActivityView: View {
                 }.buttonStyle(.plain).accessibilityValue(expanded ? L10n.text("已展开") : L10n.text("已收起"))
                 Spacer()
                 Button(L10n.text("保留的传输…"), systemImage: "clock.arrow.circlepath") { workspace.showRecovery = true }.buttonStyle(.borderless).font(.caption)
-                Text(workspace.activities.isEmpty ? L10n.text("暂无任务") : L10n.format("%@ 个进行中 · %@ 个任务", String(describing: workspace.activities.filter { $0.state == "传输中" }.count), String(describing: workspace.activities.count))).font(.caption).foregroundStyle(.secondary)
-                if !workspace.activities.isEmpty { Button(L10n.text("清除已结束任务")) { workspace.clearFinishedActivities() }.buttonStyle(.borderless).font(.caption) }
+                Text(activities.items.isEmpty ? L10n.text("暂无任务") : L10n.format("%@ 个进行中 · %@ 个任务", String(describing: activities.items.filter { $0.state == "传输中" }.count), String(describing: activities.items.count))).font(.caption).foregroundStyle(.secondary)
+                if !activities.items.isEmpty { Button(L10n.text("清除已结束任务")) { workspace.clearFinishedActivities() }.buttonStyle(.borderless).font(.caption) }
             }.padding(.horizontal, 14).frame(height: 38)
-            if expanded && workspace.activities.isEmpty {
+            if expanded && activities.items.isEmpty {
                 Text(L10n.text("上传或下载文件后，在这里查看进度。")).foregroundStyle(.secondary).frame(maxWidth: .infinity, maxHeight: .infinity)
             } else if expanded {
                 ScrollView {
                     LazyVStack(spacing: 0) {
-                        ForEach(workspace.activities) { item in
+                        ForEach(activities.items) { item in
                             HStack {
                                 Image(systemName: item.direction == "同步" ? "arrow.triangle.2.circlepath" : (item.direction == "上传" ? "arrow.up.circle" : "arrow.down.circle"))
                                 VStack(alignment: .leading, spacing: 3) {
@@ -441,7 +451,16 @@ struct ActivityView: View {
                                         Text(L10n.format("已处理 %@ / %@ 个项目%@", String(describing: completed), String(describing: total), String(describing: item.skippedItems > 0 ? L10n.format(" · 跳过 %@ 项", String(describing: item.skippedItems)) : "")))
                                             .font(.caption).foregroundStyle(.secondary).monospacedDigit()
                                     }
-                                    if let error = item.error { Text(error).font(.caption).foregroundStyle(.red).lineLimit(2) }
+                                    if let error = item.error {
+                                        Text(error).font(.caption).foregroundStyle(.red).lineLimit(2)
+                                            .help(error).textSelection(.enabled)
+                                            .contextMenu {
+                                                Button(L10n.text("复制错误信息"), systemImage: "doc.on.doc") {
+                                                    NSPasteboard.general.clearContents()
+                                                    NSPasteboard.general.setString(error, forType: .string)
+                                                }
+                                            }
+                                    }
                                     if item.scope == .directory && (item.state == "失败" || item.state == "已取消") {
                                         Text(L10n.text("重新选择目录并确认冲突后，可再次传输。")).font(.caption).foregroundStyle(.secondary)
                                     }

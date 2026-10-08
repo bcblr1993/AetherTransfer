@@ -25,6 +25,7 @@ let package = Package(
         .target(name: "AetherTransferCore", dependencies: ["CTransfer"], resources: [.process("Resources")]),
         .executableTarget(name: "AetherTransferApp", dependencies: ["AetherTransferCore"]),
         .executableTarget(name: "AetherTransferBenchmarks", dependencies: ["AetherTransferCore"], path: "Tools/PerformanceProbe"),
-        .testTarget(name: "AetherTransferCoreTests", dependencies: ["AetherTransferCore"])
+        .testTarget(name: "AetherTransferCoreTests", dependencies: ["AetherTransferCore"]),
+        .testTarget(name: "AetherTransferAppTests", dependencies: ["AetherTransferApp"])
     ]
 )

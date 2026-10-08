@@ -14,8 +14,7 @@ struct RecoveryView: View {
     @State private var busy: UUID?
     @State private var error: String?
     private var displayed: [ResumeTransferRecord] {
-        let active = Set(tabs.tabs.flatMap { $0.workspace.resumeIDs })
-        return records.filter { !active.contains($0.id) }
+        records.filter { !tabs.activeResumeIDs.contains($0.id) }
     }
     var body: some View {
         let _ = interfaceLocale

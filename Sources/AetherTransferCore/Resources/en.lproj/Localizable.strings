@@ -161,6 +161,7 @@
 "填写服务器主机和 WebDAV 起始路径；如 /remote.php/dav/files/用户名/。HTTPS 会验证服务器证书。" = "Enter the server host and starting WebDAV path, e.g. /remote.php/dav/files/username/. HTTPS verifies the server certificate.";
 "处理" = "Processing";
 "复制" = "Copy";
+"复制错误信息" = "Copy Error Message";
 "复制缺少的文件。" = "Copy missing files.";
 "外观" = "Appearance";
 "外部编辑器…" = "External Editor…";

@@ -2,28 +2,6 @@ import AppKit
 import SwiftUI
 import AetherTransferCore
 
-struct ActivityItem: Identifiable {
-    let id: UUID
-    let name: String
-    let direction: String
-    var progress: Double = 0
-    var bytes: Int64 = 0
-    var total: Int64 = 0
-    var state: String = "等待中"
-    var error: String?
-    var canRetry = true
-    var canRetain = false
-    var requiresRestart = false
-    var phase: String?
-    var scope: TransferProgress.Scope = .file
-    var hasKnownTotal = false
-    var completedItems: Int?
-    var totalItems: Int?
-    var skippedItems = 0
-    var rate: TransferRateEstimate?
-    var rateEstimator = TransferRateEstimator()
-}
-
 @MainActor final class Workspace: ObservableObject {
     let id = UUID()
     @Published var profiles: [ServerProfile] = []
@@ -39,7 +17,11 @@ struct ActivityItem: Identifiable {
     private(set) var connectionRevision = UUID()
     @Published var localSelection: Set<String> = []
     @Published var remoteSelection: Set<String> = []
-    @Published var activities: [ActivityItem] = []
+    let activityStore = TransferActivities()
+    var activities: [ActivityItem] {
+        get { activityStore.items }
+        set { activityStore.items = newValue }
+    }
     var activityObserver: ((ActivityItem) -> Void)?
     @Published var connecting = false
     @Published var loadingLocal = false
@@ -74,8 +56,10 @@ struct ActivityItem: Identifiable {
         let control: TransferControl
         let rateLimit: Int64
     }
-    private var resumeJobs: [UUID: ResumeJob] = [:]
-    var resumeIDs: Set<UUID> { Set(resumeJobs.values.map { $0.record.id }) }
+    private var resumeJobs: [UUID: ResumeJob] = [:] {
+        didSet { activityStore.updateResumeIDs(Set(resumeJobs.values.map { $0.record.id })) }
+    }
+    var resumeIDs: Set<UUID> { activityStore.resumeIDs }
     private var browseTask: Task<Void, Never>?
     private var localTask: Task<Void, Never>?
     private var localGeneration = UUID()

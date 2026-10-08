@@ -1,4 +1,5 @@
 import SwiftUI
+import Combine
 import AetherTransferCore
 
 @MainActor final class BrowserTabs: ObservableObject {
@@ -8,6 +9,9 @@ import AetherTransferCore
     }
     @Published var tabs: [Tab]
     @Published var selected: UUID
+    @Published private(set) var activeResumeIDs: Set<UUID> = []
+    private var resumeObservations: [UUID: AnyCancellable] = [:]
+    private var resumeIDsByWorkspace: [UUID: Set<UUID>] = [:]
     private let queue: TransferQueue
     let editors = FileEditorManager()
     let previews = FilePreviewManager()
@@ -29,6 +33,18 @@ import AetherTransferCore
     }
     private func observe(_ workspace: Workspace) {
         workspace.activityObserver = { [weak self] item in self?.dock.receive(item) }
+        let id = workspace.id
+        resumeObservations[id] = workspace.activityStore.$resumeIDs.sink { [weak self] value in
+            guard let self else { return }
+            // Published emits before assignment. Aggregate the supplied value,
+            // rather than reading the previous set back from the workspace.
+            self.resumeIDsByWorkspace[id] = value
+            self.refreshResumeIDs()
+        }
+    }
+    private func refreshResumeIDs() {
+        let value = resumeIDsByWorkspace.values.reduce(into: Set<UUID>()) { $0.formUnion($1) }
+        if activeResumeIDs != value { activeResumeIDs = value }
     }
     func close(_ id: UUID) {
         guard tabs.count > 1, let index = tabs.firstIndex(where: { $0.id == id }) else { return }
@@ -40,6 +56,9 @@ import AetherTransferCore
             return
         }
         workspace.disconnect(); tabs.remove(at: index)
+        resumeObservations[workspace.id] = nil
+        resumeIDsByWorkspace[workspace.id] = nil
+        refreshResumeIDs()
         if selected == id { selected = tabs[min(index, tabs.count - 1)].id }
     }
 }
