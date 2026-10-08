@@ -52,6 +52,8 @@ struct ActivityItem: Identifiable {
     @Published var showSync = false
     @Published var showRecovery = false
     @Published var showInspector = false
+    @Published var permissionRequest: PermissionRequest?
+    @Published var permissionBusy = false
     @Published var focusedRemote = false
     @Published var localViewMode: FileViewMode = .list
     @Published var remoteViewMode: FileViewMode = .list
@@ -97,6 +99,26 @@ struct ActivityItem: Identifiable {
 
     func setViewMode(_ mode: FileViewMode) {
         if focusedRemote { remoteViewMode = mode } else { localViewMode = mode }
+    }
+    var canEditPermissions: Bool {
+        let remote = focusedRemote
+        let selected = remote ? remoteSelection : localSelection
+        guard !permissionBusy, !(remote ? loadingRemote || connecting : loadingLocal), !selected.isEmpty,
+              !remote || connectedProfile?.protocolKind.supportsUnixPermissions == true else { return false }
+        var found = 0
+        for entry in remote ? remoteFiles : localFiles where selected.contains(entry.id) {
+            if entry.isSymbolicLink { return false }
+            found += 1
+            if found == selected.count { return true }
+        }
+        return found > 0
+    }
+    func editPermissions(remote: Bool? = nil) {
+        if let remote { focusedRemote = remote }
+        guard canEditPermissions else { return }
+        let entries = (focusedRemote ? remoteFiles : localFiles).filter { (focusedRemote ? remoteSelection : localSelection).contains($0.id) }
+        permissionRequest = PermissionRequest(entries: entries, remote: focusedRemote, connection: connectionRevision,
+                                              client: focusedRemote ? client : nil)
     }
 
     init(queue: TransferQueue = TransferQueue(limit: 2), editors: FileEditorManager = FileEditorManager(),
@@ -190,6 +212,7 @@ struct ActivityItem: Identifiable {
         }
     }
     func connect(_ profile: ServerProfile, credentials: Credentials) {
+        guard !permissionBusy else { error = L10n.text("请先完成或停止权限操作。"); return }
         authenticationGeneration = UUID(); hostChallenge = nil
         browseTask?.cancel()
         connectionRevision = UUID()
@@ -200,6 +223,7 @@ struct ActivityItem: Identifiable {
         refreshRemote()
     }
     func disconnect() {
+        guard !permissionBusy else { error = L10n.text("请先完成或停止权限操作。"); return }
         authenticationGeneration = UUID()
         browseTask?.cancel(); remoteGeneration = UUID(); connectionRevision = UUID(); connectedProfile = nil; remoteFiles = []
         remoteSelection = []; remoteRevision = UUID(); connecting = false; loadingRemote = false; credentials = Credentials()

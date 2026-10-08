@@ -22,6 +22,7 @@ struct WorkspaceFileCommands: Commands {
             Button(L10n.text("编辑所选文本…")) { workspace.editSelection() }.keyboardShortcut("e")
             Button(L10n.text("快速查看…")) { workspace.previewSelection() }.keyboardShortcut("y")
             Button(L10n.text("文件信息")) { workspace.showInspector.toggle() }.keyboardShortcut("i")
+            Button(L10n.text("编辑权限…")) { workspace.editPermissions() }.disabled(!workspace.canEditPermissions)
             Button(L10n.text("保留的传输…")) { workspace.showRecovery = true }
         }
         CommandGroup(after: .sidebar) {
@@ -51,6 +52,8 @@ struct WorkspaceFileCommands: Commands {
         if !entry.isDirectory && !entry.isSymbolicLink { add(L10n.text("编辑文本…"), #selector(editItem(_:))) }
         add(L10n.text("快速查看"), #selector(previewItem(_:)), enabled: !entry.isDirectory && !entry.isSymbolicLink)
         add(L10n.text("文件信息"), #selector(informationItem(_:)))
+        add(L10n.text("编辑权限…"), #selector(permissionItems), enabled: !workspace.permissionBusy && !selection.isEmpty &&
+            !selection.contains(where: \.isSymbolicLink) && (!remote || workspace.connectedProfile?.protocolKind.supportsUnixPermissions == true))
         if !remote { add(L10n.text("上传"), #selector(uploadItems), enabled: workspace.canReceiveUpload) }
         if remote && entry.isDirectory { add(L10n.text("下载"), #selector(downloadItems), enabled: workspace.hasRemoteConnection && !workspace.loadingLocal) }
         menu.addItem(.separator())
@@ -63,6 +66,7 @@ struct WorkspaceFileCommands: Commands {
     @objc private func editItem(_ sender: NSMenuItem) { if let entry = sender.representedObject as? FileEntry { workspace?.edit(entry, remote: remote) } }
     @objc private func previewItem(_ sender: NSMenuItem) { if let entry = sender.representedObject as? FileEntry { workspace?.preview(entry, remote: remote) } }
     @objc private func informationItem(_ sender: NSMenuItem) { workspace?.focusedRemote = remote; workspace?.showInspector = true }
+    @objc private func permissionItems() { workspace?.editPermissions(remote: remote) }
     @objc private func deleteItem(_ sender: NSMenuItem) { if let entry = sender.representedObject as? FileEntry { workspace?.delete(entry, remote: remote) } }
     @objc private func uploadItems() { workspace?.upload(selection) }
     @objc private func downloadItems() { workspace?.download(selection) }

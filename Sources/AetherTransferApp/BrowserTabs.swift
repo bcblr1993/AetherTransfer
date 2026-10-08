@@ -33,6 +33,7 @@ import AetherTransferCore
     func close(_ id: UUID) {
         guard tabs.count > 1, let index = tabs.firstIndex(where: { $0.id == id }) else { return }
         let workspace = tabs[index].workspace
+        guard !workspace.permissionBusy else { workspace.error = L10n.text("请先完成或停止权限操作。"); return }
         // Active file operations must remain visible until the user cancels or finishes them.
         if workspace.activities.contains(where: { ["传输中", "等待中", "已暂停", "保留中", "清理中"].contains($0.state) }) {
             workspace.error = L10n.text("此标签页仍有传输任务，请先完成或取消任务。")

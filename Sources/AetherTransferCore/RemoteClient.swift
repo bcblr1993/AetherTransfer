@@ -328,6 +328,24 @@ public struct RemoteClient: Sendable {
         }
         try await command(sftp: "\(directory ? "rmdir" : "rm") \(RemotePath.quoted(path))", ftp: "\(directory ? "RMD" : "DELE") \(path)")
     }
+    public func readPermissions(_ path: String) async throws -> RemotePermissionSnapshot {
+        guard profile.protocolKind.supportsUnixPermissions else { throw FilePermissionError.unsupported }
+        try RemotePath.validate(path)
+        guard RemotePath.normalize(path) != "/",
+              let entry = try await list(RemotePath.parent(path)).first(where: { Data($0.path.utf8) == Data(path.utf8) }) else { throw FilePermissionError.changed }
+        return try RemotePermissionSnapshot(entry)
+    }
+    public func setPermissions(_ mode: UnixPermissions, for expected: RemotePermissionSnapshot) async throws {
+        guard profile.protocolKind.supportsUnixPermissions else { throw FilePermissionError.unsupported }
+        let current = try await readPermissions(expected.entry.path)
+        guard expected.matches(current) else { throw FilePermissionError.changed }
+        try Task.checkCancellation()
+        try await command(sftp: "chmod \(mode.octal) \(RemotePath.quoted(expected.entry.path))",
+                          ftp: "SITE CHMOD \(mode.octal) \(expected.entry.path)")
+        let verified = try await readPermissions(expected.entry.path)
+        guard verified.entry.isDirectory == expected.entry.isDirectory, verified.entry.size == expected.entry.size,
+              verified.entry.modified == expected.entry.modified, verified.mode == mode else { throw FilePermissionError.verification }
+    }
     private func command(sftp: String, ftp: String) async throws {
         _ = try await perform(path: "/", directory: true, mode: 3, commands: profile.protocolKind == .sftp ? sftp : ftp)
     }

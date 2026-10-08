@@ -61,6 +61,11 @@ features:
       body:
         zh: 开发候选支持本地与远程 UTF-8 文本的原生编辑，也可选择本机编辑器，保存后自动回传。检测到原文件内容变化时保留草稿；其他编码、草稿恢复与完整编辑器兼容性仍在开发。
         en: The development candidate supports native editing of local and remote UTF-8 text, or a chosen local editor with automatic save-back. Detected source changes preserve the draft; other encodings, draft recovery and broader editor compatibility remain in development.
+    - kicker: { zh: 权限, en: Permissions }
+      title: { zh: 看清权限，明确应用, en: Review permissions before applying }
+      body:
+        zh: 开发候选提供本地及 FTP / FTPS / SFTP 所选项目的 Unix 权限编辑，读取、写入、执行与八进制值联动。应用前检查变化，写后核对；取消保留已完成修改。递归权限、所有者 / 组及界面验收仍待完成。
+        en: The development candidate edits Unix permissions for selected local and FTP / FTPS / SFTP items, with read, write, execute and octal controls. Changes are checked before applying and verified afterward; stopping keeps completed changes. Recursive permissions and ownership editing remain in development, with full UI acceptance pending.
 faq:
   eyebrow: FAQ
   title: { zh: 常见问题, en: Questions }

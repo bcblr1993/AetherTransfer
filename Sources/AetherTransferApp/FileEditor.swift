@@ -37,6 +37,10 @@ import AetherTransferCore
     weak var editors: FileEditorManager?
     weak var tabs: BrowserTabs?
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
+        if tabs?.tabs.contains(where: { $0.workspace.permissionBusy }) == true {
+            let alert = NSAlert(); alert.messageText = L10n.text("请先完成或停止权限操作。")
+            alert.addButton(withTitle: L10n.text("返回")); alert.runModal(); return .terminateCancel
+        }
         if tabs?.tabs.contains(where: { tab in
             tab.workspace.activities.contains { ["等待中", "传输中", "已暂停", "保留中", "清理中"].contains($0.state) }
         }) == true {

@@ -34,6 +34,8 @@ struct FileInformationView: View {
                     field(L10n.text("大小"), entry.isDirectory ? "—" : DisplayFormat.bytes(entry.size))
                     field(L10n.text("修改时间"), entry.modified.map { $0.formatted(Date.FormatStyle(date: .abbreviated, time: .standard).locale(interfaceLocale)) } ?? "—")
                     field(L10n.text("权限"), entry.permissions.isEmpty ? "—" : entry.permissions)
+                    Button(L10n.text("编辑权限…"), systemImage: "lock.open") { workspace.editPermissions() }
+                        .buttonStyle(.glass).disabled(!workspace.canEditPermissions)
                     if !entry.isDirectory && !entry.isSymbolicLink {
                         Button(L10n.text("快速查看"), systemImage: "eye") { workspace.preview(entry, remote: workspace.focusedRemote) }
                             .buttonStyle(.glass).frame(maxWidth: .infinity, alignment: .leading)
@@ -48,6 +50,8 @@ struct FileInformationView: View {
                         return (sum.partialValue, result.overflow || sum.overflow || entry.size < 0)
                     }
                     field(L10n.text("所选文件大小"), bytes.overflow ? "—" : DisplayFormat.bytes(bytes.value))
+                    Button(L10n.text("编辑权限…"), systemImage: "lock.open") { workspace.editPermissions() }
+                        .buttonStyle(.glass).disabled(!workspace.canEditPermissions)
                 } else {
                     ContentUnavailableView(L10n.text("选择文件"), systemImage: "info.circle", description: Text(L10n.text("查看大小、路径和修改时间。")))
                 }

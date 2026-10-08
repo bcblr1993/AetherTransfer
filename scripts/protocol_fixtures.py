@@ -156,6 +156,13 @@ class Files(paramiko.SFTPServerInterface):
     def rmdir(self, path):
         try: self.path(path).rmdir(); return paramiko.SFTP_OK
         except OSError as e: return paramiko.SFTPServer.convert_errno(e.errno)
+    def chattr(self, path, attrs):
+        try:
+            if path.startswith('/__aether_permission_slow__-'):
+                threading.Event().wait(.25)
+            paramiko.SFTPServer.set_file_attr(str(self.path(path)), attrs)
+            return paramiko.SFTP_OK
+        except OSError as e: return paramiko.SFTPServer.convert_errno(e.errno)
 
 with tempfile.TemporaryDirectory(prefix='aethertransfer-fixture-') as directory:
     certificates = Path(directory)

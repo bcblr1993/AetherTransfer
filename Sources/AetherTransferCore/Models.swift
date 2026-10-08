@@ -13,6 +13,7 @@ public enum TransferProtocol: String, Codable, CaseIterable, Sendable {
         }
     }
     public var isWebDAV: Bool { self == .webdav || self == .webdavs }
+    public var supportsUnixPermissions: Bool { self == .ftp || self == .ftpes || self == .ftps || self == .sftp }
     public var usesTLS: Bool { self == .ftps || self == .ftpes || self == .webdavs || self == .s3 }
     public var urlScheme: String {
         switch self {
