@@ -291,8 +291,14 @@ struct ActivityItem: Identifiable {
     func enqueueSync(_ plan: SyncPlan, left: SyncRoot, right: SyncRoot, selected: Set<String>, resolutions: [String: SyncDirection]) {
         let rate = Int64(max(0, UserDefaults.standard.integer(forKey: "transferRateKiB"))) * 1024
         enqueue(name: L10n.format("%@ 个同步操作", String(describing: selected.count)), direction: "同步", retryable: false, scope: .synchronization) { control, progress in
-            _ = try await SyncEngine.execute(plan, left: left, right: right, selected: selected, resolutions: resolutions,
-                                             control: control, rateLimit: rate, progress: progress)
+            do {
+                _ = try await SyncEngine.execute(plan, left: left, right: right, selected: selected, resolutions: resolutions,
+                                                 control: control, rateLimit: rate, progress: progress)
+            } catch S3Error.cleanupRequired(let record) {
+                do { try await S3CleanupStore.shared.add(record) }
+                catch { throw TransferError.remote(L10n.format("S3 分片清理未完成，清理记录保存失败：%@", String(describing: error.localizedDescription))) }
+                throw TransferError.remote(L10n.text("S3 分片清理未完成；请在“保留的传输”中重新连接并重试清理。"))
+            }
         }
     }
     func upload(_ entries: [FileEntry]) {

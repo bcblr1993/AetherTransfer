@@ -5,26 +5,32 @@ import Darwin
 public enum SyncRoot: Sendable {
     case local(URL)
     case remote(RemoteClient, String)
+    case s3(S3Client, String)
     public var path: String {
         switch self {
         case .local(let url): url.standardizedFileURL.path
         case .remote(_, let path): RemotePath.normalize(path)
+        case .s3(_, let prefix): prefix
         }
     }
-    public var isRemote: Bool { if case .remote = self { return true }; return false }
+    public var isRemote: Bool { if case .local = self { return false }; return true }
+    public var isS3: Bool { if case .s3 = self { return true }; return false }
     private var endpoint: String {
         switch self {
         case .local: return "local"
         case .remote(let client, _):
             let p = client.profile
             return "\(p.protocolKind.rawValue)|\(p.host.lowercased())|\(p.port)|\(p.username)|\(p.trustedHostKey ?? "")"
+        case .s3(let client, _):
+            let p = client.endpoint
+            return "s3|\(p.secure)|\(p.host.lowercased())|\(p.port)|\(p.bucket)"
         }
     }
     public var id: String { Data(SHA256.hash(data: Data((endpoint + "|" + path).utf8))).base64EncodedString() }
     fileprivate func canonicalized() async throws -> Self {
         switch self {
         case .local(let url): return .local(try await SyncIO.worker { url.standardizedFileURL.resolvingSymlinksInPath() })
-        case .remote: return self
+        case .remote, .s3: return self
         }
     }
     func controlled(_ control: TransferControl?, rate: Int64) -> Self {
@@ -33,13 +39,22 @@ public enum SyncRoot: Sendable {
         case .remote(let client, let path):
             return .remote(RemoteClient(profile: client.profile, credentials: client.credentials, control: control,
                                         rateLimit: rate, certificateAuthority: client.certificateAuthority), path)
+        case .s3(let client, let prefix):
+            return .s3(S3Client(endpoint: client.endpoint, credentials: client.credentials, control: control,
+                               rateLimit: rate, certificateAuthority: client.certificateAuthority), prefix)
         }
     }
     fileprivate func validate(with other: Self) async throws {
         if endpoint == other.endpoint {
-            let a = isRemote ? path : path.lowercased(), b = other.isRemote ? other.path : other.path.lowercased()
-            if a == b || a.hasPrefix(b == "/" ? b : b + "/") || b.hasPrefix(a == "/" ? a : a + "/") {
-                throw SyncError.overlappingRoots
+            if isS3 {
+                // S3 prefixes are byte-exact, include their delimiter, and are never file-path normalized.
+                let a = Data(path.utf8), b = Data(other.path.utf8)
+                guard !a.starts(with: b), !b.starts(with: a) else { throw SyncError.overlappingRoots }
+            } else {
+                let a = isRemote ? path : path.lowercased(), b = other.isRemote ? other.path : other.path.lowercased()
+                if a == b || a.hasPrefix(b == "/" ? b : b + "/") || b.hasPrefix(a == "/" ? a : a + "/") {
+                    throw SyncError.overlappingRoots
+                }
             }
         }
         for root in [self, other] {
@@ -50,6 +65,8 @@ public enum SyncRoot: Sendable {
                     return values.isDirectory == true && values.isSymbolicLink != true
                 }
                 guard valid else { throw SyncError.invalidPlan }
+            } else if case .s3(let client, let prefix) = root {
+                try await S3Sync.validateRoot(client, prefix: prefix)
             } else if root.path != "/" {
                 guard let entry = try await root.absoluteEntry(root.path), entry.isDirectory, !entry.isSymbolicLink else { throw SyncError.invalidPlan }
             }
@@ -60,10 +77,12 @@ public enum SyncRoot: Sendable {
         case .local:
             return try await SyncIO.worker { try LocalFiles.list(URL(fileURLWithPath: path).deletingLastPathComponent(), showHidden: true).first { $0.path == path } }
         case .remote(let client, _): return try await client.list(RemotePath.parent(path)).first { $0.path == path }
+        case .s3: throw SyncError.invalidPlan
         }
     }
     fileprivate func fullPath(_ relative: String) throws -> String {
         try SyncPath.validate(relative)
+        if isS3 { return try S3Sync.key(prefix: path, relative: relative) }
         return relative.split(separator: "/").reduce(path) { partial, component in partial == "/" ? "/" + component : partial + "/" + component }
     }
     fileprivate func list(_ relative: String) async throws -> [FileEntry] {
@@ -71,10 +90,16 @@ public enum SyncRoot: Sendable {
         switch self {
         case .local: return try await SyncIO.worker { try LocalFiles.list(URL(fileURLWithPath: directory), showHidden: true) }
         case .remote(let client, _): return try await client.list(directory)
+        case .s3(let client, _):
+            let prefix = relative.isEmpty ? directory : directory + "/"
+            let objects = try await client.list(prefix: prefix)
+            try S3TreeSnapshot.validateChildren(objects)
+            return objects.map(\.fileEntry)
         }
     }
     fileprivate func record(_ relative: String, contents: Bool = false, control: TransferControl? = nil) async throws -> SyncRecord? {
         let absolute = try fullPath(relative)
+        if case .s3(let client, _) = self { return try await S3Sync.record(client, key: absolute, contents: contents) }
         let metadata: SyncRecord?
         if case .local = self {
             metadata = try await SyncIO.worker {
@@ -94,6 +119,10 @@ public enum SyncRoot: Sendable {
     }
     fileprivate func hash(_ relative: String, size: Int64, control: TransferControl? = nil) async throws -> String {
         if case .local = self { return try await SyncIO.digest(URL(fileURLWithPath: fullPath(relative)), control: control) }
+        if case .s3(let client, _) = self {
+            let key = try fullPath(relative), version = try await client.fileVersion(key)
+            return try await S3Sync.digest(client, key: key, version: version)
+        }
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent("aethertransfer-sync-\(UUID().uuidString)")
         try await SyncIO.createTemporaryDirectory(directory, requiredBytes: size)
         defer { try? FileManager.default.removeItem(at: directory) }
@@ -102,10 +131,14 @@ public enum SyncRoot: Sendable {
         return try await SyncIO.digest(target, control: control)
     }
     fileprivate func materialize(_ relative: String, to target: URL, control: TransferControl?,
+                                 expected: SyncRecord? = nil,
                                  progress: @escaping @Sendable (TransferProgress) -> Void) async throws {
         switch self {
         case .local: try await SyncIO.copy(URL(fileURLWithPath: fullPath(relative)), to: target, control: control, progress: progress)
         case .remote(let client, _): try await client.download(fullPath(relative), to: target, progress: progress)
+        case .s3(let client, _):
+            guard let version = expected?.remoteVersion else { throw SyncError.invalidPlan }
+            try await client.download(fullPath(relative), to: target, expectedVersion: version, progress: progress)
         }
     }
     fileprivate func mkdir(_ relative: String) async throws {
@@ -113,6 +146,7 @@ public enum SyncRoot: Sendable {
         switch self {
         case .local: try await SyncIO.worker { try FileManager.default.createDirectory(at: URL(fileURLWithPath: absolute), withIntermediateDirectories: false) }
         case .remote(let client, _): try await client.mkdir(absolute)
+        case .s3(let client, _): try await client.createPrefix(absolute + "/")
         }
     }
     fileprivate func delete(_ relative: String, directory: Bool) async throws -> URL? {
@@ -125,9 +159,10 @@ public enum SyncRoot: Sendable {
                 return result as URL?
             }
         case .remote(let client, _): try await client.remove(absolute, directory: directory); return nil
+        case .s3: throw SyncError.invalidPlan // No unconditional mirror deletion of S3 objects.
         }
     }
-    fileprivate func commit(_ staging: URL, to relative: String, overwrite: Bool, modified: Date?,
+    fileprivate func commit(_ staging: URL, to relative: String, overwrite: Bool, modified: Date?, expected: SyncRecord?,
                             progress: @escaping @Sendable (TransferProgress) -> Void) async throws {
         let absolute = try fullPath(relative)
         switch self {
@@ -142,6 +177,9 @@ public enum SyncRoot: Sendable {
                 } else { try fm.moveItem(at: staging, to: destination) }
             }
         case .remote(let client, _): try await client.upload(staging, to: absolute, overwrite: overwrite, progress: progress)
+        case .s3(let client, _):
+            if overwrite && expected?.remoteVersion == nil { throw SyncError.invalidPlan }
+            try await client.upload(staging, to: absolute, overwrite: overwrite, expectedVersion: expected?.remoteVersion, progress: progress)
         }
     }
 }
@@ -217,9 +255,20 @@ public enum SyncEngine {
         try await left.validate(with: right)
         async let a = scan(left, options: options)
         async let b = scan(right, options: options)
-        return try await SyncPlanner.plan(left: a, right: b, options: options)
+        let plan = try await SyncPlanner.plan(left: a, right: b, options: options)
+        let items = plan.items.map { item in
+            if case .delete(let side) = item.operation, (side == .left ? left : right).isS3 {
+                return SyncItem(path: item.path, operation: .blocked, left: item.left, right: item.right,
+                                reason: .s3MirrorBlocked)
+            }
+            return item
+        }
+        return SyncPlan(left: plan.left, right: plan.right, options: plan.options, items: items, unchanged: plan.unchanged)
     }
     private static func scan(_ root: SyncRoot, options: SyncOptions, control: TransferControl? = nil) async throws -> SyncSnapshot {
+        if case .s3(let client, let prefix) = root {
+            return try await S3Sync.scan(client, prefix: prefix, rootID: root.id, options: options)
+        }
         try options.validate()
         var pending = [(path: "", depth: 0)], records: [String: SyncRecord] = [:]
         while let directory = pending.popLast() {
@@ -280,6 +329,15 @@ public enum SyncEngine {
             }
         }
         let operationByPath = Dictionary(uniqueKeysWithValues: operations.map { ($0.0.path, $0.1) })
+        // Validate every S3 destination key and sibling alias before the first directory or object is written.
+        for side in [SyncSide.left, .right] where roots[side]!.isS3 {
+            let writes = operations.filter { $0.1.destination == side }
+            guard !writes.contains(where: { if case .delete = $0.1 { return true }; return false }) else { throw SyncError.invalidPlan }
+            try S3Sync.validateDestination(prefix: roots[side]!.path, snapshot: snapshots[side]!, writes: writes)
+            if case .s3(let client, let prefix) = roots[side]! {
+                try await S3Sync.validateExistingNames(client, prefix: prefix, writes: writes)
+            }
+        }
         let depthByPath = Dictionary(uniqueKeysWithValues: operations.map { ($0.0.path, $0.0.path.split(separator: "/").count) })
         for (item, operation) in operations {
             guard let side = operation.destination else { throw SyncError.invalidPlan }
@@ -337,12 +395,12 @@ public enum SyncEngine {
                     progress(TransferProgress(completed: base + count, total: total, scope: .synchronization))
                 }
                 if source.isRemote { try await SyncIO.worker { try SyncIO.checkSpace(at: stagingDirectory, requiredBytes: size) } }
-                try await source.materialize(item.path, to: temporary, control: control, progress: progressForSource)
+                try await source.materialize(item.path, to: temporary, control: control, expected: sourceRecord, progress: progressForSource)
                 if let digest = sourceRecord.digest, try await SyncIO.digest(temporary, control: control) != digest { throw SyncError.changed(item.path) }
                 try await verify(source, path: item.path, expected: sourceRecord, contents: false)
                 try await verify(destination, path: item.path, expected: expected, contents: plan.options.comparison == .contents, control: control)
                 try await SyncIO.checkpoint(control)
-                try await destination.commit(temporary, to: item.path, overwrite: expected != nil, modified: sourceRecord.modified) { value in
+                try await destination.commit(temporary, to: item.path, overwrite: expected != nil, modified: sourceRecord.modified, expected: expected) { value in
                     progress(TransferProgress(completed: base + size / 2 + min(size, value.completed) / 2, total: total, scope: .synchronization))
                 }
                 doneBytes += size
@@ -354,7 +412,7 @@ public enum SyncEngine {
     }
     private static func verify(_ root: SyncRoot, path: String, expected: SyncRecord?, contents: Bool, control: TransferControl? = nil) async throws {
         let actual = try await root.record(path, contents: contents && expected?.digest != nil, control: control)
-        let comparison = contents ? expected : expected.map { SyncRecord(kind: $0.kind, size: $0.size, modified: $0.modified) }
+        let comparison = contents ? expected : expected.map { SyncRecord(kind: $0.kind, size: $0.size, modified: $0.modified, remoteVersion: $0.remoteVersion) }
         guard actual == comparison else { throw SyncError.changed(path) }
     }
 }

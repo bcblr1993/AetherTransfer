@@ -22,7 +22,7 @@ import AetherTransferCore
                 Button(L10n.text("刷新")) { tabs.current.refreshLocal(); tabs.current.refreshRemote() }.keyboardShortcut("r")
                 Button(L10n.text("上传所选文件")) { tabs.current.uploadSelection() }.keyboardShortcut("u", modifiers: [.command, .shift])
                 Button(L10n.text("下载所选文件")) { tabs.current.downloadSelection() }.keyboardShortcut("d", modifiers: [.command, .shift])
-                Button(L10n.text("同步目录…")) { tabs.current.showSync = true }.disabled(tabs.current.isS3).keyboardShortcut("s", modifiers: [.command, .shift])
+                Button(L10n.text("同步目录…")) { tabs.current.showSync = true }.keyboardShortcut("s", modifiers: [.command, .shift])
                 Button(L10n.text("编辑所选文本…")) { tabs.current.editSelection() }.keyboardShortcut("e")
                 Button(L10n.text("快速查看…")) { tabs.current.previewSelection() }.keyboardShortcut("y")
                 Button(L10n.text("文件信息")) { tabs.current.showInspector.toggle() }.keyboardShortcut("i")
@@ -185,7 +185,7 @@ struct MainView: View {
             }
             ToolbarItem { Button(L10n.text("活动"), systemImage: "list.bullet.rectangle") { showActivities.toggle() } }
             ToolbarItem { Button(L10n.text("文件信息"), systemImage: "info.circle") { workspace.showInspector.toggle() } }
-            ToolbarItem { Button(L10n.text("同步"), systemImage: "arrow.triangle.2.circlepath") { workspace.showSync = true }.disabled(workspace.isS3) }
+            ToolbarItem { Button(L10n.text("同步"), systemImage: "arrow.triangle.2.circlepath") { workspace.showSync = true } }
             ToolbarItem { Button(L10n.text("断开"), systemImage: "eject") { workspace.disconnect() }.disabled(!workspace.hasRemoteConnection) }
         }
         .searchable(text: $query, prompt: L10n.text("筛选当前目录"))

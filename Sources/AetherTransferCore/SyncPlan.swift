@@ -43,9 +43,11 @@ public struct SyncRecord: Sendable, Hashable {
     public let size: Int64
     public let modified: Date?
     public let digest: String?
-    public init(kind: SyncRecordKind, size: Int64 = 0, modified: Date? = nil, digest: String? = nil) {
+    public let remoteVersion: RemoteFileVersion?
+    public init(kind: SyncRecordKind, size: Int64 = 0, modified: Date? = nil, digest: String? = nil,
+                remoteVersion: RemoteFileVersion? = nil) {
         self.kind = kind; self.size = kind == .directory ? 0 : max(0, size)
-        self.modified = kind == .directory ? nil : modified; self.digest = digest
+        self.modified = kind == .directory ? nil : modified; self.digest = digest; self.remoteVersion = remoteVersion
     }
 }
 public struct SyncSnapshot: Sendable, Equatable {
@@ -63,13 +65,34 @@ public enum SyncOperation: Sendable, Equatable {
         }
     }
 }
+enum SyncExplanation: Sendable, Equatable {
+    case symbolicLink, typeConflict, overwrite(SyncSide), conflict, newDirectory, missingFile, extraTarget, s3MirrorBlocked
+    func text(language: AppLanguage?) -> String {
+        switch self {
+        case .symbolicLink: L10n.text("符号链接需要单独处理，不会跟随或删除。", language: language)
+        case .typeConflict: L10n.text("文件与目录类型冲突，请先处理。", language: language)
+        case .overwrite(.right): L10n.text("覆盖右侧同名文件。", language: language)
+        case .overwrite(.left): L10n.text("覆盖左侧同名文件。", language: language)
+        case .conflict: L10n.text("两侧文件有差异，请逐项选择方向。", language: language)
+        case .newDirectory: L10n.text("新建目标目录。", language: language)
+        case .missingFile: L10n.text("复制缺少的文件。", language: language)
+        case .extraTarget: L10n.text("目标多余项目；删除默认不选中。", language: language)
+        case .s3MirrorBlocked: L10n.text("S3 镜像删除尚未完成版本保护验收，此项不会执行。", language: language)
+        }
+    }
+}
 public struct SyncItem: Identifiable, Sendable, Equatable {
     public var id: String { path }
     public let path: String
     public let operation: SyncOperation
     public let left: SyncRecord?
     public let right: SyncRecord?
-    public let explanation: String
+    private let reason: SyncExplanation
+    init(path: String, operation: SyncOperation, left: SyncRecord?, right: SyncRecord?, reason: SyncExplanation) {
+        self.path = path; self.operation = operation; self.left = left; self.right = right; self.reason = reason
+    }
+    public var explanation: String { localizedExplanation() }
+    public func localizedExplanation(language: AppLanguage? = nil) -> String { reason.text(language: language) }
     public var executable: Bool { operation != .blocked }
     public var selectedByDefault: Bool {
         switch operation { case .copy, .createDirectory: true; default: false }
@@ -119,17 +142,17 @@ public enum SyncPlanner {
             let a = left.records[path], b = right.records[path]
             if SyncPath.parents(path).contains(where: { blockedParents.contains($0) }) { continue }
             let operation: SyncOperation
-            let explanation: String
+            let reason: SyncExplanation
             if a?.kind == .symbolicLink || b?.kind == .symbolicLink {
-                operation = .blocked; explanation = L10n.text("符号链接需要单独处理，不会跟随或删除。"); blockedParents.insert(path)
+                operation = .blocked; reason = .symbolicLink; blockedParents.insert(path)
             } else if let a, let b, a.kind != b.kind {
-                operation = .blocked; explanation = L10n.text("文件与目录类型冲突，请先处理。"); blockedParents.insert(path)
+                operation = .blocked; reason = .typeConflict; blockedParents.insert(path)
             } else if let a, let b {
                 if a.kind == .directory || equivalent(a, b, options: options) { unchanged += 1; continue }
                 switch options.mode {
-                case .leftToRight: operation = .copy(.leftToRight); explanation = L10n.text("覆盖右侧同名文件。")
-                case .rightToLeft: operation = .copy(.rightToLeft); explanation = L10n.text("覆盖左侧同名文件。")
-                case .bidirectional: operation = .conflict; explanation = L10n.text("两侧文件有差异，请逐项选择方向。")
+                case .leftToRight: operation = .copy(.leftToRight); reason = .overwrite(.right)
+                case .rightToLeft: operation = .copy(.rightToLeft); reason = .overwrite(.left)
+                case .bidirectional: operation = .conflict; reason = .conflict
                 }
             } else {
                 let present: SyncSide = a == nil ? .right : .left
@@ -137,12 +160,12 @@ public enum SyncPlanner {
                 let source: SyncSide? = options.mode == .bidirectional ? nil : (options.mode == .leftToRight ? .left : .right)
                 if source == nil || source == present {
                     operation = record.kind == .directory ? .createDirectory(present.opposite) : .copy(present == .left ? .leftToRight : .rightToLeft)
-                    explanation = record.kind == .directory ? L10n.text("新建目标目录。") : L10n.text("复制缺少的文件。")
+                    reason = record.kind == .directory ? .newDirectory : .missingFile
                 } else if options.mirror {
-                    operation = .delete(present); explanation = L10n.text("目标多余项目；删除默认不选中。")
+                    operation = .delete(present); reason = .extraTarget
                 } else { unchanged += 1; continue }
             }
-            items.append(SyncItem(path: path, operation: operation, left: a, right: b, explanation: explanation))
+            items.append(SyncItem(path: path, operation: operation, left: a, right: b, reason: reason))
         }
         return SyncPlan(left: left, right: right, options: options, items: items, unchanged: unchanged)
     }

@@ -44,8 +44,8 @@ features:
     - kicker: { zh: 云存储, en: Cloud storage }
       title: { zh: S3 原生文件工作流, en: Native S3 file workflows }
       body:
-        zh: 开发候选支持前缀浏览、文件与递归目录队列传输、空目录、整体进度和覆盖 / 跳过 / 保留两份。已接入快速查看与 UTF-8 文本编辑，保存核对原对象版本，冲突保留草稿。完整界面验收、S3 同步、重启恢复及 AWS / R2 实际服务兼容性仍待完成。
-        en: The development candidate supports prefix browsing, queued file and recursive folder transfers, empty folders, overall progress and overwrite / skip / keep-both choices. Verified preview and UTF-8 editing are integrated; saves check the original object version and preserve drafts on conflicts. Full UI acceptance, S3 sync, restart recovery and actual AWS / R2 compatibility remain pending.
+        zh: 开发候选支持前缀浏览、文件与递归目录队列传输、空目录、整体进度和覆盖 / 跳过 / 保留两份。已接入快速查看、UTF-8 编辑和单向 / 双向同步，核对内容与原对象版本，编辑冲突保留草稿。S3 镜像删除不可执行；完整界面矩阵、重启恢复及 AWS / R2 实际服务兼容性仍待完成。
+        en: The development candidate supports prefix browsing, queued file and recursive folder transfers, empty folders, overall progress and overwrite / skip / keep-both choices. Preview, UTF-8 editing and one-way / two-way sync are integrated, with content and original object-version checks and draft preservation on editing conflicts. S3 mirror deletions cannot run. Full UI acceptance, restart recovery and actual AWS / R2 compatibility remain pending.
     - kicker: { zh: 隐私, en: Privacy }
       title: { zh: 凭据留在系统钥匙串, en: Credentials in system Keychain }
       body:
@@ -54,8 +54,8 @@ features:
     - kicker: { zh: 同步, en: Sync }
       title: { zh: 看清差异，再决定同步, en: Review differences before syncing }
       body:
-        zh: 开发候选已加入本地与远程目录的单向、双向差异预览，逐项选择方向与操作。镜像删除默认不选中，预览后文件变化会要求重新比较。
-        en: The development candidate includes one-way and two-way previews across local and remote folders, with per-item direction and action choices. Mirror deletions start unchecked; changed files require a new preview.
+        zh: 开发候选已加入本地、已连接服务器与 S3 目录的单向、双向差异预览，逐项选择方向与操作。预览后文件变化会要求重新比较。其他协议镜像删除默认不选中；S3 镜像删除仅列出不可执行项。
+        en: The development candidate includes one-way and two-way previews across local folders, connected servers and S3 prefixes, with per-item direction and action choices. Changed files require a new preview. Mirror deletions start unchecked for other protocols; S3 mirror deletions are listed but cannot run.
     - kicker: { zh: 编辑, en: Edit }
       title: { zh: 原生编辑，保存后回传, en: Native editing and save-back }
       body:

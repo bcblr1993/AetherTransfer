@@ -25,6 +25,18 @@ private final class S3TreeProgressRecorder: @unchecked Sendable {
     func value() -> TransferProgress? { lock.lock(); defer { lock.unlock() }; return latest }
 }
 
+private final class S3SyncProgressRecorder: @unchecked Sendable {
+    private let lock = NSLock()
+    private var announced = false
+    let started: XCTestExpectation
+    let threshold: Int64
+    init(_ started: XCTestExpectation, threshold: Int64) { self.started = started; self.threshold = threshold }
+    func record(_ value: TransferProgress) {
+        lock.lock(); defer { lock.unlock() }
+        if value.completed > threshold && !announced { announced = true; started.fulfill() }
+    }
+}
+
 @MainActor final class S3ProtocolTests: XCTestCase {
     private func client(control: TransferControl? = nil, rate: Int64 = 0) throws -> S3Client {
         let env = ProcessInfo.processInfo.environment
@@ -40,6 +52,190 @@ private final class S3TreeProgressRecorder: @unchecked Sendable {
         let url = FileManager.default.temporaryDirectory.appendingPathComponent("aethertransfer-s3-test-\(UUID())")
         try FileManager.default.createDirectory(at: url, withIntermediateDirectories: false)
         return url
+    }
+    func testSyncNestedRoundTripContentComparisonAndS3MirrorDeletionIsBlocked() async throws {
+        let remote = try client(), local = try folder(), prefix = "sync-roundtrip-\(UUID())/"
+        defer { try? FileManager.default.removeItem(at: local) }
+        let source = local.appendingPathComponent("source"), destination = local.appendingPathComponent("destination")
+        try FileManager.default.createDirectory(at: source.appendingPathComponent("nested/empty"), withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: destination, withIntermediateDirectories: false)
+        let bytes = Data("中英文 UTF-8\r\n".utf8)
+        try bytes.write(to: source.appendingPathComponent("nested/中文 +#%?.txt"))
+        try Data().write(to: source.appendingPathComponent("empty.txt"))
+        try Data("hidden".utf8).write(to: source.appendingPathComponent(".hidden"))
+        try Data("excluded".utf8).write(to: source.appendingPathComponent("ignored"))
+        try await remote.createPrefix(prefix)
+        var options = SyncOptions(); options.comparison = .contents; options.excludedPaths = ["ignored"]
+        let root = SyncRoot.s3(remote, prefix)
+        let plan = try await SyncEngine.preview(left: .local(source), right: root, options: options)
+        XCTAssertNil(plan.left.records[".hidden"]); XCTAssertNil(plan.left.records["ignored"])
+        _ = try await SyncEngine.execute(plan, left: .local(source), right: root, selected: Set(plan.items.filter(\.selectedByDefault).map(\.id)))
+        let unchanged = try await SyncEngine.preview(left: .local(source), right: root, options: options)
+        XCTAssertTrue(unchanged.items.isEmpty); XCTAssertEqual(unchanged.unchanged, 4)
+        options.includeHidden = true
+        let hidden = try await SyncEngine.preview(left: .local(source), right: root, options: options)
+        XCTAssertEqual(hidden.items.map(\.path), [".hidden"])
+        _ = try await SyncEngine.execute(hidden, left: .local(source), right: root, selected: [".hidden"])
+        options.mode = .rightToLeft
+        let download = try await SyncEngine.preview(left: .local(destination), right: root, options: options)
+        _ = try await SyncEngine.execute(download, left: .local(destination), right: root, selected: Set(download.items.filter(\.selectedByDefault).map(\.id)))
+        XCTAssertEqual(try Data(contentsOf: destination.appendingPathComponent("nested/中文 +#%?.txt")), bytes)
+        XCTAssertEqual(try Data(contentsOf: destination.appendingPathComponent(".hidden")), Data("hidden".utf8))
+        XCTAssertEqual(try Data(contentsOf: destination.appendingPathComponent("empty.txt")), Data())
+        var isDirectory: ObjCBool = false
+        XCTAssertTrue(FileManager.default.fileExists(atPath: destination.appendingPathComponent("nested/empty").path, isDirectory: &isDirectory)); XCTAssertTrue(isDirectory.boolValue)
+        let seed = local.appendingPathComponent("seed")
+        try Data("preserve".utf8).write(to: seed); try await remote.upload(seed, to: prefix + "orphan")
+        try Data("new".utf8).write(to: source.appendingPathComponent("new-file"))
+        options.mode = .leftToRight; options.mirror = true
+        let mirror = try await SyncEngine.preview(left: .local(source), right: root, options: options)
+        XCTAssertEqual(mirror.items.first { $0.path == "orphan" }?.operation, .blocked)
+        XCTAssertFalse(mirror.items.first { $0.path == "orphan" }!.selectedByDefault)
+        do {
+            _ = try await SyncEngine.execute(mirror, left: .local(source), right: root, selected: Set(mirror.items.map(\.id)))
+            XCTFail("A blocked mirror deletion must reject before any other write")
+        } catch SyncError.invalidPlan { }
+        do { _ = try await remote.fileVersion(prefix + "new-file"); XCTFail("Rejected plan must not partially write") }
+        catch S3Error.notFound { }
+        _ = try await SyncEngine.execute(mirror, left: .local(source), right: root, selected: Set(mirror.items.filter(\.selectedByDefault).map(\.id)))
+        let proof = local.appendingPathComponent("proof")
+        try await remote.download(prefix + "orphan", to: proof)
+        XCTAssertEqual(try Data(contentsOf: proof), Data("preserve".utf8))
+    }
+    func testSyncS3ToS3BidirectionalConflictsRequireExplicitDirection() async throws {
+        let remote = try client(), local = try folder(), a = "sync-left-\(UUID())/", b = "sync-right-\(UUID())/"
+        defer { try? FileManager.default.removeItem(at: local) }
+        try await remote.createPrefix(a); try await remote.createPrefix(b)
+        let seed = local.appendingPathComponent("seed"), proof = local.appendingPathComponent("proof")
+        for (key, text) in [(a + "left-only", "left"), (b + "right-only", "right"), (a + "conflict", "old"), (b + "conflict", "new")] {
+            try Data(text.utf8).write(to: seed); try await remote.upload(seed, to: key)
+        }
+        let left = SyncRoot.s3(remote, a), right = SyncRoot.s3(remote, b)
+        var options = SyncOptions(); options.mode = .bidirectional; options.comparison = .contents
+        let plan = try await SyncEngine.preview(left: left, right: right, options: options)
+        XCTAssertEqual(plan.items.first { $0.path == "conflict" }?.operation, .conflict)
+        let all = Set(plan.items.map(\.id))
+        do { _ = try await SyncEngine.execute(plan, left: left, right: right, selected: all); XCTFail("Conflict needs a direction") }
+        catch SyncError.unresolved { }
+        _ = try await SyncEngine.execute(plan, left: left, right: right, selected: all, resolutions: ["conflict": .rightToLeft])
+        for (key, text) in [(b + "left-only", "left"), (a + "right-only", "right"), (a + "conflict", "new")] {
+            try await remote.download(key, to: proof, overwrite: true)
+            XCTAssertEqual(try Data(contentsOf: proof), Data(text.utf8))
+        }
+        let finished = try await SyncEngine.preview(left: left, right: right, options: options)
+        XCTAssertTrue(finished.items.isEmpty)
+    }
+    func testSyncRejectsStaleSourceAndDestinationETagsBeforeWritesEvenForSizeComparison() async throws {
+        let remote = try client(), local = try folder(), prefix = "sync-stale-\(UUID())/"
+        defer { try? FileManager.default.removeItem(at: local) }
+        let source = local.appendingPathComponent("source"), destination = local.appendingPathComponent("destination"), seed = local.appendingPathComponent("seed")
+        try FileManager.default.createDirectory(at: source, withIntermediateDirectories: false)
+        try FileManager.default.createDirectory(at: destination, withIntermediateDirectories: false)
+        try await remote.createPrefix(prefix)
+        try Data("old".utf8).write(to: seed); try await remote.upload(seed, to: prefix + "file")
+        var options = SyncOptions(); options.comparison = .fileSize; options.mode = .rightToLeft
+        let root = SyncRoot.s3(remote, prefix)
+        let download = try await SyncEngine.preview(left: .local(destination), right: root, options: options)
+        try Data("new".utf8).write(to: seed); try await remote.upload(seed, to: prefix + "file", overwrite: true)
+        do { _ = try await SyncEngine.execute(download, left: .local(destination), right: root, selected: ["file"]); XCTFail("Source ETag changed") }
+        catch SyncError.changed { }
+        XCTAssertFalse(FileManager.default.fileExists(atPath: destination.appendingPathComponent("file").path))
+        try Data("replacement".utf8).write(to: source.appendingPathComponent("file"))
+        options.mode = .leftToRight
+        let upload = try await SyncEngine.preview(left: .local(source), right: root, options: options)
+        try Data("now".utf8).write(to: seed); try await remote.upload(seed, to: prefix + "file", overwrite: true)
+        do { _ = try await SyncEngine.execute(upload, left: .local(source), right: root, selected: ["file"]); XCTFail("Destination ETag changed") }
+        catch SyncError.changed { }
+        try await remote.download(prefix + "file", to: seed, overwrite: true)
+        XCTAssertEqual(try Data(contentsOf: seed), Data("now".utf8))
+    }
+    func testSyncPreflightsAllDestinationKeyLengthsBeforeCreatingDirectories() async throws {
+        let remote = try client(), local = try folder(), prefix = "sync-long-\(UUID())/" + String(repeating: "a", count: 200) + "/"
+        defer { try? FileManager.default.removeItem(at: local) }
+        try await remote.createPrefix(prefix)
+        let nested = "new/" + String(repeating: String(repeating: "b", count: 100) + "/", count: 7)
+        try FileManager.default.createDirectory(at: local.appendingPathComponent(nested), withIntermediateDirectories: true)
+        try Data("keep local".utf8).write(to: local.appendingPathComponent(nested + String(repeating: "c", count: 80)))
+        let root = SyncRoot.s3(remote, prefix), plan = try await SyncEngine.preview(left: .local(local), right: root, options: SyncOptions())
+        do {
+            _ = try await SyncEngine.execute(plan, left: .local(local), right: root, selected: Set(plan.items.map(\.id)))
+            XCTFail("All object keys must be validated before the first directory marker is created")
+        } catch TransferError.invalidPath { }
+        let untouched = try await remote.list(prefix: prefix)
+        XCTAssertTrue(untouched.isEmpty)
+    }
+    func testSyncRejectsAmbiguousCaseMappingsBeforeLocalWrites() async throws {
+        let remote = try client(), local = try folder(), seed = local.appendingPathComponent("seed")
+        defer { try? FileManager.default.removeItem(at: local) }
+        try Data("unsafe alias".utf8).write(to: seed)
+        for names in [["A.txt", "a.txt"], ["nested/A.txt", "nested/a.txt"]] {
+            let prefix = "sync-alias-\(UUID())/"
+            try await remote.createPrefix(prefix)
+            for name in names { try await remote.upload(seed, to: prefix + name) }
+            let listingPrefix = names[0].contains("/") ? prefix + "nested/" : prefix
+            let siblings = try await remote.list(prefix: listingPrefix)
+            XCTAssertEqual(Set(siblings.map(\.name)), ["A.txt", "a.txt"], "The service must really preserve both distinct keys")
+            var options = SyncOptions(); options.mode = .rightToLeft; options.excludedPaths = [names[0]]
+            do {
+                _ = try await SyncEngine.preview(left: .local(local), right: .s3(remote, prefix), options: options)
+                XCTFail("Excluded aliases must not conceal an ambiguous mapping")
+            } catch TransferError.remote { }
+        }
+        XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: local.path), ["seed"])
+        let source = local.appendingPathComponent("source"), prefix = "sync-destination-alias-\(UUID())/"
+        try FileManager.default.createDirectory(at: source, withIntermediateDirectories: false)
+        try Data("new".utf8).write(to: source.appendingPathComponent("a.txt"))
+        try await remote.createPrefix(prefix); try await remote.upload(seed, to: prefix + "A.txt")
+        var options = SyncOptions(); options.excludedPaths = ["A.txt"]
+        let root = SyncRoot.s3(remote, prefix), plan = try await SyncEngine.preview(left: .local(source), right: root, options: options)
+        XCTAssertNil(plan.right.records["A.txt"])
+        do {
+            _ = try await SyncEngine.execute(plan, left: .local(source), right: root, selected: ["a.txt"])
+            XCTFail("An excluded destination alias must still block a lossy sibling mapping")
+        } catch TransferError.remote { }
+        let after = try await remote.list(prefix: prefix)
+        XCTAssertEqual(after.map(\.name), ["A.txt"])
+    }
+    func testSyncConditionalUploadRejectsDestinationChangedDuringMultipartCommit() async throws {
+        let remote = try client(), local = try folder(), prefix = "sync-race-\(UUID())/", size = 12 * 1024 * 1024
+        defer { try? FileManager.default.removeItem(at: local) }
+        let source = local.appendingPathComponent("source"), seed = local.appendingPathComponent("seed"), proof = local.appendingPathComponent("proof")
+        try FileManager.default.createDirectory(at: source, withIntermediateDirectories: false)
+        try Data(repeating: 65, count: size).write(to: source.appendingPathComponent("file"))
+        try Data("old".utf8).write(to: seed); try await remote.createPrefix(prefix); try await remote.upload(seed, to: prefix + "file")
+        var options = SyncOptions(); options.comparison = .fileSize
+        let root = SyncRoot.s3(remote, prefix), plan = try await SyncEngine.preview(left: .local(source), right: root, options: options)
+        let started = expectation(description: "Multipart sync has uploaded actual bytes"), probe = S3SyncProgressRecorder(started, threshold: Int64(size / 2))
+        let task = Task { try await SyncEngine.execute(plan, left: .local(source), right: root, selected: ["file"], rateLimit: 2 * 1024 * 1024, progress: probe.record) }
+        await fulfillment(of: [started], timeout: 20)
+        try Data("concurrent".utf8).write(to: seed); try await remote.upload(seed, to: prefix + "file", overwrite: true)
+        do { _ = try await task.value; XCTFail("Completion must preserve the preview destination ETag") }
+        catch TransferError.conflict { }
+        try await remote.download(prefix + "file", to: proof)
+        XCTAssertEqual(try Data(contentsOf: proof), Data("concurrent".utf8))
+        XCTAssertEqual(try Data(contentsOf: source.appendingPathComponent("file")), Data(repeating: 65, count: size))
+        let pending = try await remote.activeMultipartUploads(); XCTAssertEqual(pending, 0)
+    }
+    func testSyncCancellationDuringMultipartUploadAbortsOwnedUploadAndPreservesDestination() async throws {
+        let remote = try client(), local = try folder(), prefix = "sync-cancel-\(UUID())/", size = 12 * 1024 * 1024
+        defer { try? FileManager.default.removeItem(at: local) }
+        let source = local.appendingPathComponent("source"), seed = local.appendingPathComponent("seed"), proof = local.appendingPathComponent("proof")
+        try FileManager.default.createDirectory(at: source, withIntermediateDirectories: false)
+        try Data(repeating: 66, count: size).write(to: source.appendingPathComponent("file"))
+        try Data("old".utf8).write(to: seed); try await remote.createPrefix(prefix); try await remote.upload(seed, to: prefix + "file")
+        var options = SyncOptions(); options.comparison = .fileSize
+        let root = SyncRoot.s3(remote, prefix), plan = try await SyncEngine.preview(left: .local(source), right: root, options: options)
+        let before = Set(try FileManager.default.contentsOfDirectory(atPath: FileManager.default.temporaryDirectory.path).filter { $0.hasPrefix(".aethertransfer-sync-") })
+        let started = expectation(description: "Sync upload is incomplete"), probe = S3SyncProgressRecorder(started, threshold: Int64(size / 2))
+        let task = Task { try await SyncEngine.execute(plan, left: .local(source), right: root, selected: ["file"], rateLimit: 1024 * 1024, progress: probe.record) }
+        await fulfillment(of: [started], timeout: 20); task.cancel()
+        do { _ = try await task.value; XCTFail("Cancelled sync must not report success") }
+        catch is CancellationError { }
+        try await remote.download(prefix + "file", to: proof)
+        XCTAssertEqual(try Data(contentsOf: proof), Data("old".utf8))
+        let pending = try await remote.activeMultipartUploads(); XCTAssertEqual(pending, 0)
+        let after = Set(try FileManager.default.contentsOfDirectory(atPath: FileManager.default.temporaryDirectory.path).filter { $0.hasPrefix(".aethertransfer-sync-") })
+        XCTAssertEqual(before, after)
     }
     func testTextEditorPreservesBOMCRLFAndExternalDraftSavesWithVersionChecks() async throws {
         let remote = try client(), local = try folder(), prefix = "edit-\(UUID())/"

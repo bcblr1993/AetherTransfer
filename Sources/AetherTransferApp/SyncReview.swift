@@ -128,10 +128,16 @@ struct SyncReviewView: View {
             if let client = tab.workspace.client {
                 locations.append(SyncLocation(id: "\(tab.id)/remote", name: "\(client.profile.name.isEmpty ? client.profile.host : client.profile.name) · \(tab.workspace.remotePath)",
                                               root: .remote(client, tab.workspace.remotePath)))
+            } else if let client = tab.workspace.s3Client {
+                let savedName = tab.workspace.connectedProfile?.name ?? ""
+                let name = savedName.isEmpty ? client.endpoint.host : savedName
+                let target = client.endpoint.bucket + (tab.workspace.remotePath.isEmpty ? "" : "/" + tab.workspace.remotePath)
+                locations.append(SyncLocation(id: "\(tab.id)/remote", name: "S3 · \(name) · \(target)",
+                                              root: .s3(client, tab.workspace.remotePath)))
             }
         }
         _model = StateObject(wrappedValue: SyncReviewModel(locations: locations, leftID: "\(tabs.selected)/local",
-                                                         rightID: workspace.client == nil ? "" : "\(tabs.selected)/remote"))
+                                                         rightID: workspace.client == nil && workspace.s3Client == nil ? "" : "\(tabs.selected)/remote"))
     }
     var body: some View {
         let _ = interfaceLocale
@@ -178,9 +184,13 @@ struct SyncReviewView: View {
                 }.padding(.top, 8)
             }
             Text(model.options.comparison == .contents
-                 ? L10n.text("内容比较会读取所有文件；远程文件逐个临时下载，完成即清理。")
+                 ? L10n.text("内容比较会读取所有文件；S3 流式校验，其他远程文件逐个临时下载，完成即清理。")
                  : L10n.text("日期按分钟精度比较；相同大小或日期不能保证内容相同，可改用文件内容比较。"))
                 .font(.caption).foregroundStyle(.secondary)
+            if model.left?.root.isS3 == true || model.right?.root.isS3 == true {
+                Text(L10n.text("S3 上传不会保留源文件的修改日期，建议按文件内容比较。S3 镜像删除项仅供查看，不能执行。"))
+                    .font(.caption).foregroundStyle(.secondary)
+            }
             Divider()
             preview
             Divider()
@@ -193,7 +203,8 @@ struct SyncReviewView: View {
                 Spacer()
                 Button(model.busy ? L10n.text("停止预览") : L10n.text("生成预览")) { if model.busy { model.invalidate() } else { model.preview() } }
                     .buttonStyle(.glass).disabled(model.left == nil || model.right == nil)
-                Button(L10n.text("执行所选同步")) { confirm = true }.buttonStyle(.glassProminent).disabled(!model.canExecute)
+                Button(L10n.text("执行所选同步")) { confirm = true }.buttonStyle(.glassProminent)
+                    .keyboardShortcut(.defaultAction).disabled(!model.canExecute)
             }
         }.padding(InterfaceStyle.pageInset).frame(width: 1020, height: 680)
         .onChange(of: model.leftID) { model.invalidate() }
@@ -258,7 +269,8 @@ struct SyncReviewView: View {
                 }
                 Button(L10n.text("选择本地目录"), systemImage: "folder") { model.chooseFolder(side: side) }.labelStyle(.iconOnly)
             }
-            Text(value?.root.path ?? L10n.text("可以选择本地目录或已连接的远程目录"))
+            Text(value?.root.isS3 == true && value?.root.path.isEmpty == true ? L10n.text("存储桶根目录")
+                 : value?.root.path ?? L10n.text("可以选择本地目录或已连接的远程目录"))
                 .font(.system(.caption, design: .monospaced)).foregroundStyle(.secondary).lineLimit(1)
                 .truncationMode(.middle).textSelection(.enabled)
         }.frame(maxWidth: .infinity)
