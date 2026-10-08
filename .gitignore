@@ -8,3 +8,4 @@ xcuserdata/
 .env.*
 !.env.example
 reports/
+__pycache__/

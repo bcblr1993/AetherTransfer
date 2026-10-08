@@ -470,7 +470,7 @@ struct ConnectionView: View {
                     if profile.protocolKind == .webdav { Text("HTTP 会以明文传输认证和文件内容。建议优先选择 WebDAV · HTTPS。").font(.caption).foregroundStyle(.secondary) }
                     if profile.protocolKind.isWebDAV { Text("填写服务器主机和 WebDAV 起始路径；如 /remote.php/dav/files/用户名/。HTTPS 会验证服务器证书。").font(.caption).foregroundStyle(.secondary) }
                     if profile.protocolKind == .s3 {
-                        Text("使用 HTTPS 路径式端点；服务器地址仅填主机名。R2 区域通常填 auto。当前支持前缀浏览、普通文件传输与对象删除，目录传输和续传正在适配。")
+                        Text("使用 HTTPS 路径式端点；服务器地址仅填主机名。R2 区域通常填 auto。支持前缀浏览、文件和目录传输以及对象删除；重启续传正在适配。")
                             .font(.caption).foregroundStyle(.secondary)
                         Text("自定义 CA 仍验证证书和服务器名称；留空时使用应用自带的公共根证书。")
                             .font(.caption).foregroundStyle(.secondary)

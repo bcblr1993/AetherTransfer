@@ -18,6 +18,13 @@ private final class S3ProgressRecorder: @unchecked Sendable {
     func value() -> Int64 { lock.lock(); defer { lock.unlock() }; return completed }
 }
 
+private final class S3TreeProgressRecorder: @unchecked Sendable {
+    private let lock = NSLock()
+    private var latest: TransferProgress?
+    func record(_ value: TransferProgress) { lock.lock(); defer { lock.unlock() }; latest = value }
+    func value() -> TransferProgress? { lock.lock(); defer { lock.unlock() }; return latest }
+}
+
 @MainActor final class S3ProtocolTests: XCTestCase {
     private func client(control: TransferControl? = nil, rate: Int64 = 0) throws -> S3Client {
         let env = ProcessInfo.processInfo.environment
@@ -241,5 +248,150 @@ private final class S3ProgressRecorder: @unchecked Sendable {
         try await remote.download(target, to: proof); XCTAssertEqual(try Data(contentsOf: proof), data)
         let pending = try await remote.activeMultipartUploads(); XCTAssertEqual(pending, 0)
         try await remote.remove(target)
+    }
+
+    func testRecursiveDirectoryRoundTripPreservesEmptyHiddenAndSpecialFiles() async throws {
+        let remote = try client(), local = try folder(), prefix = "tree-\(UUID())/"
+        defer { try? FileManager.default.removeItem(at: local) }
+        let source = local.appendingPathComponent("source"), destination = local.appendingPathComponent("download")
+        try FileManager.default.createDirectory(at: source.appendingPathComponent("子目录"), withIntermediateDirectories: true)
+        try FileManager.default.createDirectory(at: source.appendingPathComponent(".hidden"), withIntermediateDirectories: false)
+        let bytes = Data(repeating: 0x83, count: 1024 * 1024 + 31)
+        try bytes.write(to: source.appendingPathComponent("子目录/中文 空格+#%?.txt"))
+        try Data().write(to: source.appendingPathComponent("empty.txt"))
+        let upload = S3TreeProgressRecorder(), download = S3TreeProgressRecorder()
+        try await remote.uploadTree(source, to: prefix) { upload.record($0) }
+        let root = FileEntry(name: "source", path: prefix, isDirectory: true, s3Key: prefix)
+        try await remote.downloadTree(root, to: destination) { download.record($0) }
+        XCTAssertEqual(try Data(contentsOf: destination.appendingPathComponent("子目录/中文 空格+#%?.txt")), bytes)
+        XCTAssertEqual(try Data(contentsOf: destination.appendingPathComponent("empty.txt")), Data())
+        XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: destination.appendingPathComponent(".hidden").path), [])
+        for final in [try XCTUnwrap(upload.value()), try XCTUnwrap(download.value())] {
+            XCTAssertEqual(final.scope, .directory); XCTAssertEqual(final.total, Int64(bytes.count))
+            XCTAssertEqual(final.completed, final.total); XCTAssertEqual(final.completedItems, 5)
+            XCTAssertEqual(final.totalItems, 5); XCTAssertEqual(final.skippedItems, 0)
+        }
+        let active = try await remote.activeMultipartUploads(); XCTAssertEqual(active, 0)
+    }
+
+    func testRecursiveDirectoryPoliciesRecheckAndPreserveUnrelatedFiles() async throws {
+        let remote = try client(), local = try folder(), prefix = "tree-policy-\(UUID())/"
+        defer { try? FileManager.default.removeItem(at: local) }
+        let source = local.appendingPathComponent("source"), destination = local.appendingPathComponent("download")
+        try FileManager.default.createDirectory(at: source, withIntermediateDirectories: false)
+        let file = source.appendingPathComponent("file"), original = Data("original".utf8)
+        try original.write(to: file); try await remote.uploadTree(source, to: prefix)
+        do { try await remote.uploadTree(source, to: prefix); XCTFail("Existing prefix must reject") } catch TransferError.conflict { }
+        try Data("replacement".utf8).write(to: file)
+        let skip = S3TreeProgressRecorder()
+        try await remote.uploadTree(source, to: prefix, policy: .skip) { skip.record($0) }
+        XCTAssertEqual(skip.value()?.skippedItems, 1)
+        try await remote.uploadTree(source, to: prefix, policy: .keepBoth)
+        let alternative = String(prefix.dropLast()) + " (2)/"
+        let root = FileEntry(name: "source", path: prefix, isDirectory: true, s3Key: prefix)
+        try await remote.downloadTree(root, to: destination)
+        XCTAssertEqual(try Data(contentsOf: destination.appendingPathComponent("file")), original)
+        try await remote.downloadTree(root, to: destination, policy: .keepBoth)
+        XCTAssertEqual(try Data(contentsOf: local.appendingPathComponent("download (2)/file")), original)
+        let sentinel = destination.appendingPathComponent("unrelated"); try original.write(to: sentinel)
+        try await remote.uploadTree(source, to: prefix, policy: .overwrite)
+        try await remote.downloadTree(root, to: destination, policy: .skip)
+        XCTAssertEqual(try Data(contentsOf: destination.appendingPathComponent("file")), original)
+        try await remote.downloadTree(root, to: destination, policy: .overwrite)
+        XCTAssertEqual(try Data(contentsOf: destination.appendingPathComponent("file")), Data("replacement".utf8))
+        XCTAssertEqual(try Data(contentsOf: sentinel), original)
+        let other = try await remote.list(prefix: alternative); XCTAssertEqual(other.map(\.name), ["file"])
+    }
+
+    func testRecursiveDownloadPreflightsCaseAliasesBeforeWritingAnyLocalFile() async throws {
+        let remote = try client(), local = try folder()
+        defer { try? FileManager.default.removeItem(at: local) }
+        let source = local.appendingPathComponent("source"); try Data("payload".utf8).write(to: source)
+        // MinIO rejects dot components, repeated slashes and nonempty trailing-slash keys.
+        // Their client guards are covered in S3TreeTests; real AWS acceptance stays open.
+        let cases = [["a.txt", "A.txt"], ["nested/a.txt", "nested/A.txt"]]
+        for keys in cases {
+            let prefix = "unsafe-tree-\(UUID())/", destination = local.appendingPathComponent(UUID().uuidString)
+            for key in keys { try await remote.upload(source, to: prefix + key) }
+            let siblings = try await remote.list(prefix: keys[0].contains("/") ? prefix + "nested/" : prefix)
+            XCTAssertEqual(Set(siblings.map(\.name)), ["a.txt", "A.txt"], "The real service must actually preserve both case-sensitive keys")
+            let root = FileEntry(name: "unsafe", path: prefix, isDirectory: true, s3Key: prefix)
+            do { try await remote.downloadTree(root, to: destination); XCTFail("Cannot flatten unsafe object keys") }
+            catch TransferError.remote { }
+            XCTAssertFalse(FileManager.default.fileExists(atPath: destination.path))
+            XCTAssertFalse(FileManager.default.fileExists(atPath: local.appendingPathComponent("escape.txt").path))
+        }
+    }
+
+    func testRecursiveDownloadRejectsSameSizeSourceChangeAfterScan() async throws {
+        let remote = try client(), local = try folder(), prefix = "tree-changed-\(UUID())/", control = TransferControl()
+        defer { try? FileManager.default.removeItem(at: local) }
+        let source = local.appendingPathComponent("source"), destination = local.appendingPathComponent("download")
+        try Data("before".utf8).write(to: source); try await remote.upload(source, to: prefix + "file")
+        let root = FileEntry(name: "tree", path: prefix, isDirectory: true, s3Key: prefix), scanned = expectation(description: "Tree scan completed")
+        let controlled = try client(control: control)
+        let operation = Task { try await controlled.downloadTree(root, to: destination) { value in
+            if value.phase == "目录扫描完成" { control.pause(); scanned.fulfill() }
+        } }
+        await fulfillment(of: [scanned], timeout: 5)
+        try Data("after!".utf8).write(to: source); try await remote.upload(source, to: prefix + "file", overwrite: true)
+        control.resume()
+        do { try await operation.value; XCTFail("Same-size ETag change cannot be downloaded as the scanned source") }
+        catch ResumeTransferError.sourceChanged { }
+        XCTAssertFalse(FileManager.default.fileExists(atPath: destination.appendingPathComponent("file").path))
+    }
+
+    func testRecursiveUploadRejectsSymlinkBeforeWritingAnyPrefix() async throws {
+        let remote = try client(), local = try folder(), prefix = "tree-link-\(UUID())/"
+        defer { try? FileManager.default.removeItem(at: local) }
+        let source = local.appendingPathComponent("source")
+        try FileManager.default.createDirectory(at: source, withIntermediateDirectories: false)
+        try FileManager.default.createSymbolicLink(at: source.appendingPathComponent("link"), withDestinationURL: local)
+        do { try await remote.uploadTree(source, to: prefix); XCTFail("Cannot follow a symlink tree") }
+        catch ResumeTransferError.unsupportedVersion { }
+        let listed = try await remote.list(prefix: prefix); XCTAssertTrue(listed.isEmpty)
+        do { _ = try await remote.fileVersion(prefix); XCTFail("No marker may be written before preflight") } catch S3Error.notFound { }
+    }
+
+    func testRecursiveUploadPreflightsAllKeyLengthsBeforeCreatingMarkers() async throws {
+        let remote = try client(), local = try folder(), anchor = "tree-long-\(UUID())/"
+        let prefix = anchor + String(repeating: "a", count: 950) + "/"
+        defer { try? FileManager.default.removeItem(at: local) }
+        let source = local.appendingPathComponent("source")
+        try FileManager.default.createDirectory(at: source, withIntermediateDirectories: false)
+        try Data("long mapping".utf8).write(to: source.appendingPathComponent(String(repeating: "b", count: 80)))
+        do { try await remote.uploadTree(source, to: prefix); XCTFail("S3 keys are limited to 1,024 UTF-8 bytes") }
+        catch TransferError.invalidPath { }
+        let listed = try await remote.list(); XCTAssertFalse(listed.contains { $0.key.utf8.elementsEqual(anchor.utf8) })
+    }
+
+    func testRecursiveUploadCancellationAbortsOwnedMultipart() async throws {
+        let remote = try client(), slow = try client(rate: 128 * 1024), local = try folder(), prefix = "tree-cancel-upload-\(UUID())/"
+        defer { try? FileManager.default.removeItem(at: local) }
+        let source = local.appendingPathComponent("source"); try FileManager.default.createDirectory(at: source, withIntermediateDirectories: false)
+        try Data(repeating: 0x79, count: 512 * 1024).write(to: source.appendingPathComponent("file"))
+        let started = expectation(description: "Tree upload started"), recorder = S3ProgressRecorder(started)
+        let operation = Task { try await slow.uploadTree(source, to: prefix) { recorder.record($0) } }
+        await fulfillment(of: [started], timeout: 5); operation.cancel()
+        do { try await operation.value; XCTFail("Canceled tree cannot report success") } catch is CancellationError { }
+        let active = try await remote.activeMultipartUploads(); XCTAssertEqual(active, 0)
+        do { _ = try await remote.fileVersion(prefix + "file"); XCTFail("Canceled object cannot be committed") } catch S3Error.notFound { }
+    }
+
+    func testRecursiveDownloadCancellationPreservesExistingLeaf() async throws {
+        let remote = try client(), slow = try client(rate: 128 * 1024), local = try folder(), prefix = "tree-cancel-download-\(UUID())/"
+        defer { try? FileManager.default.removeItem(at: local) }
+        let source = local.appendingPathComponent("source"), destination = local.appendingPathComponent("download")
+        try Data(repeating: 0x49, count: 512 * 1024).write(to: source)
+        try await remote.upload(source, to: prefix + "file")
+        try FileManager.default.createDirectory(at: destination, withIntermediateDirectories: false)
+        let original = Data("keep-existing".utf8); try original.write(to: destination.appendingPathComponent("file"))
+        let root = FileEntry(name: "tree", path: prefix, isDirectory: true, s3Key: prefix)
+        let started = expectation(description: "Tree download started"), recorder = S3ProgressRecorder(started)
+        let operation = Task { try await slow.downloadTree(root, to: destination, policy: .overwrite) { recorder.record($0) } }
+        await fulfillment(of: [started], timeout: 10); operation.cancel()
+        do { try await operation.value; XCTFail("Canceled tree cannot report success") } catch is CancellationError { }
+        XCTAssertEqual(try Data(contentsOf: destination.appendingPathComponent("file")), original)
+        XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: destination.path), ["file"])
     }
 }

@@ -38,6 +38,8 @@ if args.scope in ("s3", "fixtures", "runtime", "all"):
 if args.scope in ("fixtures", "all"):
     remove(".build/s3-fixture")
     remove("reports/s3-ui-files")
+    for cache in (root / "scripts/__pycache__").glob("s3_storage.cpython-*.pyc"):
+        remove(cache.relative_to(root))
 if args.scope in ("app", "all"):
     for relative in ["outputs/AetherTransfer.app", ".build/AppIcon.iconset"]:
         remove(relative)

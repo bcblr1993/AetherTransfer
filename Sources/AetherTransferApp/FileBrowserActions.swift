@@ -20,6 +20,7 @@ enum FileViewMode: Hashable { case icons, list }
         add("快速查看", #selector(previewItem(_:)), enabled: !entry.isDirectory && !entry.isSymbolicLink && (!remote || !workspace.isS3))
         add("文件信息", #selector(informationItem(_:)))
         if !remote { add("上传", #selector(uploadItems), enabled: workspace.hasRemoteConnection) }
+        if remote && entry.isDirectory { add("下载", #selector(downloadItems), enabled: workspace.hasRemoteConnection) }
         menu.addItem(.separator())
         add("重命名…", #selector(renameItem(_:)), enabled: !remote || !workspace.isS3); add("删除…", #selector(deleteItem(_:)), enabled: !remote || !workspace.isS3 || !entry.isDirectory)
         menu.autoenablesItems = false
@@ -32,4 +33,5 @@ enum FileViewMode: Hashable { case icons, list }
     @objc private func informationItem(_ sender: NSMenuItem) { workspace?.focusedRemote = remote; workspace?.showInspector = true }
     @objc private func deleteItem(_ sender: NSMenuItem) { if let entry = sender.representedObject as? FileEntry { workspace?.delete(entry, remote: remote) } }
     @objc private func uploadItems() { workspace?.upload(selection) }
+    @objc private func downloadItems() { workspace?.download(selection) }
 }

@@ -3,35 +3,40 @@ import Darwin
 
 extension S3Client {
     /// Conflict decisions are rechecked inside the queue operation; browsing is only a hint.
+    @discardableResult
     public func uploadFile(_ source: URL, to key: String, policy: ConflictPolicy,
-                           progress: @escaping @Sendable (TransferProgress) -> Void = { _ in }) async throws {
+                           progress: @escaping @Sendable (TransferProgress) -> Void = { _ in }) async throws -> Bool {
         var target = key
         let exists = try await objectExists(key)
         if exists {
             switch policy {
-            case .skip: progress(TransferProgress(completed: 0, total: 0, completedItems: 1, totalItems: 1, skippedItems: 1)); return
+            case .skip: progress(TransferProgress(completed: 0, total: 0, completedItems: 1, totalItems: 1, skippedItems: 1)); return false
             case .reject: throw TransferError.conflict(key)
             case .overwrite: break
             case .keepBoth: target = try await availableKey(key)
             }
         }
         try await upload(source, to: target, overwrite: policy == .overwrite, progress: progress)
+        return true
     }
+    @discardableResult
     public func downloadFile(_ entry: FileEntry, to destination: URL, policy: ConflictPolicy,
-                             progress: @escaping @Sendable (TransferProgress) -> Void = { _ in }) async throws {
+                             expectedVersion: RemoteFileVersion? = nil,
+                             progress: @escaping @Sendable (TransferProgress) -> Void = { _ in }) async throws -> Bool {
         guard let key = entry.s3Key, !entry.isDirectory else { throw TransferError.invalidPath }
         var target = destination
         let original = target
         let exists = try await localIO { try localExists(original) }
         if exists {
             switch policy {
-            case .skip: progress(TransferProgress(completed: 0, total: 0, completedItems: 1, totalItems: 1, skippedItems: 1)); return
+            case .skip: progress(TransferProgress(completed: 0, total: 0, completedItems: 1, totalItems: 1, skippedItems: 1)); return false
             case .reject: throw TransferError.conflict(destination.lastPathComponent)
             case .overwrite: break
             case .keepBoth: target = try await localIO { try availableLocalFile(original) }
             }
         }
-        try await download(key, to: target, overwrite: policy == .overwrite, progress: progress)
+        try await download(key, to: target, overwrite: policy == .overwrite, expectedVersion: expectedVersion, progress: progress)
+        return true
     }
     private func objectExists(_ key: String) async throws -> Bool {
         do { _ = try await fileVersion(key); return true } catch S3Error.notFound { return false }

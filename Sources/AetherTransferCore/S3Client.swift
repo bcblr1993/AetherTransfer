@@ -126,8 +126,13 @@ public struct S3Client: Sendable {
         return hash
     }
     public func download(_ key: String, to destination: URL, overwrite: Bool = false,
+                         expectedVersion: RemoteFileVersion? = nil,
                          progress: @escaping @Sendable (TransferProgress) -> Void = { _ in }) async throws {
-        let version = try await fileVersion(key), expected = try await contentDigest(key, version: version)
+        let version = try await fileVersion(key)
+        if let expectedVersion, version.size != expectedVersion.size || version.etag != expectedVersion.etag {
+            throw ResumeTransferError.sourceChanged
+        }
+        let expected = try await contentDigest(key, version: version)
         let directory = destination.deletingLastPathComponent().appendingPathComponent(".aethertransfer-s3-\(UUID())")
         let partial = directory.appendingPathComponent("partial")
         try await S3IO.run { try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: false, attributes: [.posixPermissions: 0o700]) }
@@ -138,10 +143,10 @@ public struct S3Client: Sendable {
                 Darwin.close(descriptor)
             }
             let response = try await perform(key: key, mode: 1, headers: ["If-Match: \(version.etag!)"], local: partial, version: version, progress: progress)
-            guard response.bytes == version.size, try await S3IO.run({ try S3IO.digest(partial, size: version.size) }) == expected else {
+            guard response.bytes == version.size, try await S3IO.run({ try S3IO.digest(partial, size: version.size, control: control) }) == expected else {
                 throw ResumeTransferError.sourceChanged
             }
-            try Task.checkCancellation(); try await LocalFileCommit.commit(partial, to: destination, overwrite: overwrite)
+            try await TreeIO.boundary(control); try await LocalFileCommit.commit(partial, to: destination, overwrite: overwrite)
             _ = try? await S3IO.run { try FileManager.default.removeItem(at: directory) }
         } catch {
             let cleanup = Task.detached { try? FileManager.default.removeItem(at: directory) }; await cleanup.value
@@ -157,9 +162,9 @@ public struct S3Client: Sendable {
         if before != nil && !overwrite { throw TransferError.conflict(key) }
         let conditions = before?.etag.map { ["If-Match: \($0)"] } ?? ["If-None-Match: *"]
         progress(TransferProgress(completed: 0, total: 0, phase: "核对上传源"))
-        let snapshot = try await S3IO.run { try S3UploadSnapshot.read(source) }
+        let snapshot = try await S3IO.run { try S3UploadSnapshot.read(source, control: control) }
         if snapshot.size == 0 {
-            try await S3IO.run { try snapshot.verify(source) }; try Task.checkCancellation()
+            try await TreeIO.boundary(control); try await S3IO.run { try snapshot.verify(source) }; try Task.checkCancellation()
             _ = try await perform(key: key, method: "PUT", mode: 2,
                 headers: conditions + ["x-amz-content-sha256: \(snapshot.parts[0].sha256)", "Content-MD5: \(snapshot.parts[0].md5)"],
                 local: source, uploadSlice: (0, 0), progress: progress)
@@ -185,7 +190,7 @@ public struct S3Client: Sendable {
                 guard let etag = response.version.etag else { throw S3Error.invalidMultipart }
                 try RemoteFileVersion(size: 0, modified: nil, etag: etag).validate(); etags.append(etag)
             }
-            try await S3IO.run { try snapshot.verify(source) }; try Task.checkCancellation()
+            try await TreeIO.boundary(control); try await S3IO.run { try snapshot.verify(source) }; try Task.checkCancellation()
             progress(TransferProgress(completed: snapshot.size, total: snapshot.size, phase: "提交对象"))
             let xml = "<CompleteMultipartUpload>" + etags.enumerated().map {
                 "<Part><PartNumber>\($0.offset + 1)</PartNumber><ETag>\(S3XML.escape($0.element))</ETag></Part>"
@@ -263,7 +268,8 @@ private enum S3IO {
         let task = Task.detached(operation: operation)
         return try await withTaskCancellationHandler { try await task.value } onCancel: { task.cancel() }
     }
-    static func digest(_ url: URL, size: Int64) throws -> Data {
+    static func digest(_ url: URL, size: Int64, control: TransferControl?) throws -> Data {
+        try TreeIO.boundarySync(control)
         let descriptor = url.path.withCString { Darwin.open($0, O_RDONLY | O_NOFOLLOW | O_NONBLOCK) }
         guard descriptor >= 0 else { throw TransferError.invalidPath }
         let handle = FileHandle(fileDescriptor: descriptor, closeOnDealloc: true); defer { try? handle.close() }
@@ -273,7 +279,7 @@ private enum S3IO {
         }
         var hash = SHA256(), remaining = size
         while remaining > 0 {
-            try Task.checkCancellation()
+            try TreeIO.boundarySync(control)
             let bytes = try handle.read(upToCount: Int(min(256 * 1024, remaining))) ?? Data()
             guard !bytes.isEmpty else { throw ResumeTransferError.sourceChanged }
             hash.update(data: bytes); remaining -= Int64(bytes.count)
@@ -294,7 +300,8 @@ private struct S3UploadSnapshot: Sendable {
         [Int64(metadata.st_dev), Int64(bitPattern: metadata.st_ino), metadata.st_size,
          Int64(metadata.st_mtimespec.tv_sec), Int64(metadata.st_mtimespec.tv_nsec), Int64(metadata.st_ctimespec.tv_sec), Int64(metadata.st_ctimespec.tv_nsec)]
     }
-    static func read(_ url: URL) throws -> S3UploadSnapshot {
+    static func read(_ url: URL, control: TransferControl?) throws -> S3UploadSnapshot {
+        try TreeIO.boundarySync(control)
         let descriptor = url.path.withCString { Darwin.open($0, O_RDONLY | O_NOFOLLOW | O_NONBLOCK) }
         guard descriptor >= 0 else { throw TransferError.invalidPath }
         let handle = FileHandle(fileDescriptor: descriptor, closeOnDealloc: true); defer { try? handle.close() }
@@ -307,7 +314,7 @@ private struct S3UploadSnapshot: Sendable {
             var sha = SHA256(), md5 = Insecure.MD5(); let length = min(partSize, before.st_size - offset)
             var remaining = length
             while remaining > 0 {
-                try Task.checkCancellation()
+                try TreeIO.boundarySync(control)
                 let bytes = try handle.read(upToCount: Int(min(256 * 1024, remaining))) ?? Data()
                 guard !bytes.isEmpty else { throw ResumeTransferError.sourceChanged }
                 sha.update(data: bytes); md5.update(data: bytes); remaining -= Int64(bytes.count)

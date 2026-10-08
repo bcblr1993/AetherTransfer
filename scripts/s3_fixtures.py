@@ -24,6 +24,8 @@ from urllib.error import URLError
 from urllib.parse import quote
 from urllib.request import Request, urlopen, build_opener, HTTPSHandler, ProxyHandler
 import xml.etree.ElementTree as ET
+sys.dont_write_bytecode = True
+from s3_storage import case_sensitive_storage
 
 from cryptography import x509
 from cryptography.hazmat.primitives import hashes, serialization
@@ -48,10 +50,9 @@ def port():
 def signature(key, message):
     return hmac.new(key, message.encode(), hashlib.sha256).digest()
 
-with tempfile.TemporaryDirectory(prefix='aethertransfer-s3-fixture-') as temporary:
+with tempfile.TemporaryDirectory(prefix='aethertransfer-s3-fixture-') as temporary, case_sensitive_storage(Path(temporary)) as data:
     directory = Path(temporary)
     certificates = directory / 'certificates'; certificates.mkdir()
-    data = directory / 'data'; data.mkdir()
     key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
     subject = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, 'AetherTransfer isolated S3 fixture')])
     certificate = (x509.CertificateBuilder().subject_name(subject).issuer_name(subject).public_key(key.public_key())
@@ -132,9 +133,17 @@ with tempfile.TemporaryDirectory(prefix='aethertransfer-s3-fixture-') as tempora
             source = ui_files / 'local/upload 中文 +#%.txt'
             payload = bytes(range(256)) * 4096 + '真实原生 S3 验证'.encode()
             source.write_bytes(payload)
+            tree = ui_files / 'local/目录 中文 +#%'
+            (tree / '子目录').mkdir(parents=True)
+            (tree / '空目录').mkdir()
+            (tree / '.hidden').mkdir()
+            (tree / '子目录/内容 中文 +#%.bin').write_bytes(payload)
+            (tree / 'empty.txt').write_bytes(b'')
+            tree_hashes = {str(path.relative_to(tree)): hashlib.sha256(path.read_bytes()).hexdigest()
+                           for path in tree.rglob('*') if path.is_file()}
             metadata = {'port': api_port, 'bucket': bucket, 'ca': str(ui_files / 'authority.pem'),
                         'local': str(ui_files / 'local'), 'download': str(ui_files / 'download'),
-                        'source_sha256': hashlib.sha256(payload).hexdigest()}
+                        'source_sha256': hashlib.sha256(payload).hexdigest(), 'tree': str(tree), 'tree_hashes': tree_hashes}
             (ui_files / 'endpoint.json').write_text(json.dumps(metadata))
             (ui_files / 'endpoint.json').chmod(0o600)
             print('UI fixture ready: ' + json.dumps(metadata, ensure_ascii=False), flush=True)
@@ -146,6 +155,20 @@ with tempfile.TemporaryDirectory(prefix='aethertransfer-s3-fixture-') as tempora
                     (ui_files / 'server-verification.json').write_text(json.dumps(evidence))
                     (ui_files / 'verify').unlink()
                     print('Independent signed UI upload verification: ' + json.dumps(evidence), flush=True)
+                if (ui_files / 'verify-tree').exists():
+                    evidence = {}
+                    for relative, expected in tree_hashes.items():
+                        key = 'ui/' + tree.name + '/' + relative
+                        uploaded = request('/' + bucket + '/' + quote(key, safe='/-._~'), method='GET')
+                        evidence[relative] = {'source_sha256': expected, 'server_sha256': hashlib.sha256(uploaded).hexdigest(),
+                                              'server_bytes': len(uploaded)}
+                    for relative in ['', '子目录/', '空目录/', '.hidden/']:
+                        key = 'ui/' + tree.name + '/' + relative
+                        if request('/' + bucket + '/' + quote(key, safe='/-._~'), method='GET') != b'':
+                            raise RuntimeError('Directory marker must be empty')
+                    (ui_files / 'server-tree-verification.json').write_text(json.dumps(evidence))
+                    (ui_files / 'verify-tree').unlink()
+                    print('Independent signed UI tree verification: ' + json.dumps(evidence), flush=True)
                 time.sleep(.5)
     finally:
         server.terminate()
