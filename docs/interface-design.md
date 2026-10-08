@@ -21,7 +21,7 @@ AetherTransfer 的界面目标是原生、清晰、精致、紧凑。中文和�
 
 ## 中文与英文
 
-设置提供“跟随系统 / 简体中文 / English”。语言资源放在 Core 的 `Resources/zh-Hans.lproj` 与 `Resources/en.lproj`，由 SwiftPM 构建并嵌入 `.app/Contents/Resources`。语言选择使用显式资源 Bundle；仅设置 Locale 不会自动切换资源查找语言。
+设置提供“跟随系统 / 简体中文 / English”。语言资源放在 Core 的 `Resources/zh-Hans.lproj` 与 `Resources/en.lproj`，由 SwiftPM 构建并嵌入 `.app/Contents/Resources`。打包校验兼容扁平与 Contents 两种资源 Bundle 结构，拒绝缺失语言、布局混杂和插值损坏。语言选择使用显式资源 Bundle；仅设置 Locale 不会自动切换资源查找语言。
 
 菜单、工具栏、表格标题、右键菜单、弹窗、辅助功能标签及应用产生的错误文案均从资源表读取。日期和文件大小按所选语言格式化。系统控件本身、操作系统／第三方库返回的错误、系统文件类型名称可能遵循 macOS 的语言。
 
