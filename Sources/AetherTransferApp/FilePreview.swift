@@ -63,11 +63,15 @@ import AetherTransferCore
         window.isReleasedWhenClosed = false
         super.init(window: window)
         window.delegate = self; window.center()
-        window.contentViewController = NSHostingController(rootView: FilePreviewView(model: model).modifier(AppPresentation()))
+        window.contentViewController = NSHostingController(rootView: FilePreviewView(model: model,
+            refreshTitle: { [weak self] in self?.refreshTitle() }).modifier(AppPresentation()))
     }
     required init?(coder: NSCoder) { fatalError("Not supported") }
     func load(_ entry: FileEntry, source: FilePreviewSource) {
-        window?.title = L10n.format("快速查看 · %@", String(describing: entry.name)); model.load(entry, source: source)
+        model.load(entry, source: source); refreshTitle()
+    }
+    private func refreshTitle() {
+        window?.title = model.name.isEmpty ? L10n.text("快速查看") : L10n.format("快速查看 · %@", model.name)
     }
     func windowWillClose(_ notification: Notification) {
         closing = true
@@ -153,6 +157,7 @@ import AetherTransferCore
 private struct FilePreviewView: View {
     @Environment(\.locale) private var interfaceLocale
     @ObservedObject var model: FilePreviewModel
+    let refreshTitle: @MainActor () -> Void
     var body: some View {
         let _ = interfaceLocale
         VStack(spacing: 0) {
@@ -178,6 +183,7 @@ private struct FilePreviewView: View {
             HStack { Text(model.notice).lineLimit(1); Spacer(); Text(L10n.text("快速查看")) }
                 .font(.caption).foregroundStyle(.secondary).padding(.horizontal, 16).padding(.vertical, 10)
         }
+        .onChange(of: interfaceLocale) { refreshTitle() }
         .onExitCommand { NSApp.keyWindow?.performClose(nil) }
     }
 }

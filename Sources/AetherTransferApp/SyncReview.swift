@@ -4,8 +4,9 @@ import AetherTransferCore
 
 struct SyncLocation: Identifiable {
     let id: String
-    let title: String
+    let name: String
     let root: SyncRoot
+    var title: String { root.isRemote ? name : L10n.format("本地 · %@", name) }
 }
 
 @MainActor final class SyncReviewModel: ObservableObject {
@@ -65,7 +66,7 @@ struct SyncLocation: Identifiable {
         let panel = NSOpenPanel(); panel.canChooseDirectories = true; panel.canChooseFiles = false
         panel.prompt = L10n.text("选择同步目录")
         guard panel.runModal() == .OK, let url = panel.url else { return }
-        let location = SyncLocation(id: UUID().uuidString, title: L10n.format("本地 · %@", String(describing: url.lastPathComponent)), root: .local(url))
+        let location = SyncLocation(id: UUID().uuidString, name: url.lastPathComponent, root: .local(url))
         locations.append(location)
         if side == .left { leftID = location.id } else { rightID = location.id }
         invalidate()
@@ -123,9 +124,9 @@ struct SyncReviewView: View {
         var locations: [SyncLocation] = []
         for tab in tabs.tabs {
             let label = URL(fileURLWithPath: tab.workspace.localPath).lastPathComponent
-            locations.append(SyncLocation(id: "\(tab.id)/local", title: L10n.format("本地 · %@", String(describing: label)), root: .local(URL(fileURLWithPath: tab.workspace.localPath))))
+            locations.append(SyncLocation(id: "\(tab.id)/local", name: label, root: .local(URL(fileURLWithPath: tab.workspace.localPath))))
             if let client = tab.workspace.client {
-                locations.append(SyncLocation(id: "\(tab.id)/remote", title: "\(client.profile.name.isEmpty ? client.profile.host : client.profile.name) · \(tab.workspace.remotePath)",
+                locations.append(SyncLocation(id: "\(tab.id)/remote", name: "\(client.profile.name.isEmpty ? client.profile.host : client.profile.name) · \(tab.workspace.remotePath)",
                                               root: .remote(client, tab.workspace.remotePath)))
             }
         }

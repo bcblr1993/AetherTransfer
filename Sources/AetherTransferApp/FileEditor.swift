@@ -349,6 +349,10 @@ private struct NativeTextEditor: NSViewRepresentable {
         context.coordinator.parent = self
         guard let view = scroll.documentView as? NSTextView else { return }
         view.isEditable = editable
+        if context.coordinator.locale != context.environment.locale {
+            context.coordinator.locale = context.environment.locale
+            view.setAccessibilityLabel(L10n.text("文本内容"))
+        }
         if view.string != text {
             let selection = view.selectedRange()
             view.string = text; view.undoManager?.removeAllActions()
@@ -357,6 +361,7 @@ private struct NativeTextEditor: NSViewRepresentable {
     }
     @MainActor final class Coordinator: NSObject, NSTextViewDelegate {
         var parent: NativeTextEditor
+        var locale: Locale?
         init(_ parent: NativeTextEditor) { self.parent = parent }
         func textDidChange(_ notification: Notification) {
             guard let view = notification.object as? NSTextView, parent.editable else { return }
