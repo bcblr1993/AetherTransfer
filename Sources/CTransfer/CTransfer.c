@@ -235,6 +235,10 @@ int at_s3(ATRequest *r, const char *method) {
     if (code == CURLE_OK) code = curl_easy_setopt(r->curl, CURLOPT_CUSTOMREQUEST, method);
     return code;
 }
+int at_ftp_list_all(ATRequest *r) {
+    // Fixed command only; user paths remain in the validated URL.
+    return curl_easy_setopt(r->curl, CURLOPT_CUSTOMREQUEST, "LIST -a");
+}
 int at_upload_window(ATRequest *r, int64_t start, int64_t length) {
     if (start < 0 || length < 0 || start > INT64_MAX - length) return CURLE_BAD_FUNCTION_ARGUMENT;
     r->upload_window = 1; r->upload_start = start; r->upload_length = length; r->upload_remaining = length;

@@ -16,26 +16,36 @@ struct PermissionRequest: Identifiable {
     @Published private(set) var completed = 0
     @Published private(set) var error: String?
     @Published private(set) var result: PermissionBatchResult?
-    @Published private(set) var targets: [PermissionTarget] = []
+    @Published private(set) var plan: PermissionPlan?
+    @Published private(set) var recursive = false
+    @Published private(set) var scanned = 0
     let request: PermissionRequest
     private weak var workspace: Workspace?
     private var operation: Task<Void, Never>?
     private var generation = UUID()
     init(_ request: PermissionRequest, workspace: Workspace) { self.request = request; self.workspace = workspace }
     var mode: UnixPermissions? { try? UnixPermissions(octal: modeText) }
-    var canApply: Bool { mode != nil && !targets.isEmpty && !loading && !applying && result == nil }
+    var count: Int { plan?.targets.count ?? 0 }
+    var canApply: Bool { mode != nil && count > 0 && !loading && !applying && result == nil }
+    func setRecursive(_ value: Bool) {
+        guard !applying, recursive != value else { return }
+        recursive = value; load()
+    }
     private var connectionMatches: Bool { !request.remote || workspace?.connectionRevision == request.connection }
     func load() {
         guard !applying, connectionMatches else { error = FilePermissionError.changed.localizedDescription; return }
         operation?.cancel(); generation = UUID(); let token = generation
-        loading = true; error = nil; result = nil; targets = []; completed = 0
+        loading = true; error = nil; result = nil; plan = nil; completed = 0; scanned = 0
+        let recursive = recursive
         operation = Task { [self] in
             do {
-                let values = try await PermissionBatch.prepare(request.entries, client: request.client)
+                let plan = try await PermissionBatch.preview(request.entries, client: request.client, recursive: recursive) { [weak self] count in
+                    Task { @MainActor in if let self, self.generation == token, self.loading { self.scanned = count } }
+                }
                 try Task.checkCancellation()
                 guard token == generation else { return }
-                targets = values
-                if modeText.isEmpty, let first = values.first?.mode, values.allSatisfy({ $0.mode == first }) { modeText = first.octal }
+                self.plan = plan; scanned = plan.targets.count + plan.skippedSymbolicLinks
+                if modeText.isEmpty, let common = plan.commonMode { modeText = common.octal }
             } catch {
                 guard token == generation else { return }
                 if !(error is CancellationError) { self.error = error.localizedDescription }
@@ -44,12 +54,12 @@ struct PermissionRequest: Identifiable {
         }
     }
     func apply() {
-        guard canApply, let mode else { return }
+        guard canApply, let mode, let plan else { return }
         guard connectionMatches else { error = FilePermissionError.changed.localizedDescription; return }
         applying = true; workspace?.permissionBusy = true; error = nil; completed = 0
-        let values = targets, token = generation
+        let token = generation
         operation = Task { [self] in
-            let result = await PermissionBatch.apply(mode, targets: values, client: request.client) { [weak self] count in
+            let result = await PermissionBatch.apply(mode, plan: plan, client: request.client) { [weak self] count in
                 Task { @MainActor in if let self, self.generation == token, self.applying { self.completed = count } }
             }
             self.result = result; completed = result.completed; applying = false; workspace?.permissionBusy = false
@@ -90,11 +100,24 @@ struct PermissionEditorView: View {
                                 .textSelection(.enabled).help(entry.path)
                         }
                     }
-                    Text(L10n.text("仅修改所选项目，不递归修改文件夹中的内容。"))
+                    if model.request.entries.contains(where: \.isDirectory) {
+                        Toggle(L10n.text("包括文件夹中的项目"), isOn: Binding(get: { model.recursive }, set: { model.setRecursive($0) }))
+                            .toggleStyle(.checkbox)
+                    }
+                    Text(model.recursive ? L10n.text("包括隐藏项目；文件和文件夹应用相同权限，符号链接跳过。") : L10n.text("仅修改所选项目，不递归修改文件夹中的内容。"))
                         .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                     if model.loading {
-                        ProgressView(L10n.text("读取权限…"))
-                    } else if !model.targets.isEmpty {
+                        ProgressView(model.recursive ? L10n.text("扫描权限范围…") : L10n.text("读取权限…"))
+                        if model.recursive {
+                            Text(L10n.format("已扫描 %@ 项", String(model.scanned))).font(.caption).foregroundStyle(.secondary).monospacedDigit()
+                        }
+                    } else if let plan = model.plan {
+                        Text(L10n.format("应用范围：%@ 个文件，%@ 个文件夹", String(plan.fileCount), String(plan.folderCount)))
+                            .font(.callout).monospacedDigit()
+                        if plan.skippedSymbolicLinks > 0 {
+                            Text(L10n.format("跳过 %@ 个符号链接", String(plan.skippedSymbolicLinks)))
+                                .font(.caption).foregroundStyle(.secondary).monospacedDigit()
+                        }
                         Grid(alignment: .leading, horizontalSpacing: 24, verticalSpacing: InterfaceStyle.fieldGap) {
                             GridRow {
                                 Text(L10n.text("访问者"))
@@ -125,8 +148,8 @@ struct PermissionEditorView: View {
                         }
                     }
                     if model.applying {
-                        ProgressView(value: Double(model.completed), total: Double(max(1, model.targets.count)))
-                        Text(L10n.format("已核对完成 %@ / %@", String(model.completed), String(model.targets.count))).font(.caption).monospacedDigit()
+                        ProgressView(value: Double(model.completed), total: Double(max(1, model.count)))
+                        Text(model.completed == 0 ? L10n.text("检查范围并应用权限…") : L10n.format("已核对完成 %@ / %@", String(model.completed), String(model.count))).font(.caption).monospacedDigit()
                     }
                     if let result = model.result {
                         Label(result.error == nil && !result.cancelled ? L10n.text("权限已应用") : (result.cancelled ? L10n.text("权限操作已停止") : L10n.text("权限操作未全部完成")),
@@ -151,7 +174,7 @@ struct PermissionEditorView: View {
                 if model.result != nil || model.error != nil {
                     Button(L10n.text("重新读取权限")) { model.load() }.disabled(model.loading || model.applying)
                 } else {
-                    Button(L10n.text("应用权限")) { model.apply() }.buttonStyle(.glassProminent)
+                    Button(model.recursive ? L10n.text("应用到全部项目") : L10n.text("应用权限")) { model.apply() }.buttonStyle(.glassProminent)
                         .keyboardShortcut(.defaultAction).disabled(!model.canApply)
                 }
             }.padding(InterfaceStyle.pageInset)

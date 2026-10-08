@@ -22,6 +22,7 @@ from cryptography.x509.oid import NameOID
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import rsa
 from pyftpdlib.authorizers import DummyAuthorizer
+from pyftpdlib.filesystems import AbstractedFS
 from pyftpdlib.handlers import FTPHandler, TLS_FTPHandler
 from pyftpdlib.servers import FTPServer
 from wsgidav.wsgidav_app import WsgiDAVApp
@@ -181,10 +182,22 @@ with tempfile.TemporaryDirectory(prefix='aethertransfer-fixture-') as directory:
     (root / '中文 seed.txt').write_text('fixture content', encoding='utf8')
     authorizer = DummyAuthorizer()
     authorizer.add_user('fixture', 'fixture-only', str(root), perm='elradfmwMT')
-    class Handler(FTPHandler): pass
+    class PermissionFS(AbstractedFS):
+        def listdir(self, path):
+            names = super().listdir(path)
+            if self.fs2ftp(path).startswith('/permissions-tree-') and not getattr(self.cmd_channel, 'list_all', False):
+                return [name for name in names if not name.startswith('.')]
+            return names
+    class ListingOptions:
+        def pre_process_command(self, line, cmd, arg):
+            self.list_all = cmd == 'LIST' and arg.lower() == '-a'
+            return super().pre_process_command(line, cmd, arg)
+    class Handler(ListingOptions, FTPHandler):
+        abstracted_fs = PermissionFS
     Handler.authorizer = authorizer
     ftp = FTPServer(('127.0.0.1', 0), Handler)
-    class TLSHandler(TLS_FTPHandler): pass
+    class TLSHandler(ListingOptions, TLS_FTPHandler):
+        abstracted_fs = PermissionFS
     TLSHandler.authorizer = authorizer
     TLSHandler.certfile = str(cert_file); TLSHandler.keyfile = str(key_file)
     TLSHandler.tls_control_required = True; TLSHandler.tls_data_required = True

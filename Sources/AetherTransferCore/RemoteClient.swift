@@ -120,7 +120,7 @@ public struct RemoteClient: Sendable {
     }
 
     private func perform(path: String, directory: Bool = false, mode: Int32, local: String = "", commands: String = "",
-                         httpMethod: String? = nil, httpHeaders: [String] = [],
+                         httpMethod: String? = nil, httpHeaders: [String] = [], ftpListAll: Bool = false,
                          maximumDownloadBytes: Int64 = 0,
                          offset: Int64? = nil, rangeEnd: Int64 = -1, expectedTotal: Int64 = -1,
                          probe: ResponseProbe? = nil,
@@ -145,6 +145,9 @@ public struct RemoteClient: Sendable {
             at_tls(request, profile.protocolKind == .ftpes || profile.protocolKind == .ftps ? 1 : 0, $0)
         }
         guard tlsCode == 0 else { throw TransferError.remote(L10n.text("无法配置 TLS 证书验证。")) }
+        if ftpListAll {
+            guard at_ftp_list_all(request) == 0 else { throw FilePermissionError.unavailable }
+        }
         let method = httpMethod ?? (mode == 0 ? "PROPFIND" : (mode == 2 ? "PUT" : (mode == 6 ? "HEAD" : "GET")))
         if profile.protocolKind.isWebDAV {
             var headers = httpHeaders + ["Expect:"]
@@ -262,8 +265,9 @@ public struct RemoteClient: Sendable {
         _ = try await perform(path: staging, mode: 2, local: local.path, offset: offset, progress: progress)
     }
 
-    public func list(_ path: String) async throws -> [FileEntry] {
-        let response = try await perform(path: path, directory: true, mode: 0)
+    public func list(_ path: String, includingHidden: Bool = false) async throws -> [FileEntry] {
+        let ftpListAll = includingHidden && [.ftp, .ftpes, .ftps].contains(profile.protocolKind)
+        let response = try await perform(path: path, directory: true, mode: 0, ftpListAll: ftpListAll)
         if profile.protocolKind.isWebDAV {
             let origin = try profile.url(path: path, directory: true)
             return try await Task.detached { try WebDAVListing.parse(response, parent: path, origin: origin) }.value
@@ -332,7 +336,7 @@ public struct RemoteClient: Sendable {
         guard profile.protocolKind.supportsUnixPermissions else { throw FilePermissionError.unsupported }
         try RemotePath.validate(path)
         guard RemotePath.normalize(path) != "/",
-              let entry = try await list(RemotePath.parent(path)).first(where: { Data($0.path.utf8) == Data(path.utf8) }) else { throw FilePermissionError.changed }
+              let entry = try await list(RemotePath.parent(path), includingHidden: true).first(where: { Data($0.path.utf8) == Data(path.utf8) }) else { throw FilePermissionError.changed }
         return try RemotePermissionSnapshot(entry)
     }
     public func setPermissions(_ mode: UnixPermissions, for expected: RemotePermissionSnapshot) async throws {

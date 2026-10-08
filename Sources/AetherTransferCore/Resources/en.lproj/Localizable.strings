@@ -475,3 +475,13 @@
 "应用权限" = "Apply Permissions";
 "请先完成或停止权限操作。" = "Finish or stop the permission changes first.";
 "未核对的项目可能已写入，请重新读取实际权限。" = "Unverified items may already have changed. Read the permissions again to check.";
+"权限扫描超过容量或目录深度限制，请分批选择子目录。" = "The permission scan exceeded its size or depth limit. Select smaller groups of folders.";
+"权限范围包含重复路径，无法安全应用。" = "The permission scope contains duplicate paths and cannot be safely applied.";
+"包括文件夹中的项目" = "Include Enclosed Items";
+"包括隐藏项目；文件和文件夹应用相同权限，符号链接跳过。" = "Includes hidden items. Files and folders receive the same permissions; symbolic links are skipped.";
+"扫描权限范围…" = "Scanning permission scope…";
+"已扫描 %@ 项" = "Scanned: %@";
+"应用范围：%@ 个文件，%@ 个文件夹" = "Scope — Files: %@ · Folders: %@";
+"跳过 %@ 个符号链接" = "Symbolic links skipped: %@";
+"检查范围并应用权限…" = "Checking scope and applying permissions…";
+"应用到全部项目" = "Apply to All Items";

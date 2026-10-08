@@ -60,6 +60,8 @@ public enum FilePermissionError: Error, LocalizedError, Sendable, Equatable {
     }
 }
 
+struct LocalPermissionIdentity: Hashable, Sendable { let device: Int32; let inode: UInt64 }
+
 public struct LocalPermissionSnapshot: Sendable {
     public let url: URL
     public let mode: UnixPermissions
@@ -70,16 +72,17 @@ public struct LocalPermissionSnapshot: Sendable {
     let size: Int64
     let modifiedSeconds: Int64
     let modifiedNanoseconds: Int64
-    fileprivate init(_ url: URL, _ info: stat) throws {
+    init(_ url: URL, _ info: stat) throws {
         self.url = url
         mode = try UnixPermissions(UInt16(info.st_mode & 0o7777))
         device = info.st_dev; inode = info.st_ino; type = UInt16(info.st_mode & S_IFMT); owner = info.st_uid
         size = info.st_size; modifiedSeconds = Int64(info.st_mtimespec.tv_sec); modifiedNanoseconds = Int64(info.st_mtimespec.tv_nsec)
     }
-    fileprivate func matches(_ other: LocalPermissionSnapshot) -> Bool {
+    var identity: LocalPermissionIdentity { LocalPermissionIdentity(device: device, inode: inode) }
+    func matches(_ other: LocalPermissionSnapshot) -> Bool {
         matchesIdentity(other) && mode == other.mode
     }
-    fileprivate func matchesIdentity(_ other: LocalPermissionSnapshot) -> Bool {
+    func matchesIdentity(_ other: LocalPermissionSnapshot) -> Bool {
         device == other.device && inode == other.inode && type == other.type && owner == other.owner && size == other.size &&
         modifiedSeconds == other.modifiedSeconds && modifiedNanoseconds == other.modifiedNanoseconds
     }
@@ -157,6 +160,19 @@ public enum PermissionTarget: Sendable {
     public var mode: UnixPermissions {
         switch self { case .local(let value): value.mode; case .remote(let value): value.mode }
     }
+    public var path: String {
+        switch self { case .local(let value): value.url.path; case .remote(let value): value.entry.path }
+    }
+    public var isDirectory: Bool {
+        switch self { case .local(let value): value.type == S_IFDIR; case .remote(let value): value.entry.isDirectory }
+    }
+    func matches(_ other: PermissionTarget) -> Bool {
+        switch (self, other) {
+        case (.local(let a), .local(let b)): a.matches(b)
+        case (.remote(let a), .remote(let b)): a.matches(b)
+        default: false
+        }
+    }
 }
 
 public struct PermissionBatchResult: Sendable {
@@ -192,6 +208,11 @@ public enum PermissionBatch {
     }
     public static func apply(_ mode: UnixPermissions, targets: [PermissionTarget], client: RemoteClient?,
                              progress: @escaping @Sendable (Int) -> Void = { _ in }) async -> PermissionBatchResult {
+        await execute(mode, targets: targets, client: client, progress: progress) { _ in }
+    }
+    static func execute(_ mode: UnixPermissions, targets: [PermissionTarget], client: RemoteClient?,
+                        progress: @escaping @Sendable (Int) -> Void,
+                        beforeWrite: @escaping @Sendable (PermissionTarget) async throws -> Void) async -> PermissionBatchResult {
         var completed = 0
         let clock = ContinuousClock(); var last = clock.now
         do {
@@ -213,12 +234,21 @@ public enum PermissionBatch {
                           try expected.matches(RemotePermissionSnapshot(entry)) else { throw FilePermissionError.changed }
                 }
             }
+            var appliedLocal = Set<LocalPermissionIdentity>()
             for target in targets {
                 try Task.checkCancellation()
+                try await beforeWrite(target)
                 switch target {
                 case .local(let expected):
-                    let work = Task.detached { try LocalFilePermissions.apply(mode, to: expected) }
+                    let knownAlias = appliedLocal.contains(expected.identity)
+                    let work = Task.detached {
+                        if knownAlias {
+                            let current = try LocalFilePermissions.read(expected.url)
+                            guard expected.matchesIdentity(current), current.mode == mode else { throw FilePermissionError.changed }
+                        } else { try LocalFilePermissions.apply(mode, to: expected) }
+                    }
                     try await withTaskCancellationHandler { try await work.value } onCancel: { work.cancel() }
+                    appliedLocal.insert(expected.identity)
                 case .remote(let expected):
                     guard let client else { throw FilePermissionError.unsupported }
                     try await client.setPermissions(mode, for: expected)
@@ -233,6 +263,6 @@ public enum PermissionBatch {
     }
     private static func pathKey(_ path: String) -> String { Data(path.utf8).base64EncodedString() }
     private static func indexedListing(_ client: RemoteClient, parent: String) async throws -> [String: FileEntry] {
-        try await client.list(parent).reduce(into: [:]) { $0[pathKey($1.path)] = $1 }
+        try await client.list(parent, includingHidden: true).reduce(into: [:]) { $0[pathKey($1.path)] = $1 }
     }
 }

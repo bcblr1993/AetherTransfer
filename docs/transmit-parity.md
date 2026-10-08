@@ -24,6 +24,8 @@
 
 完整目标不会因阶段一通过而标记完成。各服务需要独立测试账号与 OAuth 应用注册；没有实际凭据时只能验证隔离协议 fixtures，必须记录真实服务验收缺口。
 
+权限工作流已进入所选项目及可选递归范围的开发候选，本地／FTP／FTPS／SFTP 共用双语弹窗。先扫描、全范围重查、跳过符号链接，再对子项和父目录依次应用并核对。所有者／组、ACL、时间戳、自动规则与实际窗口验收仍待完成；协议通过不代表完整元数据或全部 Transmit 对齐完成，见 `file-permissions.md`。
+
 参考：
 - https://help.panic.com/transmit/transmit5/features/
 - https://help.panic.com/transmit/transmit5/protocols/
