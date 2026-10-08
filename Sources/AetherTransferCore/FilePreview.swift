@@ -94,6 +94,15 @@ public struct FilePreview: Sendable {
                 return FilePreview(url: destination, byteCount: version.size, lease: lease)
             } catch {
                 try await lease.close()
+                // A conditional read is a source revision failure, not a request
+                // to overwrite an existing destination in this private payload.
+                switch error {
+                case ResumeTransferError.sourceChanged, S3Error.notFound:
+                    throw FilePreviewError.changed
+                case TransferError.conflict(let rejectedKey) where rejectedKey.utf8.elementsEqual(key.utf8):
+                    throw FilePreviewError.changed
+                default: break
+                }
                 throw error
             }
         }

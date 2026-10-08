@@ -109,8 +109,6 @@ private final class S3TreeProgressRecorder: @unchecked Sendable {
             let unexpected = try await operation.value
             try await unexpected.close(); XCTFail("Changed source cannot publish a preview")
         } catch FilePreviewError.changed { }
-        catch ResumeTransferError.sourceChanged { }
-        catch TransferError.conflict { }
         XCTAssertTrue(try FileManager.default.contentsOfDirectory(atPath: cache.path).isEmpty)
         try await remote.remove(key)
     }
