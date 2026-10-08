@@ -3,6 +3,92 @@ import XCTest
 @testable import AetherTransferCore
 
 final class S3Tests: XCTestCase {
+    func testFailedProfileWritePreservesOriginalEndpointAndKeychainCredentials() async throws {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent("aethertransfer-keychain-test-\(UUID())")
+        let file = folder.appendingPathComponent("profiles.json"), repository = ProfileRepository(store: ProfileStore(file: file))
+        var ownedCredentialID: UUID?
+        defer {
+            try? FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: folder.path)
+            if let ownedCredentialID { try? CredentialStore.remove(id: ownedCredentialID) }
+            try? FileManager.default.removeItem(at: folder)
+        }
+        let original = ServerProfile(host: "localhost", username: "fixture")
+        let saved = try await repository.save(original, credentials: Credentials(password: "test-only-first-value"), remember: true).0
+        ownedCredentialID = saved.credentialID
+        XCTAssertNotNil(saved.credentialID)
+        XCTAssertEqual(try CredentialStore.load(profile: saved).password, "test-only-first-value")
+        try FileManager.default.setAttributes([.posixPermissions: 0o555], ofItemAtPath: folder.path)
+        var changed = saved; changed.host = "different.example"
+        do {
+            _ = try await repository.save(changed, credentials: Credentials(password: "test-only-second-value"), remember: true)
+            XCTFail("Unwritable profile directory must reject the staged save")
+        } catch { }
+        let reloaded = try await repository.load()
+        XCTAssertEqual(reloaded, [saved])
+        XCTAssertEqual(try CredentialStore.load(profile: reloaded[0]).password, "test-only-first-value")
+        try FileManager.default.setAttributes([.posixPermissions: 0o700], ofItemAtPath: folder.path)
+        let updated = try await repository.save(changed, credentials: Credentials(accessKey: "test-only-access", secretKey: "test-only-secret"), remember: false).0
+        ownedCredentialID = updated.credentialID
+        XCTAssertNotEqual(updated.credentialID, saved.credentialID)
+        XCTAssertEqual(try CredentialStore.load(profile: saved).password, "")
+    }
+    func testConcurrentProfileImportsDoNotLoseEitherCollection() async throws {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent("aethertransfer-profile-test-\(UUID())")
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let repository = ProfileRepository(store: ProfileStore(file: folder.appendingPathComponent("profiles.json")))
+        let a = ServerProfile(host: "localhost", username: "first"), b = ServerProfile(host: "localhost", username: "second")
+        let first = try JSONEncoder().encode([a]), second = try JSONEncoder().encode([b])
+        async let one = repository.importing(first)
+        async let two = repository.importing(second)
+        _ = try await (one, two)
+        let result = try await repository.load()
+        XCTAssertEqual(Set(result.map(\.id)), [a.id, b.id])
+    }
+    func testS3BrowserPreservesRawKeysAndRejectsUnsafeLocalNames() throws {
+        XCTAssertEqual(S3BrowserPath.parent("a//"), "a/")
+        XCTAssertEqual(S3BrowserPath.parent("a/../"), "a/")
+        XCTAssertEqual(try S3BrowserPath.append("é", to: "a/../"), "a/../é")
+        XCTAssertThrowsError(try S3BrowserPath.validatePrefix("a"))
+        for name in ["", ".", "..", "a/b", "a\0b"] { XCTAssertThrowsError(try S3BrowserPath.validateLocalName(name)) }
+        let entries = [FileEntry(name: "é", path: "é", isDirectory: false, s3Key: "é"),
+                       FileEntry(name: "e\u{301}", path: "e\u{301}", isDirectory: false, s3Key: "e\u{301}"),
+                       FileEntry(name: "é", path: "é/", isDirectory: true, s3Key: "é/")]
+        XCTAssertEqual(Set(entries.map(\.id)).count, 3); XCTAssertEqual(Set(entries).count, 3)
+    }
+    func testS3ProfileMigrationExportAndImportedTrust() throws {
+        let old = ServerProfile(host: "localhost", username: "test")
+        var fields = try XCTUnwrap(JSONSerialization.jsonObject(with: JSONEncoder().encode(old)) as? [String: Any])
+        fields.removeValue(forKey: "s3Bucket"); fields.removeValue(forKey: "s3Region"); fields.removeValue(forKey: "s3CertificateAuthorityPath")
+        XCTAssertEqual(try JSONDecoder().decode(ServerProfile.self, from: JSONSerialization.data(withJSONObject: fields)), old)
+        let profile = ServerProfile(host: "objects.example", port: 443, protocolKind: .s3, initialPath: "a/../", s3Bucket: "test-bucket", s3Region: "auto", s3CertificateAuthorityPath: "/test/authority.pem")
+        try profile.validate(); XCTAssertThrowsError(try profile.url(path: profile.initialPath))
+        let encoded = try JSONEncoder().encode([profile]), text = String(decoding: encoded, as: UTF8.self)
+        for forbidden in ["secretKey", "accessKey", "sessionToken", "password"] { XCTAssertFalse(text.contains(forbidden)) }
+        let imported = try ProfileStore.importing(encoded, into: [])
+        XCTAssertNil(imported[0].s3CertificateAuthorityPath); XCTAssertEqual(imported[0].initialPath, "a/../")
+        XCTAssertNotEqual(imported[0].credentialID, profile.credentialID)
+        XCTAssertNil(imported[0].retiredCredentialIDs)
+    }
+    func testOwnedS3CleanupRecordsPersistDeduplicateAndRemainCredentialFree() async throws {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent("aethertransfer-s3-store-\(UUID())")
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let file = folder.appendingPathComponent("records.json"), store = S3CleanupStore(file: file)
+        let endpoint = S3Endpoint(host: "objects.example", bucket: "test-bucket")
+        let a = S3MultipartCleanup(endpoint: endpoint, key: "é", uploadID: "owned-upload")
+        let b = S3MultipartCleanup(endpoint: endpoint, key: "e\u{301}", uploadID: "owned-upload")
+        XCTAssertEqual(a.id, a.id); XCTAssertNotEqual(a.id, b.id)
+        XCTAssertEqual(Set([a, b]).count, 2)
+        try await store.add(a); try await store.add(a); try await store.add(b)
+        let reloaded = try await S3CleanupStore(file: file).records()
+        XCTAssertEqual(reloaded.map(\.id), [a.id, b.id])
+        let text = try String(contentsOf: file, encoding: .utf8)
+        XCTAssertFalse(text.contains("secret")); XCTAssertFalse(text.contains("credentials"))
+        let mode = try FileManager.default.attributesOfItem(atPath: file.path)[.posixPermissions] as? Int
+        XCTAssertEqual(mode, 0o600)
+        try await store.remove(a); let remaining = try await store.records(); XCTAssertEqual(remaining.map(\.id), [b.id])
+        try Data(repeating: 0, count: 1024 * 1024 + 1).write(to: file)
+        do { _ = try await store.records(); XCTFail("Oversized cleanup store must reject") } catch { }
+    }
     func testSignaturesMatchAllFourPublicAWSReferenceVectors() throws {
         // Public AWS documentation examples, never credentials for a real account.
         let credentials = S3Credentials(accessKey: "AKIAIOSFODNN7EXAMPLE", secretKey: "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY")

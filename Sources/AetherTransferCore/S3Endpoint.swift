@@ -50,7 +50,7 @@ public struct S3Credentials: Sendable {
     public init(accessKey: String, secretKey: String, sessionToken: String = "") {
         self.accessKey = accessKey; self.secretKey = secretKey; self.sessionToken = sessionToken
     }
-    func validate() throws {
+    public func validate() throws {
         guard !accessKey.isEmpty, !secretKey.isEmpty, accessKey.utf8.count <= 256, secretKey.utf8.count <= 4096,
               sessionToken.utf8.count <= 16 * 1024,
               [accessKey, secretKey, sessionToken].allSatisfy({ $0.utf8.allSatisfy { $0 >= 0x21 && $0 <= 0x7e } }) else {

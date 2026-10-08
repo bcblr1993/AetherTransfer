@@ -4,7 +4,7 @@ import XCTest
 
 extension ProtocolIntegrationTests {
     func testTextEditingRoundTripExternalSaveAndContentConflictForEveryProtocol() async throws {
-        for kind in TransferProtocol.allCases {
+        for kind in TransferProtocol.fileServerCases {
             let remote = try client(kind)
             let root = FileManager.default.temporaryDirectory.appendingPathComponent("aethertransfer-edit-protocol-\(UUID().uuidString)")
             try FileManager.default.createDirectory(at: root, withIntermediateDirectories: false)
@@ -36,7 +36,7 @@ extension ProtocolIntegrationTests {
         }
     }
     func testBoundedDownloadsRejectOversizedBodiesAndPreserveOriginalForEveryProtocol() async throws {
-        for kind in TransferProtocol.allCases {
+        for kind in TransferProtocol.fileServerCases {
             let remote = try client(kind)
             let root = FileManager.default.temporaryDirectory.appendingPathComponent("aethertransfer-edit-limit-\(UUID().uuidString)")
             try FileManager.default.createDirectory(at: root, withIntermediateDirectories: false)

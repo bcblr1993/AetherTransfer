@@ -8,8 +8,8 @@ tagline:
   zh: 原生文件传输工作台，让每一步清楚可控
   en: A native file transfer workspace, clear at every step
 summary:
-  zh: "面向 Apple 芯片 Mac 的原生文件传输客户端，正在开发双栏浏览、FTP / SFTP 连接与传输活动管理。以 Transmit 的完整文件工作流为功能目标，采用 macOS 26 Liquid Glass 界面。"
-  en: "A native file transfer client for Apple silicon Mac. Dual-pane browsing, FTP / SFTP connections and transfer activity are in development, with Transmit workflow parity as the goal and a macOS 26 Liquid Glass interface."
+  zh: "面向 Apple 芯片 Mac 的原生文件传输客户端，开发候选提供双栏浏览、FTP / FTPS / SFTP / WebDAV 与 S3 普通文件传输、任务管理与冲突处理。以 Transmit 的完整文件工作流为功能目标，采用 macOS 26 Liquid Glass 界面。"
+  en: "A native file transfer client for Apple silicon Mac. The development candidate includes dual-pane browsing, FTP / FTPS / SFTP / WebDAV and S3 file transfers, a task queue and conflict choices, with Transmit workflow parity as the goal and a macOS 26 Liquid Glass interface."
 platforms:
   - id: mac
     status: dev
@@ -21,8 +21,8 @@ hero:
   eyebrow: { zh: 文件传输 · 原生 Mac · 开发中, en: File transfer · Native Mac · In development }
   title: { zh: "文件两端，\n尽在掌握。", en: "Two sides.\nOne clear workspace." }
   lead:
-    zh: "在一个原生窗口中浏览本地与远程文件，掌握连接与传输状态。\n从 FTP / SFTP 核心开始，逐步完成云存储、目录同步与编辑工作流。"
-    en: "Browse local and remote files in one native window, with clear connection and transfer status.\nStarting with FTP / SFTP, then building out cloud storage, folder sync and editing workflows."
+    zh: "在一个原生窗口中浏览本地与远程文件，掌握连接与传输状态。\n开发候选已加入 S3 前缀浏览、目录同步与文本编辑；各协议的完整工作流仍在开发和验收。"
+    en: "Browse local and remote files in one native window, with clear connection and transfer status.\nThe development candidate includes S3 prefix browsing, folder sync and text editing; complete workflows for each protocol are still in development and validation."
   requirements: { zh: Apple 芯片 Mac · macOS 26.0+, en: Apple silicon Mac · macOS 26.0+ }
 features:
   eyebrow: { zh: 开发方向, en: Development goals }
@@ -41,11 +41,16 @@ features:
       body:
         zh: 开发候选提供 FTP / FTPS / SFTP 和 WebDAV（HTTP、HTTPS）、任务队列与冲突处理。单文件可保留进度、重启后核对恢复；WebDAV 下载要求服务器支持 Range，上传须明确选择从头上传。目录任务恢复与完整云服务仍在开发。
         en: The development candidate includes FTP / FTPS / SFTP and WebDAV (HTTP, HTTPS), a task queue and conflict handling. Single-file progress can be retained and verified after restart. WebDAV downloads require server Range support; uploads require an explicit restart. Folder-job recovery and the full cloud service range remain in development.
+    - kicker: { zh: 云存储, en: Cloud storage }
+      title: { zh: S3 原生文件工作流, en: Native S3 file workflows }
+      body:
+        zh: 开发候选支持存储桶前缀浏览、普通文件队列传输、覆盖 / 跳过 / 保留两份及明确的对象删除。S3 目录传输、同步、编辑、预览和重启恢复仍在开发；AWS / R2 实际服务兼容性尚未完成验收。
+        en: The development candidate supports bucket-prefix browsing, queued file transfers, overwrite / skip / keep-both choices and explicit object deletion. S3 folder transfers, sync, editing, preview and restart recovery remain in development; actual AWS / R2 compatibility has not yet been accepted.
     - kicker: { zh: 隐私, en: Privacy }
       title: { zh: 凭据留在系统钥匙串, en: Credentials in system Keychain }
       body:
-        zh: 连接配置保存在本地，密码与口令由 Keychain 管理。SFTP 核对主机密钥，TLS 验证证书。
-        en: Local connection profiles with passwords and passphrases in Keychain. SFTP verifies host keys and TLS validates certificates.
+        zh: 连接配置保存在本地，密码、口令及用户选择保存的 S3 密钥 / 令牌由 Keychain 管理。SFTP 核对主机密钥，TLS 验证证书。
+        en: Local connection profiles with passwords, passphrases and optionally saved S3 keys / tokens in Keychain. SFTP verifies host keys and TLS validates certificates.
     - kicker: { zh: 同步, en: Sync }
       title: { zh: 看清差异，再决定同步, en: Review differences before syncing }
       body:

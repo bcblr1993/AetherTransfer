@@ -27,7 +27,7 @@ extension ProtocolIntegrationTests {
         return record
     }
     func testPersistentDownloadResumeForEveryProtocol() async throws {
-        for kind in TransferProtocol.allCases {
+        for kind in TransferProtocol.fileServerCases {
             let remote = try client(kind), root = try resumeFolder()
             defer { try? FileManager.default.removeItem(at: root) }
             let data = resumePayload(multiplier: 17, period: 251)

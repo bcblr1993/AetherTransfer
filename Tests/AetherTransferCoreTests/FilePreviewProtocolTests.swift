@@ -15,7 +15,7 @@ private final class PreviewProgress: @unchecked Sendable {
 
 extension ProtocolIntegrationTests {
     func testRemotePreviewReservedFilenamePreservesLeaseForEveryProtocol() async throws {
-        for kind in TransferProtocol.allCases {
+        for kind in TransferProtocol.fileServerCases {
             let remote = try client(kind), root = FileManager.default.temporaryDirectory.appendingPathComponent("aethertransfer-preview-test-\(UUID())")
             try FileManager.default.createDirectory(at: root, withIntermediateDirectories: false)
             defer { try? FileManager.default.removeItem(at: root) }
@@ -36,7 +36,7 @@ extension ProtocolIntegrationTests {
         }
     }
     func testRemotePreviewVerifiedSnapshotAndIdempotentCloseForEveryProtocol() async throws {
-        for kind in TransferProtocol.allCases {
+        for kind in TransferProtocol.fileServerCases {
             let remote = try client(kind), root = FileManager.default.temporaryDirectory.appendingPathComponent("aethertransfer-preview-test-\(UUID())")
             try FileManager.default.createDirectory(at: root, withIntermediateDirectories: false)
             defer { try? FileManager.default.removeItem(at: root) }
@@ -55,7 +55,7 @@ extension ProtocolIntegrationTests {
         }
     }
     func testRemotePreviewLimitRejectsBeforeCreatingSnapshotForEveryProtocol() async throws {
-        for kind in TransferProtocol.allCases {
+        for kind in TransferProtocol.fileServerCases {
             let remote = try client(kind), root = FileManager.default.temporaryDirectory.appendingPathComponent("aethertransfer-preview-test-\(UUID())")
             try FileManager.default.createDirectory(at: root, withIntermediateDirectories: false)
             defer { try? FileManager.default.removeItem(at: root) }
@@ -70,7 +70,7 @@ extension ProtocolIntegrationTests {
         }
     }
     func testCancelledRemotePreviewRemovesEntireSnapshotForEveryProtocol() async throws {
-        for kind in TransferProtocol.allCases {
+        for kind in TransferProtocol.fileServerCases {
             let remote = try client(kind), root = FileManager.default.temporaryDirectory.appendingPathComponent("aethertransfer-preview-test-\(UUID())")
             try FileManager.default.createDirectory(at: root, withIntermediateDirectories: false)
             defer { try? FileManager.default.removeItem(at: root) }

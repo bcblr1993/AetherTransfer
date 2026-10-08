@@ -225,11 +225,14 @@ long at_response_code(ATRequest *r) {
     curl_easy_getinfo(r->curl, CURLINFO_RESPONSE_CODE, &code);
     return code;
 }
-int at_s3(ATRequest *r) {
+int at_s3(ATRequest *r, const char *method) {
     if (!r->is_http) return CURLE_BAD_FUNCTION_ARGUMENT;
     // CryptoKit signs the exact path. Never normalize object keys or retry Basic/Digest.
     CURLcode code = curl_easy_setopt(r->curl, CURLOPT_PATH_AS_IS, 1L);
     if (code == CURLE_OK) code = curl_easy_setopt(r->curl, CURLOPT_HTTPAUTH, (long)CURLAUTH_NONE);
+    // An empty COPYPOSTFIELDS body otherwise selects POST, even when signing PUT.
+    // S3 has no Basic/Digest auth probe; its signed method must match every request.
+    if (code == CURLE_OK) code = curl_easy_setopt(r->curl, CURLOPT_CUSTOMREQUEST, method);
     return code;
 }
 int at_upload_window(ATRequest *r, int64_t start, int64_t length) {

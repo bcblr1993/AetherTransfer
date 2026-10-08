@@ -52,7 +52,8 @@ struct ActivityItem: Identifiable {
     @Published var localViewMode: FileViewMode = .list
     @Published var remoteViewMode: FileViewMode = .list
     private var credentials = Credentials()
-    private let store = ProfileStore()
+    private let repository = ProfileRepository.shared
+    private var profileGeneration = UUID()
     private let queue: TransferQueue
     private let editors: FileEditorManager
     private let previews: FilePreviewManager
@@ -71,13 +72,24 @@ struct ActivityItem: Identifiable {
     private var localTask: Task<Void, Never>?
     private var localGeneration = UUID()
     private var remoteGeneration = UUID()
+    private var authenticationGeneration = UUID()
 
     struct HostChallenge: Identifiable {
         let id = UUID()
         let key: String
         let profile: ServerProfile
     }
-    var client: RemoteClient? { connectedProfile.map { RemoteClient(profile: $0, credentials: credentials) } }
+    var client: RemoteClient? {
+        guard let profile = connectedProfile, profile.protocolKind != .s3 else { return nil }
+        return RemoteClient(profile: profile, credentials: credentials)
+    }
+    var isS3: Bool { connectedProfile?.protocolKind == .s3 }
+    var hasRemoteConnection: Bool { connectedProfile != nil }
+    var s3Client: S3Client? {
+        guard let profile = connectedProfile, profile.protocolKind == .s3 else { return nil }
+        let ca = profile.s3CertificateAuthorityPath.flatMap { $0.isEmpty ? nil : URL(fileURLWithPath: $0) }
+        return S3Client(endpoint: profile.s3Endpoint, credentials: credentials.s3, certificateAuthority: ca)
+    }
 
     func setViewMode(_ mode: FileViewMode) {
         if focusedRemote { remoteViewMode = mode } else { localViewMode = mode }
@@ -86,26 +98,12 @@ struct ActivityItem: Identifiable {
     init(queue: TransferQueue = TransferQueue(limit: 2), editors: FileEditorManager = FileEditorManager(),
          previews: FilePreviewManager = FilePreviewManager()) {
         self.queue = queue; self.editors = editors; self.previews = previews
-        do { profiles = try store.load() } catch { self.error = error.localizedDescription }
-        refreshLocal()
+        reloadProfiles(); refreshLocal()
     }
-    func persist() { do { try store.save(profiles) } catch { self.error = error.localizedDescription } }
-    @discardableResult func save(_ profile: ServerProfile, credentials: Credentials, remember: Bool) throws -> ServerProfile {
-        try profile.validate()
-        profiles = try store.load()
-        var profile = profile
-        if let previous = profiles.first(where: { $0.id == profile.id }),
-           previous.host != profile.host || previous.port != profile.port || previous.protocolKind != profile.protocolKind {
-            profile.trustedHostKey = nil
-        }
-        if remember {
-            try CredentialStore.save(credentials.password, id: profile.id)
-            try CredentialStore.save(credentials.passphrase, id: profile.id, kind: "passphrase")
-        }
-        if let index = profiles.firstIndex(where: { $0.id == profile.id }) { profiles[index] = profile }
-        else { profiles.append(profile) }
-        try store.save(profiles)
-        return profile
+    @discardableResult func save(_ profile: ServerProfile, credentials: Credentials, remember: Bool) async throws -> ServerProfile {
+        profileGeneration = UUID()
+        let saved = try await repository.save(profile, credentials: credentials, remember: remember)
+        profiles = saved.1; return saved.0
     }
     func removeProfile(_ profile: ServerProfile) {
         let alert = NSAlert()
@@ -113,20 +111,20 @@ struct ActivityItem: Identifiable {
         alert.informativeText = "将移除“\(profile.name.isEmpty ? profile.host : profile.name)”及其保存的钥匙串凭据。服务器上的文件不会改变。"
         alert.addButton(withTitle: "移除收藏"); alert.addButton(withTitle: "取消")
         guard alert.runModal() == .alertFirstButtonReturn else { return }
-        do {
-            var saved = try store.load(); saved.removeAll { $0.id == profile.id }
-            try CredentialStore.save("", id: profile.id)
-            try CredentialStore.save("", id: profile.id, kind: "passphrase")
-            try store.save(saved); profiles = saved
-            if selectedServer == profile.id { selectedServer = nil }
-        } catch { self.error = error.localizedDescription }
+        profileGeneration = UUID()
+        Task {
+            do {
+                profiles = try await repository.remove(profile)
+                if selectedServer == profile.id { selectedServer = nil }
+            } catch { self.error = error.localizedDescription }
+        }
     }
     func exportProfiles() {
         let panel = NSSavePanel(); panel.nameFieldStringValue = "AetherTransfer-servers.json"
         guard panel.runModal() == .OK, let destination = panel.url else { return }
         Task {
             do {
-                try await Task.detached { try ProfileStore(file: destination).save(ProfileStore().load()) }.value
+                try await repository.export(to: destination)
             } catch { self.error = error.localizedDescription }
         }
     }
@@ -140,17 +138,25 @@ struct ActivityItem: Identifiable {
                     guard size <= 1024 * 1024 else { throw TransferError.remote("收藏文件超过 1 MiB。") }
                     return try Data(contentsOf: source)
                 }.value
-                let values = try ProfileStore.importing(data, into: store.load())
-                try store.save(values); profiles = values
+                profileGeneration = UUID()
+                profiles = try await repository.importing(data)
             } catch { self.error = error.localizedDescription }
         }
     }
     func reloadProfiles() {
-        do { profiles = try store.load() } catch { self.error = error.localizedDescription }
+        let generation = UUID(); profileGeneration = generation
+        Task {
+            do {
+                let values = try await repository.load()
+                if generation == profileGeneration { profiles = values }
+            } catch { if generation == profileGeneration { self.error = error.localizedDescription } }
+        }
     }
-    var canReceiveUpload: Bool { client != nil && !connecting && !loadingRemote }
+    var canReceiveUpload: Bool { hasRemoteConnection && !connecting && !loadingRemote }
     func uploadURLs(_ urls: [URL]) {
-        guard canReceiveUpload, !urls.isEmpty, urls.allSatisfy(\.isFileURL), let client else { return }
+        guard canReceiveUpload, !urls.isEmpty, urls.allSatisfy(\.isFileURL) else { return }
+        if let s3Client { uploadS3URLs(urls, client: s3Client, prefix: remotePath, existing: remoteFiles); return }
+        guard let client else { return }
         let destination = remotePath, remoteNames = Set(remoteFiles.map(\.name))
         Task {
             do {
@@ -166,28 +172,38 @@ struct ActivityItem: Identifiable {
         }
     }
     func connectSaved(_ profile: ServerProfile) {
-        do {
-            let credentials = Credentials(password: try CredentialStore.load(id: profile.id),
-                                          passphrase: try CredentialStore.load(id: profile.id, kind: "passphrase"))
-            if credentials.password.isEmpty && profile.privateKeyPath.isEmpty { connectionPrompt = profile }
-            else { connect(profile, credentials: credentials) }
-        } catch { self.error = error.localizedDescription }
+        let generation = UUID(); authenticationGeneration = generation
+        Task {
+            do {
+                let credentials = try await Task.detached { try CredentialStore.load(profile: profile) }.value
+                guard generation == authenticationGeneration else { return }
+                let missing = profile.protocolKind == .s3 ? credentials.accessKey.isEmpty || credentials.secretKey.isEmpty
+                    : credentials.password.isEmpty && profile.privateKeyPath.isEmpty
+                if missing { connectionPrompt = profile } else { connect(profile, credentials: credentials) }
+            } catch { self.error = error.localizedDescription }
+        }
     }
     func connect(_ profile: ServerProfile, credentials: Credentials) {
+        authenticationGeneration = UUID(); hostChallenge = nil
         browseTask?.cancel()
         connectedProfile = profile; self.credentials = credentials
-        selectedServer = profile.id; remotePath = RemotePath.normalize(profile.initialPath)
+        selectedServer = profile.id; remotePath = profile.protocolKind == .s3 ? profile.initialPath : RemotePath.normalize(profile.initialPath)
         remoteFiles = []; remoteRevision = UUID(); connecting = true
         refreshRemote()
     }
     func disconnect() {
+        authenticationGeneration = UUID()
         browseTask?.cancel(); remoteGeneration = UUID(); connectedProfile = nil; remoteFiles = []
-        remoteSelection = []; remoteRevision = UUID(); connecting = false; loadingRemote = false
+        remoteSelection = []; remoteRevision = UUID(); connecting = false; loadingRemote = false; credentials = Credentials()
     }
     func approveHostKey() {
         guard let challenge = hostChallenge else { return }
         var profile = challenge.profile; profile.trustedHostKey = challenge.key
-        if let index = profiles.firstIndex(where: { $0.id == profile.id }) { profiles[index] = profile; persist() }
+        profileGeneration = UUID()
+        Task {
+            do { profiles = try await repository.trust(profile) }
+            catch { self.error = error.localizedDescription }
+        }
         hostChallenge = nil; connect(profile, credentials: credentials)
     }
     func refreshLocal() {
@@ -206,19 +222,25 @@ struct ActivityItem: Identifiable {
         }
     }
     func refreshRemote() {
-        guard let client else { return }
+        let client = self.client, s3 = s3Client
+        guard client != nil || s3 != nil else { return }
         browseTask?.cancel()
         let path = remotePath, generation = UUID()
         remoteGeneration = generation; loadingRemote = true
         browseTask = Task {
             do {
-                let files = try await client.list(path)
+                let files: [FileEntry]
+                if let client { files = try await client.list(path) }
+                else if let s3 {
+                    let objects = try await s3.list(prefix: path)
+                    files = await Task.detached { objects.map(\.fileEntry) }.value
+                } else { return }
                 guard generation == remoteGeneration else { return }
                 remoteFiles = files; remoteRevision = UUID(); remoteSelection = []
             } catch let failure as TransferError {
                 guard generation == remoteGeneration else { return }
                 remoteFiles = []; remoteRevision = UUID(); remoteSelection = []
-                if case .hostKeyRequired(let key, let changed) = failure, !changed {
+                if case .hostKeyRequired(let key, let changed) = failure, !changed, let client {
                     hostChallenge = HostChallenge(key: key, profile: client.profile)
                 } else { error = failure.localizedDescription }
             } catch is CancellationError { }
@@ -236,11 +258,12 @@ struct ActivityItem: Identifiable {
         else { NSWorkspace.shared.open(URL(fileURLWithPath: entry.path)) }
     }
     func parent(remote: Bool) {
-        if remote { remotePath = RemotePath.parent(remotePath); refreshRemote() }
+        if remote { remotePath = isS3 ? S3BrowserPath.parent(remotePath) : RemotePath.parent(remotePath); refreshRemote() }
         else { localPath = URL(fileURLWithPath: localPath).deletingLastPathComponent().path; refreshLocal() }
     }
     func edit(_ entry: FileEntry, remote: Bool) {
         guard !entry.isDirectory, !entry.isSymbolicLink else { return }
+        guard !remote || !isS3 else { error = "S3 文本编辑尚未接入。"; return }
         if remote, let client { editors.open(entry, source: .remote(client, entry.path)) }
         else if !remote { editors.open(entry, source: .local(URL(fileURLWithPath: entry.path))) }
     }
@@ -250,6 +273,7 @@ struct ActivityItem: Identifiable {
     }
     func preview(_ entry: FileEntry, remote: Bool) {
         guard !entry.isDirectory, !entry.isSymbolicLink else { return }
+        guard !remote || !isS3 else { error = "S3 快速查看尚未接入；可先下载文件。"; return }
         if remote, let client { previews.open(entry, source: .remote(client, entry.path)) }
         else if !remote { previews.open(entry, source: .local(URL(fileURLWithPath: entry.path))) }
     }
@@ -272,6 +296,7 @@ struct ActivityItem: Identifiable {
         }
     }
     func upload(_ entries: [FileEntry]) {
+        if let s3Client { uploadS3(entries, client: s3Client, prefix: remotePath, existing: remoteFiles); return }
         guard let client else { return }
         upload(entries, client: client, destination: remotePath, remoteNames: Set(remoteFiles.map(\.name)))
     }
@@ -297,6 +322,7 @@ struct ActivityItem: Identifiable {
         }
     }
     func download(_ entries: [FileEntry]) {
+        if let s3Client { downloadS3(entries, client: s3Client); return }
         guard let client else { return }
         let rateLimit = Int64(max(0, UserDefaults.standard.integer(forKey: "transferRateKiB"))) * 1024
         let localNames = Set(localFiles.map(\.name))
@@ -316,7 +342,7 @@ struct ActivityItem: Identifiable {
             }
         }
     }
-    private func conflictPolicy(_ name: String, directory: Bool) -> ConflictPolicy? {
+    func conflictPolicy(_ name: String, directory: Bool) -> ConflictPolicy? {
         let alert = NSAlert(); alert.messageText = "目标已存在：\(name)"
         alert.informativeText = directory ? "合并目录将覆盖其中同名文件。也可以保留两份或跳过。" : "请选择覆盖、保留两份或跳过。"
         alert.addButton(withTitle: directory ? "合并并覆盖" : "覆盖")
@@ -328,7 +354,7 @@ struct ActivityItem: Identifiable {
         default: return nil
         }
     }
-    private func enqueue(name: String, direction: String, retryable: Bool = true, scope: TransferProgress.Scope = .file,
+    func enqueue(name: String, direction: String, retryable: Bool = true, scope: TransferProgress.Scope = .file,
                          operation: @escaping @Sendable (TransferControl, @escaping @Sendable (TransferProgress) -> Void) async throws -> Void) {
         let id = UUID(); activities.insert(ActivityItem(id: id, name: name, direction: direction, canRetry: retryable, scope: scope), at: 0)
         activityObserver?(activities[0])
@@ -490,6 +516,13 @@ struct ActivityItem: Identifiable {
     func createFolder(remote: Bool) {
         guard let name = askName(title: "新建文件夹", initial: "新文件夹") else { return }
         do {
+            if remote && isS3 {
+                guard let s3Client else { return }
+                let prefix = try S3BrowserPath.append(name, to: remotePath) + "/"
+                Task { do { try await s3Client.createPrefix(prefix); refreshRemote() } catch { self.error = error.localizedDescription } }
+                return
+            }
+            guard !remote || client != nil else { return }
             try RemotePath.validateName(name)
             if remote, let client {
                 let path = try RemotePath.join(remotePath, name)
@@ -501,6 +534,8 @@ struct ActivityItem: Identifiable {
         } catch { self.error = error.localizedDescription }
     }
     func rename(_ entry: FileEntry, remote: Bool) {
+        guard !remote || !isS3 else { error = "S3 对象复制 / 重命名尚未接入。"; return }
+        guard !remote || client != nil else { return }
         guard let name = askName(title: "重命名", initial: entry.name) else { return }
         do {
             try RemotePath.validateName(name)
@@ -515,13 +550,17 @@ struct ActivityItem: Identifiable {
         } catch { self.error = error.localizedDescription }
     }
     func delete(_ entry: FileEntry, remote: Bool) {
+        guard !remote || hasRemoteConnection else { return }
+        guard !remote || !isS3 || !entry.isDirectory else { error = "S3 前缀递归删除尚未接入。"; return }
         let alert = NSAlert(); alert.messageText = "删除 \(entry.name)？"
         alert.informativeText = remote ? "服务器删除无法从本机废纸篓恢复。" : "文件将移到废纸篓。"
         alert.addButton(withTitle: "删除"); alert.addButton(withTitle: "取消")
         guard alert.runModal() == .alertFirstButtonReturn else { return }
-        if remote, let client {
+        if remote, let s3Client, let key = entry.s3Key {
+            Task { do { try await s3Client.remove(key); refreshRemote() } catch { self.error = error.localizedDescription } }
+        } else if remote, let client {
             Task { do { try await client.remove(entry.path, directory: entry.isDirectory); refreshRemote() } catch { self.error = error.localizedDescription } }
-        } else {
+        } else if !remote {
             do { try FileManager.default.trashItem(at: URL(fileURLWithPath: entry.path), resultingItemURL: nil); refreshLocal() }
             catch { self.error = error.localizedDescription }
         }

@@ -9,6 +9,10 @@ import hashlib
 import hmac
 import ipaddress
 import os
+import json
+import shutil
+import signal
+import sys
 from pathlib import Path
 import secrets
 import socket
@@ -27,6 +31,14 @@ from cryptography.hazmat.primitives.asymmetric import rsa
 from cryptography.x509.oid import NameOID
 
 ROOT = Path(__file__).resolve().parent.parent
+UI_MODE = '--ui' in sys.argv or '--ui-after-tests' in sys.argv
+
+def terminate_fixture(_signum, _frame):
+    raise SystemExit(0)
+
+if UI_MODE:
+    signal.signal(signal.SIGTERM, terminate_fixture)
+    signal.signal(signal.SIGINT, terminate_fixture)
 
 def port():
     with socket.socket() as sock:
@@ -52,6 +64,9 @@ with tempfile.TemporaryDirectory(prefix='aethertransfer-s3-fixture-') as tempora
     private.write_bytes(key.private_bytes(serialization.Encoding.PEM, serialization.PrivateFormat.PKCS8, serialization.NoEncryption()))
     private.chmod(0o600)
     access, secret = 'fixture-' + secrets.token_hex(12), secrets.token_hex(32)
+    if UI_MODE:
+        # Disposable, loopback-only UI fixture values; never production credentials.
+        access, secret = 'aether-ui-fixture', 'isolated-fixture-only-no-production-access'
     api_port, console_port = port(), port()
     while console_port == api_port: console_port = port()
     host = f'127.0.0.1:{api_port}'
@@ -80,6 +95,8 @@ with tempfile.TemporaryDirectory(prefix='aethertransfer-s3-fixture-') as tempora
         with opener.open(Request(f'https://{host}{path}', body if method == 'PUT' else None, headers, method=method), timeout=15) as response:
             if response.status != 200: raise RuntimeError('Unexpected fixture seed status')
             return response.read(4 * 1024 * 1024)
+    ui_files = ROOT / 'reports/s3-ui-files'
+    ui_created = False
     try:
         for attempt in range(100):
             if server.poll() is not None: raise RuntimeError('Isolated S3 server exited before becoming ready; private log will be removed')
@@ -91,6 +108,7 @@ with tempfile.TemporaryDirectory(prefix='aethertransfer-s3-fixture-') as tempora
         request('/' + bucket)
         seeds = [(f'pages/item-{number:04}.txt', f'page-{number}'.encode()) for number in range(1005)]
         seeds += [('keys/中文 空格+#%?.txt', b'exact-key'), ('same', b'object'), ('same/child', b'prefix')]
+        if UI_MODE: seeds.append(('ui/existing 中文+%.txt', b'native-fixture-download'))
         with ThreadPoolExecutor(max_workers=4) as workers:
             list(workers.map(lambda item: request('/' + bucket + '/' + quote(item[0], safe='/-._~'), item[1]), seeds))
         # Independently expose this fixture's root object/prefix projection. It does
@@ -103,12 +121,37 @@ with tempfile.TemporaryDirectory(prefix='aethertransfer-s3-fixture-') as tempora
         test_environment = os.environ.copy()
         test_environment.update(AT_S3_PORT=str(api_port), AT_S3_ACCESS_KEY=access, AT_S3_SECRET_KEY=secret,
                                 AT_S3_BUCKET=bucket, AT_S3_CA=str(ca))
-        print('Real isolated HTTPS S3 service ready; 1,008 seeded objects; credentials and fixture data are ephemeral.', flush=True)
-        result = subprocess.run(['swift', 'test', '--filter', 'S3ProtocolTests'], cwd=ROOT, env=test_environment)
+        print(f'Real isolated HTTPS S3 service ready; {len(seeds):,} seeded objects; credentials and fixture data are ephemeral.', flush=True)
+        if not UI_MODE or '--ui-after-tests' in sys.argv:
+            result = subprocess.run(['swift', 'test', '--filter', 'S3ProtocolTests'], cwd=ROOT, env=test_environment)
+            if UI_MODE and result.returncode != 0: raise SystemExit(result.returncode)
+        if UI_MODE:
+            ui_files.mkdir(exist_ok=False); ui_created = True
+            (ui_files / 'local').mkdir(); (ui_files / 'download').mkdir()
+            shutil.copyfile(ca, ui_files / 'authority.pem')
+            source = ui_files / 'local/upload 中文 +#%.txt'
+            payload = bytes(range(256)) * 4096 + '真实原生 S3 验证'.encode()
+            source.write_bytes(payload)
+            metadata = {'port': api_port, 'bucket': bucket, 'ca': str(ui_files / 'authority.pem'),
+                        'local': str(ui_files / 'local'), 'download': str(ui_files / 'download'),
+                        'source_sha256': hashlib.sha256(payload).hexdigest()}
+            (ui_files / 'endpoint.json').write_text(json.dumps(metadata))
+            (ui_files / 'endpoint.json').chmod(0o600)
+            print('UI fixture ready: ' + json.dumps(metadata, ensure_ascii=False), flush=True)
+            while True:
+                if (ui_files / 'verify').exists():
+                    uploaded = request('/' + bucket + '/' + quote('ui/upload 中文 +#%.txt', safe='/-._~'), method='GET')
+                    evidence = {'source_sha256': metadata['source_sha256'], 'server_sha256': hashlib.sha256(uploaded).hexdigest(),
+                                'server_bytes': len(uploaded)}
+                    (ui_files / 'server-verification.json').write_text(json.dumps(evidence))
+                    (ui_files / 'verify').unlink()
+                    print('Independent signed UI upload verification: ' + json.dumps(evidence), flush=True)
+                time.sleep(.5)
     finally:
         server.terminate()
         try: server.wait(timeout=10)
         except subprocess.TimeoutExpired: server.kill(); server.wait(timeout=5)
         log.close()
+        if ui_created: shutil.rmtree(ui_files)
 print('S3 server stopped; owned credentials, certificates, data and logs removed.', flush=True)
 raise SystemExit(result.returncode)

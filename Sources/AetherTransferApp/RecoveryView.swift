@@ -7,6 +7,8 @@ struct RecoveryView: View {
     @ObservedObject var tabs: BrowserTabs
     @Environment(\.dismiss) private var dismiss
     @State private var records: [ResumeTransferRecord] = []
+    @State private var s3Records: [S3MultipartCleanup] = []
+    @State private var busyS3: String?
     @State private var loading = true
     @State private var busy: UUID?
     @State private var error: String?
@@ -22,12 +24,12 @@ struct RecoveryView: View {
                     Text("连接对应服务器后继续。活动列表中的任务仍在原标签页处理。").font(.caption).foregroundStyle(.secondary)
                 }
                 Spacer()
-                Button("刷新", systemImage: "arrow.clockwise") { Task { await load() } }.labelStyle(.iconOnly).buttonStyle(.borderless).disabled(busy != nil)
+                Button("刷新", systemImage: "arrow.clockwise") { Task { await load() } }.labelStyle(.iconOnly).buttonStyle(.borderless).disabled(busy != nil || busyS3 != nil)
             }.padding(20)
             Divider()
             if loading {
                 ProgressView("读取保留进度…").frame(maxWidth: .infinity, maxHeight: .infinity)
-            } else if displayed.isEmpty {
+            } else if displayed.isEmpty && s3Records.isEmpty {
                 ContentUnavailableView("没有保留的传输", systemImage: "checkmark.circle", description: Text("单个文件传输中选择“保留进度”，即可稍后恢复。"))
             } else {
                 ScrollView {
@@ -47,14 +49,33 @@ struct RecoveryView: View {
                                     Spacer()
                                     if busy == record.id { ProgressView().controlSize(.small) }
                                     Button("丢弃进度", role: .destructive) { discard(record) }
-                                        .disabled(busy != nil || (record.direction == .upload && !matches(record)))
+                                        .disabled(busy != nil || busyS3 != nil || (record.direction == .upload && !matches(record)))
                                     if !record.discardPending {
                                         Button(requiresRestart(record) ? "从头上传" : "继续传输") { recover(record) }
-                                            .buttonStyle(.glassProminent).disabled(busy != nil || !matches(record))
+                                            .buttonStyle(.glassProminent).disabled(busy != nil || busyS3 != nil || !matches(record))
                                     }
                                 }
                                 if !matches(record) { Text("请先连接此服务器，并完成认证与主机指纹核对。").font(.caption).foregroundStyle(.secondary) }
                                 else if requiresRestart(record) { Text("此服务器使用普通 WebDAV PUT；重新上传会从文件开头开始。").font(.caption).foregroundStyle(.secondary) }
+                            }.padding(.vertical, 12).accessibilityElement(children: .contain)
+                            Divider()
+                        }
+                        ForEach(s3Records, id: \.id) { record in
+                            VStack(alignment: .leading, spacing: 8) {
+                                HStack {
+                                    Label("S3 分片待清理", systemImage: "exclamationmark.arrow.circlepath").font(.headline)
+                                    Spacer()
+                                    if busyS3 == record.id { ProgressView().controlSize(.small) }
+                                }
+                                Text("\(record.endpoint.host):\(record.endpoint.port) · \(record.endpoint.bucket)").font(.caption).foregroundStyle(.secondary)
+                                Text(record.key).font(.caption).lineLimit(1).truncationMode(.middle)
+                                HStack {
+                                    Text(matchesS3(record) ? "只清理此任务的 upload ID；不删除已提交对象。" : "请先连接同一端点 / 存储桶并重新认证。")
+                                        .font(.caption).foregroundStyle(.secondary)
+                                    Spacer()
+                                    Button("重试清理") { cleanupS3(record) }
+                                        .disabled(busy != nil || busyS3 != nil || !matchesS3(record))
+                                }
                             }.padding(.vertical, 12).accessibilityElement(children: .contain)
                             Divider()
                         }
@@ -66,11 +87,23 @@ struct RecoveryView: View {
             HStack {
                 Text("保留的数据会占用磁盘空间；丢弃进度会清理此任务的部分文件。").font(.caption).foregroundStyle(.secondary)
                 Spacer()
-                Button("完成") { dismiss() }.keyboardShortcut(.cancelAction).disabled(busy != nil)
+                Button("完成") { dismiss() }.keyboardShortcut(.cancelAction).disabled(busy != nil || busyS3 != nil)
             }.padding(20)
         }.frame(width: 760, height: 520)
         .task { await load() }
-        .interactiveDismissDisabled(busy != nil)
+        .interactiveDismissDisabled(busy != nil || busyS3 != nil)
+    }
+    private func matchesS3(_ record: S3MultipartCleanup) -> Bool {
+        !workspace.connecting && !workspace.loadingRemote && workspace.s3Client?.endpoint == record.endpoint
+    }
+    private func cleanupS3(_ record: S3MultipartCleanup) {
+        guard matchesS3(record), let client = workspace.s3Client else { return }
+        busyS3 = record.id; error = nil
+        Task {
+            do { try await client.abort(record); try await S3CleanupStore.shared.remove(record); await load() }
+            catch { self.error = error.localizedDescription }
+            busyS3 = nil
+        }
     }
     private func matches(_ record: ResumeTransferRecord) -> Bool {
         guard !workspace.connecting, !workspace.loadingRemote, workspace.hostChallenge == nil,
@@ -80,7 +113,7 @@ struct RecoveryView: View {
     private func requiresRestart(_ record: ResumeTransferRecord) -> Bool { record.direction == .upload && record.endpoint.protocolKind.isWebDAV }
     private func load() async {
         loading = true; error = nil
-        do { records = try await ResumeTransferStore().records() }
+        do { records = try await ResumeTransferStore().records(); s3Records = try await S3CleanupStore.shared.records() }
         catch { self.error = error.localizedDescription }
         loading = false
     }

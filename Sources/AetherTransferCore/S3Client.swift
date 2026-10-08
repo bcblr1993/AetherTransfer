@@ -39,7 +39,7 @@ public struct S3Client: Sendable {
             if let body { return body.withCString { at_http(pointer, method, headers, $0) } }
             return at_http(pointer, method, headers, nil)
         }}
-        guard configured == 0, at_s3(pointer) == 0,
+        guard configured == 0, method.withCString({ at_s3(pointer, $0) }) == 0,
               (certificateAuthority?.path ?? "").withCString({ at_tls(pointer, 0, $0) }) == 0 else {
             throw TransferError.remote("无法配置 S3 签名或 TLS。")
         }
@@ -215,6 +215,11 @@ public struct S3Client: Sendable {
         guard !key.isEmpty else { throw TransferError.invalidPath }
         _ = try await perform(key: key, method: "DELETE", mode: 4)
     }
+    public func createPrefix(_ prefix: String) async throws {
+        try S3BrowserPath.validatePrefix(prefix)
+        guard !prefix.isEmpty else { throw TransferError.invalidPath }
+        _ = try await perform(key: prefix, method: "PUT", mode: 4, headers: ["If-None-Match: *"], body: "")
+    }
     public func activeMultipartUploads() async throws -> Int {
         let response = try await perform(query: [("uploads", ""), ("max-uploads", "1000")])
         let root = try await S3IO.run { try S3XML.parse(response.body, root: "ListMultipartUploadsResult") }
@@ -228,6 +233,16 @@ public struct S3MultipartCleanup: Codable, Hashable, Sendable {
     public let endpoint: S3Endpoint
     public let key: String
     public let uploadID: String
+    public init(endpoint: S3Endpoint, key: String, uploadID: String) {
+        self.endpoint = endpoint; self.key = key; self.uploadID = uploadID
+    }
+    public var id: String {
+        let encoder = JSONEncoder(); encoder.outputFormatting = .sortedKeys
+        let encoded = (try? encoder.encode(endpoint)).map { $0.base64EncodedString() } ?? ""
+        return Data(SHA256.hash(data: Data((encoded + "\0" + key + "\0" + uploadID).utf8))).map { String(format: "%02x", $0) }.joined()
+    }
+    public static func == (a: Self, b: Self) -> Bool { a.id == b.id }
+    public func hash(into hasher: inout Hasher) { hasher.combine(id) }
 }
 
 public enum S3Error: Error, LocalizedError, Sendable {

@@ -167,7 +167,7 @@ private final class ManifestMutation: @unchecked Sendable {
         }
     }
     func testRecursiveTransfersAndKeepBoth() async throws {
-        for kind in TransferProtocol.allCases {
+        for kind in TransferProtocol.fileServerCases {
             let remote = try client(kind)
             let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
             try FileManager.default.createDirectory(at: folder.appendingPathComponent("source/子目录"), withIntermediateDirectories: true)

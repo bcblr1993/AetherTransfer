@@ -20,7 +20,7 @@ import AetherTransferCore
                 Button("刷新") { tabs.current.refreshLocal(); tabs.current.refreshRemote() }.keyboardShortcut("r")
                 Button("上传所选文件") { tabs.current.uploadSelection() }.keyboardShortcut("u", modifiers: [.command, .shift])
                 Button("下载所选文件") { tabs.current.downloadSelection() }.keyboardShortcut("d", modifiers: [.command, .shift])
-                Button("同步目录…") { tabs.current.showSync = true }.keyboardShortcut("s", modifiers: [.command, .shift])
+                Button("同步目录…") { tabs.current.showSync = true }.disabled(tabs.current.isS3).keyboardShortcut("s", modifiers: [.command, .shift])
                 Button("编辑所选文本…") { tabs.current.editSelection() }.keyboardShortcut("e")
                 Button("快速查看…") { tabs.current.previewSelection() }.keyboardShortcut("y")
                 Button("文件信息") { tabs.current.showInspector.toggle() }.keyboardShortcut("i")
@@ -168,13 +168,13 @@ struct MainView: View {
             ToolbarItemGroup {
                 Button("连接", systemImage: "plus") { showConnect = true }
                 Button("刷新", systemImage: "arrow.clockwise") { workspace.refreshLocal(); workspace.refreshRemote() }
-                Button("上传", systemImage: "arrow.up") { workspace.uploadSelection() }.disabled(workspace.localSelection.isEmpty || workspace.client == nil)
+                Button("上传", systemImage: "arrow.up") { workspace.uploadSelection() }.disabled(workspace.localSelection.isEmpty || !workspace.hasRemoteConnection)
                 Button("下载", systemImage: "arrow.down") { workspace.downloadSelection() }.disabled(workspace.remoteSelection.isEmpty)
             }
             ToolbarItem { Button("活动", systemImage: "list.bullet.rectangle") { showActivities.toggle() } }
             ToolbarItem { Button("文件信息", systemImage: "info.circle") { workspace.showInspector.toggle() } }
-            ToolbarItem { Button("同步", systemImage: "arrow.triangle.2.circlepath") { workspace.showSync = true } }
-            ToolbarItem { Button("断开", systemImage: "eject") { workspace.disconnect() }.disabled(workspace.client == nil) }
+            ToolbarItem { Button("同步", systemImage: "arrow.triangle.2.circlepath") { workspace.showSync = true }.disabled(workspace.isS3) }
+            ToolbarItem { Button("断开", systemImage: "eject") { workspace.disconnect() }.disabled(!workspace.hasRemoteConnection) }
         }
         .searchable(text: $query, prompt: "筛选当前目录")
         .sheet(isPresented: $showConnect) { ConnectionView(workspace: workspace) }
@@ -221,7 +221,7 @@ private struct ConnectionWelcomeView: View {
                     .font(.callout).foregroundStyle(.secondary).multilineTextAlignment(.center)
             }
             HStack(spacing: 8) {
-                ForEach(["SFTP", "FTP", "FTPS", "WebDAV"], id: \.self) { name in
+                ForEach(["SFTP", "FTP", "FTPS", "WebDAV", "S3"], id: \.self) { name in
                     Text(name).font(.caption.weight(.medium)).foregroundStyle(.secondary)
                         .padding(.horizontal, 10).padding(.vertical, 5)
                         .background(.quaternary, in: Capsule())
@@ -287,7 +287,7 @@ struct FilePane: View {
                 Button("新建文件夹", systemImage: "folder.badge.plus") { workspace.createFolder(remote: remote) }.labelStyle(.iconOnly)
                 if !remote { Button("选择文件夹", systemImage: "folder") { workspace.chooseLocal() }.labelStyle(.iconOnly) }
             }.padding(.horizontal, 12).padding(.vertical, 10).controlSize(.small)
-            TextField("路径", text: $path).textFieldStyle(.roundedBorder).font(.system(.callout, design: .monospaced))
+            TextField(remote && workspace.isS3 ? "前缀（根目录为空，如 photos/）" : "路径", text: $path).textFieldStyle(.roundedBorder).font(.system(.callout, design: .monospaced))
                 .onSubmit { if remote { workspace.refreshRemote() } else { workspace.refreshLocal() } }
                 .padding(.horizontal, 12).padding(.bottom, 10)
             Group {
@@ -412,6 +412,10 @@ struct ConnectionView: View {
     @State private var password = ""
     @State private var passphrase = ""
     @State private var remember = false
+    @State private var accessKey = ""
+    @State private var secretKey = ""
+    @State private var sessionToken = ""
+    @State private var saving = false
     @State private var save = true
     @State private var error: String?
     let editing: Bool
@@ -424,64 +428,106 @@ struct ConnectionView: View {
         VStack(spacing: 0) {
             Form {
                 Section("连接服务器") {
-                    TextField("名称", text: $profile.name)
-                    TextField("收藏分组", text: $profile.group)
+                    inputRow("名称") { TextField("名称", text: $profile.name, prompt: Text("例如：我的服务器")).labelsHidden() }
+                    inputRow("收藏分组") { TextField("收藏分组", text: $profile.group, prompt: Text("可选")).labelsHidden() }
                     Picker("协议", selection: $profile.protocolKind) { ForEach(TransferProtocol.allCases, id: \.self) { Text($0.title).tag($0) } }
-                    TextField("服务器地址", text: $profile.host)
-                    TextField("端口", value: $profile.port, format: .number.grouping(.never))
-                    TextField("用户名", text: $profile.username)
-                    SecureField("密码", text: $password)
-                    TextField("远程路径", text: $profile.initialPath)
+                    inputRow("服务器地址") { TextField("服务器地址", text: $profile.host, prompt: Text("例如 files.example.com")).labelsHidden() }
+                    inputRow("端口") { TextField("端口", value: $profile.port, format: .number.grouping(.never)).labelsHidden() }
+                    if profile.protocolKind == .s3 {
+                        inputRow("存储桶") { TextField("存储桶", text: Binding(get: { profile.s3Bucket ?? "" }, set: { profile.s3Bucket = $0 }), prompt: Text("存储桶名称")).labelsHidden() }
+                        inputRow("区域") { TextField("区域", text: Binding(get: { profile.s3Region ?? "us-east-1" }, set: { profile.s3Region = $0 })).labelsHidden() }
+                        inputRow("Access Key") { TextField("Access Key", text: $accessKey).labelsHidden() }
+                        inputRow("Secret Key") { SecureField("Secret Key", text: $secretKey, prompt: Text("输入访问密钥")).labelsHidden() }
+                        inputRow("Session Token") { SecureField("Session Token（可选）", text: $sessionToken, prompt: Text("可选")).labelsHidden() }
+                        inputRow("起始前缀") { TextField("起始前缀", text: $profile.initialPath, prompt: Text("根目录留空，如 photos/")).labelsHidden() }
+                        inputRow("自定义 CA") { HStack {
+                            TextField("自定义 CA（可选）", text: Binding(get: { profile.s3CertificateAuthorityPath ?? "" }, set: { profile.s3CertificateAuthorityPath = $0.isEmpty ? nil : $0 }), prompt: Text("可选：证书文件路径")).labelsHidden()
+                            Button("选择…") {
+                                let panel = NSOpenPanel(); panel.canChooseDirectories = false
+                                if panel.runModal() == .OK { profile.s3CertificateAuthorityPath = panel.url?.path }
+                            }
+                        } }
+                    } else {
+                        inputRow("用户名") { TextField("用户名", text: $profile.username, prompt: Text("登录用户名")).labelsHidden() }
+                        inputRow("密码") { SecureField("密码", text: $password, prompt: Text("输入密码")).labelsHidden() }
+                        inputRow("远程路径") { TextField("远程路径", text: $profile.initialPath).labelsHidden() }
+                    }
                     if profile.protocolKind == .sftp {
-                        HStack {
-                            TextField("SSH 私钥", text: $profile.privateKeyPath)
+                        inputRow("SSH 私钥") { HStack {
+                            TextField("SSH 私钥", text: $profile.privateKeyPath, prompt: Text("可选：私钥文件路径")).labelsHidden()
                             Button("选择…") {
                                 let panel = NSOpenPanel(); panel.showsHiddenFiles = true
                                 if panel.runModal() == .OK { profile.privateKeyPath = panel.url?.path ?? "" }
                             }
-                        }
-                        SecureField("私钥口令", text: $passphrase)
+                        } }
+                        inputRow("私钥口令") { SecureField("私钥口令", text: $passphrase, prompt: Text("可选")).labelsHidden() }
                     }
                 }
                 Section {
                     if !editing { Toggle("保存服务器收藏", isOn: $save) }
-                    Toggle("将密码 / 口令保存到钥匙串", isOn: $remember)
+                    Toggle(profile.protocolKind == .s3 ? "将访问密钥 / 令牌保存到钥匙串" : "将密码 / 口令保存到钥匙串", isOn: $remember)
                     if profile.protocolKind == .ftp { Text("FTP 会以明文传输认证和文件内容。建议优先选择 SFTP 或 FTPS。").font(.caption).foregroundStyle(.secondary) }
                     if profile.protocolKind == .webdav { Text("HTTP 会以明文传输认证和文件内容。建议优先选择 WebDAV · HTTPS。").font(.caption).foregroundStyle(.secondary) }
                     if profile.protocolKind.isWebDAV { Text("填写服务器主机和 WebDAV 起始路径；如 /remote.php/dav/files/用户名/。HTTPS 会验证服务器证书。").font(.caption).foregroundStyle(.secondary) }
+                    if profile.protocolKind == .s3 {
+                        Text("使用 HTTPS 路径式端点；服务器地址仅填主机名。R2 区域通常填 auto。当前支持前缀浏览、普通文件传输与对象删除，目录传输和续传正在适配。")
+                            .font(.caption).foregroundStyle(.secondary)
+                        Text("自定义 CA 仍验证证书和服务器名称；留空时使用应用自带的公共根证书。")
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
                     if let error { Text(error).foregroundStyle(.red) }
                 }
-            }.formStyle(.grouped)
+            }.formStyle(.grouped).disabled(saving)
             HStack {
-                Button("取消") { dismiss() }.keyboardShortcut(.cancelAction)
+                Button("取消") { dismiss() }.keyboardShortcut(.cancelAction).disabled(saving)
                 Spacer()
                 Button(editing ? "保存" : "连接") {
-                    do {
-                        let credentials = Credentials(password: password, passphrase: passphrase)
-                        try profile.validate()
-                        if save || editing { profile = try workspace.save(profile, credentials: credentials, remember: remember) }
-                        if !editing { workspace.connect(profile, credentials: credentials) }
-                        dismiss()
-                    } catch { self.error = error.localizedDescription }
+                    saving = true; error = nil
+                    Task {
+                        defer { saving = false }
+                        do {
+                            let credentials = Credentials(password: password, passphrase: passphrase, accessKey: accessKey, secretKey: secretKey, sessionToken: sessionToken)
+                            try profile.validate()
+                            if profile.protocolKind == .s3 && (!editing || remember) { try credentials.s3.validate() }
+                            if save || editing { profile = try await workspace.save(profile, credentials: credentials, remember: remember) }
+                            if !editing { workspace.connect(profile, credentials: credentials) }
+                            dismiss()
+                        } catch { self.error = error.localizedDescription }
+                    }
                 }.buttonStyle(.glassProminent).keyboardShortcut(.defaultAction)
-                    .disabled((try? profile.url(path: profile.initialPath)) == nil)
+                    .disabled(saving || (try? profile.validate()) == nil || (profile.protocolKind == .s3 && (!editing || remember) && (accessKey.isEmpty || secretKey.isEmpty)))
             }.padding(20)
         }.frame(width: 540, height: 640)
         .task {
             guard editing || loadSaved else { return }
             do {
-                let id = profile.id, endpoint = profile.host, port = profile.port, kind = profile.protocolKind
-                let stored = try await Task.detached {
-                    try Credentials(password: CredentialStore.load(id: id), passphrase: CredentialStore.load(id: id, kind: "passphrase"))
-                }.value
-                guard profile.host == endpoint && profile.port == port && profile.protocolKind == kind else { return }
+                let requested = profile
+                let stored = try await Task.detached { try CredentialStore.load(profile: requested) }.value
+                guard profile.credentialIdentity == requested.credentialIdentity else { return }
                 password = stored.password; passphrase = stored.passphrase
-                remember = !password.isEmpty || !passphrase.isEmpty
+                accessKey = stored.accessKey; secretKey = stored.secretKey; sessionToken = stored.sessionToken
+                remember = !password.isEmpty || !passphrase.isEmpty || !accessKey.isEmpty || !secretKey.isEmpty || !sessionToken.isEmpty
             } catch { self.error = error.localizedDescription }
         }
-        .onChange(of: profile.host) { old, new in
-            if editing && old != new { password = ""; passphrase = ""; remember = false }
+        .onChange(of: profile.credentialIdentity) { old, new in
+            if (editing || loadSaved) && old != new {
+                password = ""; passphrase = ""; accessKey = ""; secretKey = ""; sessionToken = ""; remember = false
+            }
         }
-        .onChange(of: profile.protocolKind) { _, kind in profile.port = kind.defaultPort }
+        .onChange(of: profile.protocolKind) { old, kind in
+            profile.port = kind.defaultPort
+            password = ""; passphrase = ""; accessKey = ""; secretKey = ""; sessionToken = ""; remember = false
+            if kind == .s3 { profile.initialPath = "" }
+            else if old == .s3 { profile.initialPath = "/" }
+        }
+        .interactiveDismissDisabled(saving)
+    }
+    private func inputRow<Content: View>(_ title: String, @ViewBuilder content: () -> Content) -> some View {
+        LabeledContent {
+            content().textFieldStyle(.roundedBorder).multilineTextAlignment(.leading)
+                .frame(minWidth: 250, maxWidth: .infinity)
+        } label: {
+            Text(title).frame(width: 115, alignment: .leading)
+        }
     }
 }

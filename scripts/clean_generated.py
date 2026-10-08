@@ -37,6 +37,7 @@ if args.scope in ("s3", "fixtures", "runtime", "all"):
     remove(".build/s3-fixture-build")
 if args.scope in ("fixtures", "all"):
     remove(".build/s3-fixture")
+    remove("reports/s3-ui-files")
 if args.scope in ("app", "all"):
     for relative in ["outputs/AetherTransfer.app", ".build/AppIcon.iconset"]:
         remove(relative)

@@ -21,7 +21,7 @@ const char *at_etag(ATRequest *request);
 int64_t at_body_bytes(ATRequest *request);
 int at_tls(ATRequest *request, int required, const char *certificate_authority);
 int at_http(ATRequest *request, const char *method, const char *headers, const char *body);
-int at_s3(ATRequest *request);
+int at_s3(ATRequest *request, const char *method);
 // A multipart part reads this exact source-file slice; no whole-file buffer or copy.
 int at_upload_window(ATRequest *request, int64_t start, int64_t length);
 long at_response_code(ATRequest *request);

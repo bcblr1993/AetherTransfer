@@ -34,7 +34,7 @@ struct FileInformationView: View {
                     field("权限", entry.permissions.isEmpty ? "—" : entry.permissions)
                     if !entry.isDirectory && !entry.isSymbolicLink {
                         Button("快速查看", systemImage: "eye") { workspace.preview(entry, remote: workspace.focusedRemote) }
-                            .buttonStyle(.glass).frame(maxWidth: .infinity, alignment: .leading)
+                            .buttonStyle(.glass).disabled(workspace.focusedRemote && workspace.isS3).frame(maxWidth: .infinity, alignment: .leading)
                     }
                 } else if selection.count > 1 {
                     Text("已选择 \(selection.count) 个项目").font(.title3.weight(.semibold))

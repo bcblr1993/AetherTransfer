@@ -92,6 +92,34 @@ private final class S3ProgressRecorder: @unchecked Sendable {
         try await remote.download(target, to: download); XCTAssertEqual(try Data(contentsOf: download).count, 0)
         try await remote.remove(target)
     }
+    func testBrowserFilePoliciesAndEmptyPrefixMarkers() async throws {
+        let remote = try client(), local = try folder(), prefix = "browser-\(UUID())/"
+        defer { try? FileManager.default.removeItem(at: local) }
+        try await remote.createPrefix(prefix)
+        let root = try await remote.list(); XCTAssertTrue(root.contains { $0.key == prefix && $0.isPrefix })
+        let empty = try await remote.list(prefix: prefix); XCTAssertTrue(empty.isEmpty)
+        let source = local.appendingPathComponent("source"), destination = local.appendingPathComponent("file.txt")
+        let bytes = Data("browser verified content".utf8); try bytes.write(to: source)
+        let key = prefix + "file.txt"
+        try await remote.uploadFile(source, to: key, policy: .reject)
+        try await remote.uploadFile(source, to: key, policy: .keepBoth)
+        try Data("must skip".utf8).write(to: source)
+        try await remote.uploadFile(source, to: key, policy: .skip)
+        let listed = try await remote.list(prefix: prefix)
+        XCTAssertEqual(Set(listed.map(\.name)), ["file.txt", "file 2.txt"])
+        let selected = try XCTUnwrap(listed.first { $0.key == key }).fileEntry
+        try await remote.downloadFile(selected, to: destination, policy: .reject)
+        try await remote.downloadFile(selected, to: destination, policy: .keepBoth)
+        XCTAssertEqual(try Data(contentsOf: destination), bytes)
+        XCTAssertEqual(try Data(contentsOf: local.appendingPathComponent("file 2.txt")), bytes)
+        try await remote.downloadFile(selected, to: destination, policy: .skip)
+        XCTAssertEqual(try Data(contentsOf: destination), bytes)
+        do { try await remote.createPrefix(prefix); XCTFail("Existing marker must reject") } catch TransferError.conflict { }
+        let wrong = S3MultipartCleanup(endpoint: S3Endpoint(host: "different.example", bucket: remote.endpoint.bucket), key: key, uploadID: "test-owned-id")
+        do { try await remote.abort(wrong); XCTFail("Cleanup requires matching endpoint") } catch S3Error.invalidMultipart { }
+        for object in listed { try await remote.remove(object.key) }
+        try await remote.remove(prefix)
+    }
     func testAuthenticationCertificateTrustAndHostnameMustVerify() async throws {
         let remote = try client()
         let wrong = S3Client(endpoint: remote.endpoint, credentials: S3Credentials(accessKey: remote.credentials.accessKey, secretKey: "incorrect"),

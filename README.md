@@ -1,6 +1,6 @@
 # AetherTransfer
 
-为 Apple 芯片打造的原生 macOS 文件传输工作台。双栏浏览本地与远程文件，连接 FTP / FTPS / SFTP / WebDAV（HTTP、HTTPS）服务器，管理传输任务。
+为 Apple 芯片打造的原生 macOS 文件传输工作台。双栏浏览本地与远程文件，连接 FTP / FTPS / SFTP / WebDAV（HTTP、HTTPS）服务器与 S3 存储桶，管理传输任务。
 
 **状态：v0.1.0 开发中，尚未发布。** [官网](https://www.aethernative.com/apps/aethertransfer/) · [首版范围](docs/first-version.md)
 
@@ -12,7 +12,7 @@
 
 单个文件可保留进度并在重启后恢复；恢复前核对源、已传内容和目标。WebDAV 上传需明确选择从头上传。支持范围与空间清理见 [续传](docs/resumable-transfers.md)。
 
-S3 已加入独立传输核心及真实 MinIO 测试，尚未接入应用连接菜单，AWS/R2 真实账户仍待验收。范围、签名与分片清理边界见 [S3 核心](docs/s3.md)。
+S3 开发候选已接入原生连接表单、前缀浏览、普通文件队列传输与分片清理记录。S3 递归/同步/编辑/预览/重启恢复和 AWS/R2 真实账户仍待验收。范围、签名与分片清理边界见 [S3 连接与传输](docs/s3.md)。
 
 ## 开发
 
