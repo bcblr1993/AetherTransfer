@@ -1,11 +1,12 @@
 """Remove only known AetherTransfer-generated artifacts before another run."""
 import argparse
+import os
 from pathlib import Path
 import shutil
 
 root = Path(__file__).resolve().parent.parent
 parser = argparse.ArgumentParser()
-parser.add_argument("scope", choices=["swift", "app", "runtime", "website", "all"])
+parser.add_argument("scope", choices=["swift", "app", "runtime", "s3", "fixtures", "website", "all"])
 args = parser.parse_args()
 
 def remove(relative):
@@ -16,6 +17,13 @@ def remove(relative):
     if target.is_symlink() or target.is_file():
         target.unlink()
     elif target.is_dir():
+        if str(relative) == ".build/s3-fixture-build":
+            # Go's module cache can contain read-only directories. Only this owned
+            # transient cache is made writable; no symlink targets are followed.
+            for directory, children, _ in os.walk(target, followlinks=False):
+                children[:] = [name for name in children if not (Path(directory) / name).is_symlink()]
+                if not Path(directory).is_symlink():
+                    Path(directory).chmod(0o700)
         shutil.rmtree(target)
 
 swift_paths = [".build/out", ".build/arm64-apple-macosx", ".build/debug", ".build/release",
@@ -25,6 +33,10 @@ if args.scope in ("swift", "app", "all"):
         remove(relative)
 if args.scope in ("runtime", "all"):
     remove(".build/protocol-source/curl-8.22.0")
+if args.scope in ("s3", "fixtures", "runtime", "all"):
+    remove(".build/s3-fixture-build")
+if args.scope in ("fixtures", "all"):
+    remove(".build/s3-fixture")
 if args.scope in ("app", "all"):
     for relative in ["outputs/AetherTransfer.app", ".build/AppIcon.iconset"]:
         remove(relative)

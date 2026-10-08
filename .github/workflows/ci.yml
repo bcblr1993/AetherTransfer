@@ -17,4 +17,8 @@ jobs:
           ./scripts/build_protocol_runtime.sh
       - run: ./scripts/test_core.sh
       - run: ./scripts/test_protocols.sh
+      - name: Real isolated S3 protocol tests
+        run: |
+          command -v go >/dev/null || brew install go
+          ./scripts/test_s3.sh
       - run: ./scripts/build_app.sh

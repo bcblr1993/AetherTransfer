@@ -42,7 +42,7 @@ public struct RemoteFileVersion: Codable, Hashable, Sendable {
     }
 }
 
-private final class NativeDigest: @unchecked Sendable {
+final class NativeDigest: @unchecked Sendable {
     // Used exclusively by the owning native worker, including HTTP authentication resets.
     var hash = SHA256()
     func consume(_ pointer: UnsafeRawPointer?, _ count: Int) {
@@ -56,7 +56,7 @@ private final class ResponseProbe: @unchecked Sendable {
     var bytes: Int64 = 0
 }
 
-private final class RequestBox: @unchecked Sendable {
+final class RequestBox: @unchecked Sendable {
     let pointer: OpaquePointer
     let callback: @Sendable (TransferProgress) -> Void
     let digest: NativeDigest?
@@ -90,12 +90,12 @@ public final class TransferControl: @unchecked Sendable {
         paused = value
         if let request { at_pause(request.pointer, value ? 1 : 0) }
     }
-    fileprivate func attach(_ request: RequestBox) {
+    func attach(_ request: RequestBox) {
         lock.lock(); defer { lock.unlock() }
         self.request = request; at_pause(request.pointer, paused ? 1 : 0)
         if retaining { request.cancel() }
     }
-    fileprivate func detach() {
+    func detach() {
         lock.lock(); defer { lock.unlock() }
         request = nil
     }

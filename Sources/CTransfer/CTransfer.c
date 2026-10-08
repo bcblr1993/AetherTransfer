@@ -32,6 +32,9 @@ struct ATRequest {
     int window, is_http, mode, valid_range, rejected_range;
     long http_status;
     char etag[1024];
+    FILE *upload;
+    int upload_window, upload_source_failed;
+    int64_t upload_start, upload_length, upload_remaining;
     ATBody sink;
     void *sink_context;
 };
@@ -80,6 +83,26 @@ static size_t response_header(char *data, size_t size, size_t count, void *ctx) 
 }
 static int seek_upload(void *ctx, curl_off_t offset, int origin) {
     return fseeko(ctx, (off_t)offset, origin) == 0 ? CURL_SEEKFUNC_OK : CURL_SEEKFUNC_FAIL;
+}
+static size_t read_upload_slice(char *data, size_t size, size_t count, void *ctx) {
+    ATRequest *r = ctx;
+    if (size && count > SIZE_MAX / size) { r->upload_source_failed = 1; return CURL_READFUNC_ABORT; }
+    size_t n = size * count;
+    if ((uint64_t)n > (uint64_t)r->upload_remaining) n = (size_t)r->upload_remaining;
+    size_t read = fread(data, 1, n, r->upload);
+    r->upload_remaining -= (int64_t)read;
+    if (read < n) { r->upload_source_failed = 1; return CURL_READFUNC_ABORT; }
+    return read;
+}
+static int seek_upload_slice(void *ctx, curl_off_t offset, int origin) {
+    ATRequest *r = ctx;
+    int64_t base = origin == SEEK_SET ? 0 : (origin == SEEK_END ? r->upload_length : r->upload_length - r->upload_remaining);
+    if ((origin != SEEK_SET && origin != SEEK_END && origin != SEEK_CUR) || offset < -base || offset > r->upload_length - base)
+        return CURL_SEEKFUNC_FAIL;
+    int64_t position = base + offset;
+    if (fseeko(r->upload, r->upload_start + position, SEEK_SET) != 0) return CURL_SEEKFUNC_FAIL;
+    r->upload_remaining = r->upload_length - position;
+    return CURL_SEEKFUNC_OK;
 }
 static size_t write_download(char *data, size_t size, size_t count, void *ctx) {
     ATRequest *r = ctx;
@@ -202,6 +225,18 @@ long at_response_code(ATRequest *r) {
     curl_easy_getinfo(r->curl, CURLINFO_RESPONSE_CODE, &code);
     return code;
 }
+int at_s3(ATRequest *r) {
+    if (!r->is_http) return CURLE_BAD_FUNCTION_ARGUMENT;
+    // CryptoKit signs the exact path. Never normalize object keys or retry Basic/Digest.
+    CURLcode code = curl_easy_setopt(r->curl, CURLOPT_PATH_AS_IS, 1L);
+    if (code == CURLE_OK) code = curl_easy_setopt(r->curl, CURLOPT_HTTPAUTH, (long)CURLAUTH_NONE);
+    return code;
+}
+int at_upload_window(ATRequest *r, int64_t start, int64_t length) {
+    if (start < 0 || length < 0 || start > INT64_MAX - length) return CURLE_BAD_FUNCTION_ARGUMENT;
+    r->upload_window = 1; r->upload_start = start; r->upload_length = length; r->upload_remaining = length;
+    return CURLE_OK;
+}
 void at_cancel(ATRequest *r) { atomic_store(&r->cancelled, 1); }
 void at_pause(ATRequest *r, int paused) { atomic_store(&r->paused, paused); }
 void at_rate_limit(ATRequest *r, int64_t rate) {
@@ -253,6 +288,9 @@ int at_perform(ATRequest *r, int mode, const char *local, const char *commands, 
             }
             if (descriptor >= 0) { f = fdopen(descriptor, "r+b"); if (!f) close(descriptor); }
             if (f && fseeko(f, r->offset, SEEK_SET) != 0) { fclose(f); f = NULL; }
+        } else if (mode == 2 && r->upload_window) {
+            int descriptor = open(local, O_RDONLY | O_NOFOLLOW | O_NONBLOCK);
+            if (descriptor >= 0) { f = fdopen(descriptor, "rb"); if (!f) close(descriptor); }
         } else f = fopen(local, mode == 1 ? "wbx" : "rb");
         if (!f) { snprintf(r->error, sizeof(r->error), "Cannot open local transfer file"); return CURLE_READ_ERROR; }
         if (mode == 1) {
@@ -263,11 +301,17 @@ int at_perform(ATRequest *r, int mode, const char *local, const char *commands, 
         else {
             struct stat st;
             if (fstat(fileno(f), &st) != 0) { fclose(f); return CURLE_READ_ERROR; }
+            if (r->upload_window && (!S_ISREG(st.st_mode) || st.st_size < r->upload_start + r->upload_length ||
+                                     fseeko(f, r->upload_start, SEEK_SET) != 0)) {
+                fclose(f); snprintf(r->error, sizeof(r->error), "Upload source slice is unavailable"); return CURLE_READ_ERROR;
+            }
             curl_easy_setopt(r->curl, CURLOPT_UPLOAD, 1L);
-            curl_easy_setopt(r->curl, CURLOPT_READDATA, f);
-            curl_easy_setopt(r->curl, CURLOPT_SEEKFUNCTION, seek_upload);
-            curl_easy_setopt(r->curl, CURLOPT_SEEKDATA, f);
-            curl_easy_setopt(r->curl, CURLOPT_INFILESIZE_LARGE, (curl_off_t)st.st_size);
+            r->upload = f;
+            curl_easy_setopt(r->curl, CURLOPT_READFUNCTION, r->upload_window ? read_upload_slice : NULL);
+            curl_easy_setopt(r->curl, CURLOPT_READDATA, r->upload_window ? (void *)r : (void *)f);
+            curl_easy_setopt(r->curl, CURLOPT_SEEKFUNCTION, r->upload_window ? seek_upload_slice : seek_upload);
+            curl_easy_setopt(r->curl, CURLOPT_SEEKDATA, r->upload_window ? (void *)r : (void *)f);
+            curl_easy_setopt(r->curl, CURLOPT_INFILESIZE_LARGE, (curl_off_t)(r->upload_window ? r->upload_length : st.st_size));
             curl_easy_setopt(r->curl, CURLOPT_WRITEFUNCTION, collect);
             curl_easy_setopt(r->curl, CURLOPT_WRITEDATA, r);
         }
@@ -321,6 +365,11 @@ int at_perform(ATRequest *r, int mode, const char *local, const char *commands, 
     if (multi) curl_multi_cleanup(multi);
     if (f && fclose(f) != 0 && code == CURLE_OK) { snprintf(r->error, sizeof(r->error), "Cannot flush local file"); code = CURLE_WRITE_ERROR; }
     r->download = NULL;
+    r->upload = NULL;
+    if (r->upload_source_failed) {
+        snprintf(r->error, sizeof(r->error), "Upload source slice changed or could not be read");
+        code = CURLE_READ_ERROR; // Do not classify a read-callback abort as user cancellation.
+    }
     curl_slist_free_all(quotes);
     if (r->rejected_range || (code == CURLE_OK && r->is_http && r->window &&
         (r->offset > 0 || r->range_end >= 0) && (r->http_status != 206 || !r->valid_range))) {

@@ -12,6 +12,8 @@
 
 单个文件可保留进度并在重启后恢复；恢复前核对源、已传内容和目标。WebDAV 上传需明确选择从头上传。支持范围与空间清理见 [续传](docs/resumable-transfers.md)。
 
+S3 已加入独立传输核心及真实 MinIO 测试，尚未接入应用连接菜单，AWS/R2 真实账户仍待验收。范围、签名与分片清理边界见 [S3 核心](docs/s3.md)。
+
 ## 开发
 
 要求 Apple Silicon、macOS 26+、Xcode 26+ / Swift 6。协议库在项目自己的 `.build` 中构建，不修改本机 Homebrew curl：
@@ -29,6 +31,8 @@ swift run AetherTransfer
 测试和打包脚本会先清理上一轮 Swift 构建产物；打包只保留一个开发 app。依赖源码编译完成即清理，仅缓存一份协议 runtime、源码压缩包和测试 venv。官网构建前后用 `python3 scripts/clean_generated.py website` 清理 node_modules、dist、Astro 和 npm 缓存。手动清理本项目生成的性能追踪与所有构建缓存：`python3 scripts/clean_generated.py all`；该命令保留源码、Git 与官网 checkout，不删除用户的待续传数据。
 
 测试和构建串行执行，结束后再清理 `swift`、`runtime`、`website` 三个范围，保留一个当前开发 app 和少量验收证据；不保留多轮编译目录或大型性能追踪。预览缓存独立于构建清理：关闭或正常退出清理自己的副本，启动时回收已确认归属且无人使用的遗留副本，未知数据保留。
+
+`scripts/test_s3.sh` 会先清理 Swift 产物，编译独立 MinIO 测试服务（需要 Go 1.24+），随即移除 Go 模块/编译缓存，测试退出时删除服务程序与自建数据。它不会增加 app 的生产依赖或将 MinIO 打包进应用。
 
 ## 产品分工
 

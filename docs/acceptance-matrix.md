@@ -29,7 +29,7 @@
 | 传输速度/整体目录进度、Dock 进度 | 文件与目录进度已验证，Dock 视觉待验收 | 最近三秒采样；续传排除已有字节，暂停/重试/校验清除估算；目录先扫描总量，汇总字节与项目数，跳过明确计数。跨标签 Dock 汇总、未知总量、暂停、完成与取消逻辑已通过单元测试并接入原生 Dock；系统 Dock 自动化绑定超时，不能宣称视觉已通过 |
 | 单向/双向/镜像同步、差异预览、规则 | 基础已通过协议与本地 UI 验收 | 本地/本地、本地/远程、远程/远程；逐项方向、明确删除、过期计划拒绝；字面排除与手动时差；完整规则/报告仍待实现，见 synchronization.md |
 | WebDAV / HTTPS | 隔离协议与本地 UI 已验证 | WsgiDAV HTTP Basic / HTTPS Digest；1 MiB 往返、TLS 拒绝、MOVE 不覆盖、暂停/取消与同步；HTTP 界面传输/保留两份字节匹配、创建/重命名目录与一万项筛选；独立真实服务矩阵待完成，见 webdav.md |
-| S3 / IAM Role / DreamObjects / R2 | 待实现 | 对象存储、签名与 multipart |
+| S3 / IAM Role / DreamObjects / R2 | 独立核心已实现，应用与真实服务待验收 | 路径式桶客户端、CryptoKit SigV4、分页、ETag/Range、条件 multipart 与取消 abort；核心官方签名样例与隔离真实 MinIO 门禁。连接表单、Keychain、队列/恢复适配与 AWS/R2 账户仍待完成；不展示未完成的菜单入口，见 s3.md |
 | Backblaze B2 / Azure / OpenStack / Rackspace | 待实现 | 独立服务适配与真实验收 |
 | Google Drive / Dropbox / Box / OneDrive Business | 待实现 | OAuth 注册、限流、真实账号与适配 |
 | 内置与外部文本编辑器 | 基础协议与本地 UI 已验证 | UTF-8 / BOM / CRLF；六种协议真实保存、源内容冲突与取消；本地和 WebDAV 界面编辑、TextEdit 自动回传、冲突导出与退出保护。一万行文本保存已核对；SFTP 初始读取取消后只读/禁止保存、重新读取及临时会话清理已通过窗口回归。完整编辑器矩阵、恢复与服务器条件写入待扩展，见 editing.md |
