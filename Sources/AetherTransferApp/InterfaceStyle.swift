@@ -71,7 +71,7 @@ struct SheetFeedback<Content: View>: View {
               window.attachedSheet == nil, NSApp.modalWindow == nil,
               !view.isHiddenOrHasHiddenAncestor, view.acceptsFirstResponder else { return false }
         if let responder = window.firstResponder,
-           responder !== window, responder !== window.contentView,
+           responder !== window,
            !(responder is BrowserTable), !(responder is BrowserIconGrid) { return false }
         return window.makeFirstResponder(view) && window.firstResponder === view
     }
