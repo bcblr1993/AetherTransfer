@@ -2,6 +2,24 @@ import XCTest
 @testable import AetherTransferCore
 
 @MainActor final class FileEditTests: XCTestCase {
+    func testS3EditorRejectsBucketAndPrefixSourcesBeforeNetworkAccess() async throws {
+        let client = S3Client(endpoint: S3Endpoint(host: "127.0.0.1", port: 1, bucket: "fixture-bucket"),
+                              credentials: S3Credentials(accessKey: "fixture", secretKey: "test-only"))
+        for key in ["", "folder/"] {
+            do { _ = try await FileEditSession.open(.s3(client, key)); XCTFail("Bucket and prefix cannot be edited as text") }
+            catch FileEditError.unsupportedText { }
+        }
+    }
+    func testS3ExpectedUploadVersionRequiresETagBeforeReadingSourceOrSendingRequest() async throws {
+        let client = S3Client(endpoint: S3Endpoint(host: "127.0.0.1", port: 1, bucket: "fixture-bucket"),
+                              credentials: S3Credentials(accessKey: "fixture", secretKey: "test-only"))
+        let missing = FileManager.default.temporaryDirectory.appendingPathComponent("aethertransfer-missing-\(UUID())")
+        do {
+            try await client.upload(missing, to: "text.txt", overwrite: true,
+                                    expectedVersion: RemoteFileVersion(size: 0, modified: nil, etag: nil))
+            XCTFail("An expected version cannot silently become an unconditional write")
+        } catch ResumeTransferError.unsupportedVersion { }
+    }
     private func folder() throws -> URL {
         let url = FileManager.default.temporaryDirectory.appendingPathComponent("aethertransfer-edit-test-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: url, withIntermediateDirectories: false)

@@ -12,6 +12,10 @@ import AetherTransferCore
         case .remote(let client, let path):
             let p = client.profile
             key = "\(p.protocolKind.rawValue)|\(p.host.lowercased())|\(p.port)|\(p.username)|\(RemotePath.normalize(path))"
+        case .s3(let client, let objectKey):
+            let encoder = JSONEncoder(); encoder.outputFormatting = .sortedKeys
+            let endpoint = (try? encoder.encode(client.endpoint))?.base64EncodedString() ?? ""
+            key = "s3|\(endpoint)|\(Data(objectKey.utf8).base64EncodedString())"
         }
         if let existing = windows[key] { existing.showWindow(nil); existing.window?.makeKeyAndOrderFront(nil); return }
         guard windows.count < 12 else {
@@ -120,6 +124,7 @@ import AetherTransferCore
         switch source {
         case .local(let url): L10n.format("本地 · %@", String(describing: url.path))
         case .remote(let client, let path): "\(client.profile.protocolKind.title) · \(path)"
+        case .s3(let client, let key): "S3 · \(client.endpoint.bucket) / \(key)"
         }
     }
     init(name: String, source: FileEditSource) { self.name = name; self.source = source }
@@ -169,6 +174,15 @@ import AetherTransferCore
                 text = snapshot.text; savedText = snapshot.text; externalDirty = false; automaticBlocked = false
                 notice = external ? L10n.text("已回传 · 外部保存后继续自动回传") : L10n.text("已保存")
             } catch is CancellationError { notice = external ? L10n.text("自动回传已暂停 · 草稿保留") : L10n.text("保存已取消 · 草稿保留"); automaticBlocked = external }
+            catch S3Error.cleanupRequired(let record) {
+                do {
+                    try await S3CleanupStore.shared.add(record)
+                    self.error = L10n.text("S3 分片清理未完成；请在“保留的传输”中重新连接并重试清理。")
+                } catch {
+                    self.error = L10n.format("S3 分片清理未完成，清理记录保存失败：%@", String(describing: error.localizedDescription))
+                }
+                notice = external ? L10n.text("自动回传已暂停 · 草稿保留") : L10n.text("保存未完成 · 草稿保留"); automaticBlocked = external
+            }
             catch { self.error = error.localizedDescription; notice = external ? L10n.text("自动回传已暂停 · 草稿保留") : L10n.text("保存未完成 · 草稿保留"); automaticBlocked = external }
             saving = false
             NotificationCenter.default.post(name: .init("AetherTransferEditedFile"), object: nil)

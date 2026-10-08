@@ -154,11 +154,20 @@ public struct S3Client: Sendable {
         }
     }
     /// Every part is streamed with signed SHA-256 and Content-MD5; completion commits one conditional object.
+    /// An expected version pins an existing object; deletion or replacement cannot turn the save into a new upload.
     public func upload(_ source: URL, to key: String, overwrite: Bool = false,
+                       expectedVersion: RemoteFileVersion? = nil,
                        progress: @escaping @Sendable (TransferProgress) -> Void = { _ in }) async throws {
         guard !key.isEmpty else { throw TransferError.invalidPath }; try S3Endpoint.validateKey(key)
+        if let expectedVersion {
+            try expectedVersion.validate()
+            guard expectedVersion.etag != nil else { throw ResumeTransferError.unsupportedVersion }
+        }
         let before: RemoteFileVersion?
         do { before = try await fileVersion(key) } catch S3Error.notFound { before = nil }
+        if let expectedVersion, before?.size != expectedVersion.size || before?.etag != expectedVersion.etag {
+            throw ResumeTransferError.sourceChanged
+        }
         if before != nil && !overwrite { throw TransferError.conflict(key) }
         let conditions = before?.etag.map { ["If-Match: \($0)"] } ?? ["If-None-Match: *"]
         progress(TransferProgress(completed: 0, total: 0, phase: L10n.text("核对上传源")))

@@ -263,13 +263,13 @@ struct ActivityItem: Identifiable {
     }
     func edit(_ entry: FileEntry, remote: Bool) {
         guard !entry.isDirectory, !entry.isSymbolicLink else { return }
-        guard !remote || !isS3 else { error = L10n.text("S3 文本编辑尚未接入。"); return }
-        if remote, let client { editors.open(entry, source: .remote(client, entry.path)) }
+        if remote, let s3Client, let key = entry.s3Key { editors.open(entry, source: .s3(s3Client, key)) }
+        else if remote, let client { editors.open(entry, source: .remote(client, entry.path)) }
         else if !remote { editors.open(entry, source: .local(URL(fileURLWithPath: entry.path))) }
     }
     func editSelection() {
-        if let entry = remoteFiles.first(where: { remoteSelection.contains($0.id) }) { edit(entry, remote: true) }
-        else if let entry = localFiles.first(where: { localSelection.contains($0.id) }) { edit(entry, remote: false) }
+        let files = focusedRemote ? remoteFiles : localFiles, selection = focusedRemote ? remoteSelection : localSelection
+        if let entry = files.first(where: { selection.contains($0.id) }) { edit(entry, remote: focusedRemote) }
     }
     func preview(_ entry: FileEntry, remote: Bool) {
         guard !entry.isDirectory, !entry.isSymbolicLink else { return }

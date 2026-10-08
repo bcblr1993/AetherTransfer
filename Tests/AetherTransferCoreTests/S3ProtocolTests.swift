@@ -41,6 +41,160 @@ private final class S3TreeProgressRecorder: @unchecked Sendable {
         try FileManager.default.createDirectory(at: url, withIntermediateDirectories: false)
         return url
     }
+    func testTextEditorPreservesBOMCRLFAndExternalDraftSavesWithVersionChecks() async throws {
+        let remote = try client(), local = try folder(), prefix = "edit-\(UUID())/"
+        defer { try? FileManager.default.removeItem(at: local) }
+        let source = local.appendingPathComponent("source"), proof = local.appendingPathComponent("proof")
+        for name in ["中文 +#%?.txt", ".lease", "work", String(repeating: "a", count: 250) + ".txt"] {
+            let key = prefix + name, original = Data([0xef, 0xbb, 0xbf]) + Data("第一行\r\n第二行\r\n".utf8)
+            try original.write(to: source); try await remote.upload(source, to: key)
+            let session = try await FileEditSession.open(.s3(remote, key))
+            defer { try? FileManager.default.removeItem(at: session.directory) }
+            XCTAssertEqual(session.draftURL.lastPathComponent, name.utf8.count > 240 ? "preview.txt" : name)
+            XCTAssertEqual((try FileManager.default.attributesOfItem(atPath: session.directory.path)[.posixPermissions] as? NSNumber)?.intValue, 0o700)
+            XCTAssertEqual((try FileManager.default.attributesOfItem(atPath: session.draftURL.path)[.posixPermissions] as? NSNumber)?.intValue, 0o600)
+            let initial = try await session.snapshot()
+            XCTAssertTrue(initial.hasUTF8BOM); XCTAssertEqual(initial.text, "第一行\r\n第二行\r\n")
+            let draft = "第一行\r\nEdited 中文\r\n"
+            try await session.persistDraft(draft)
+            try await remote.download(key, to: proof, overwrite: true); XCTAssertEqual(try Data(contentsOf: proof), original)
+            _ = try await session.save(text: draft)
+            try await remote.download(key, to: proof, overwrite: true)
+            XCTAssertEqual(try Data(contentsOf: proof), Data([0xef, 0xbb, 0xbf]) + Data(draft.utf8))
+            let external = Data([0xef, 0xbb, 0xbf]) + Data("External 原子保存\r\n".utf8)
+            try external.write(to: session.draftURL, options: .atomic)
+            _ = try await session.save()
+            try await remote.download(key, to: proof, overwrite: true); XCTAssertEqual(try Data(contentsOf: proof), external)
+            try await session.close(); XCTAssertFalse(FileManager.default.fileExists(atPath: session.directory.path))
+            try await remote.remove(key)
+        }
+    }
+    func testTextEditorRejectsChangedAndDeletedObjectsAndPreservesDraftForMerge() async throws {
+        let remote = try client(), local = try folder(), key = "edit-conflict-\(UUID())"
+        defer { try? FileManager.default.removeItem(at: local) }
+        let source = local.appendingPathComponent("source"), proof = local.appendingPathComponent("proof"), export = local.appendingPathComponent("export.txt")
+        try Data("old".utf8).write(to: source); try await remote.upload(source, to: key)
+        let session = try await FileEditSession.open(.s3(remote, key)), version = try await remote.fileVersion(key)
+        defer { try? FileManager.default.removeItem(at: session.directory) }
+        try Data("new".utf8).write(to: source); try await remote.upload(source, to: key, overwrite: true)
+        do { _ = try await session.save(text: "my draft"); XCTFail("Same-size source changes must reject") }
+        catch FileEditError.changed { }
+        try await session.exportDraft(to: export); XCTAssertEqual(try Data(contentsOf: export), Data("my draft".utf8))
+        do { try await remote.upload(export, to: key, overwrite: true, expectedVersion: version); XCTFail("Stale upload baseline must reject") }
+        catch ResumeTransferError.sourceChanged { }
+        try await remote.download(key, to: proof); XCTAssertEqual(try Data(contentsOf: proof), Data("new".utf8))
+        let latest = try await session.reload(); XCTAssertEqual(latest.text, "new")
+        _ = try await session.save(text: "merged")
+        try await remote.download(key, to: proof, overwrite: true); XCTAssertEqual(try Data(contentsOf: proof), Data("merged".utf8))
+        let savedVersion = try await remote.fileVersion(key)
+        try await remote.remove(key)
+        do { _ = try await session.save(text: "kept after delete"); XCTFail("Deleted source cannot be recreated by an editor save") }
+        catch FileEditError.changed { }
+        do { try await remote.upload(export, to: key, overwrite: true, expectedVersion: savedVersion); XCTFail("Deleted upload baseline must reject") }
+        catch ResumeTransferError.sourceChanged { }
+        try await session.exportDraft(to: export); XCTAssertEqual(try Data(contentsOf: export), Data("kept after delete".utf8))
+        do { _ = try await remote.fileVersion(key); XCTFail("The deleted object must remain deleted") }
+        catch S3Error.notFound { }
+        let pending = try await remote.activeMultipartUploads(); XCTAssertEqual(pending, 0)
+        try await session.close()
+    }
+    func testTextEditorRejectsBinaryAndOversizedObjectsButCanSaveEmptyText() async throws {
+        let remote = try client(), local = try folder(), prefix = "edit-format-\(UUID())/"
+        defer { try? FileManager.default.removeItem(at: local) }
+        let source = local.appendingPathComponent("source"), proof = local.appendingPathComponent("proof")
+        for (index, bytes) in [Data([0, 1, 2]), Data([0xff]), Data(repeating: 65, count: FileEditSession.maximumBytes + 1)].enumerated() {
+            try bytes.write(to: source); let key = prefix + "invalid-\(index)"
+            try await remote.upload(source, to: key)
+            do { _ = try await FileEditSession.open(.s3(remote, key)); XCTFail("Unsupported text cannot open an editor session") }
+            catch FileEditError.tooLarge where index == 2 { }
+            catch FileEditError.unsupportedText where index != 2 { }
+            try await remote.remove(key)
+        }
+        let key = prefix + "empty.txt"; try Data().write(to: source); try await remote.upload(source, to: key)
+        let session = try await FileEditSession.open(.s3(remote, key))
+        defer { try? FileManager.default.removeItem(at: session.directory) }
+        let initial = try await session.snapshot(); XCTAssertEqual(initial.text, "")
+        _ = try await session.save(text: "created text")
+        _ = try await session.save(text: "")
+        try await remote.download(key, to: proof); XCTAssertEqual(try Data(contentsOf: proof), Data())
+        try await session.close(); try await remote.remove(key)
+    }
+    func testCancelledTextEditorOpenCleansItsPartialSnapshotAndKeepsObject() async throws {
+        let remote = try client(), slow = try client(rate: 64 * 1024), local = try folder(), key = "edit-open-cancel-\(UUID())"
+        defer { try? FileManager.default.removeItem(at: local) }
+        let source = local.appendingPathComponent("source"), proof = local.appendingPathComponent("proof"), bytes = Data(repeating: 65, count: 256 * 1024)
+        try bytes.write(to: source); try await remote.upload(source, to: key)
+        let fm = FileManager.default, temporary = fm.temporaryDirectory
+        let before = Set(try fm.contentsOfDirectory(at: temporary, includingPropertiesForKeys: nil))
+        let operation = Task { try await FileEditSession.open(.s3(slow, key)) }
+        defer { operation.cancel() }
+        var pending: URL?
+        for _ in 0..<120 {
+            let current = Set(try fm.contentsOfDirectory(at: temporary, includingPropertiesForKeys: nil))
+            for candidate in current.subtracting(before) where candidate.lastPathComponent.hasPrefix("aethertransfer-edit-") {
+                let files = (try? fm.contentsOfDirectory(at: candidate.appendingPathComponent("work"), includingPropertiesForKeys: [.fileSizeKey])) ?? []
+                if files.contains(where: { $0.pathExtension == "part" && ((try? $0.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0) > 0 }) {
+                    pending = candidate; break
+                }
+            }
+            if pending != nil { break }
+            try await Task.sleep(for: .milliseconds(100))
+        }
+        operation.cancel()
+        do { let unexpected = try await operation.value; try await unexpected.close(); XCTFail("Cancelled open cannot publish an editor session") }
+        catch is CancellationError { }
+        XCTAssertNotNil(pending, "Exercise cancellation after the actual snapshot has received bytes")
+        if let pending { XCTAssertFalse(fm.fileExists(atPath: pending.path)) }
+        try await remote.download(key, to: proof); XCTAssertEqual(try Data(contentsOf: proof), bytes)
+        try await remote.remove(key)
+    }
+    private func waitForEditorMultipart(_ remote: S3Client) async throws -> Bool {
+        for _ in 0..<50 {
+            if try await remote.activeMultipartUploads() > 0 { return true }
+            try await Task.sleep(for: .milliseconds(100))
+        }
+        return false
+    }
+    func testTextEditorConditionalCommitRejectsChangeDuringSaveAndKeepsDraft() async throws {
+        let remote = try client(), slow = try client(rate: 64 * 1024), local = try folder(), key = "edit-race-\(UUID())"
+        defer { try? FileManager.default.removeItem(at: local) }
+        let source = local.appendingPathComponent("source"), proof = local.appendingPathComponent("proof")
+        try Data("initial".utf8).write(to: source); try await remote.upload(source, to: key)
+        let session = try await FileEditSession.open(.s3(slow, key)), draft = String(repeating: "a", count: 512 * 1024)
+        defer { try? FileManager.default.removeItem(at: session.directory) }
+        let operation = Task { try await session.save(text: draft) }
+        defer { operation.cancel() }
+        let started = try await waitForEditorMultipart(remote)
+        if !started { operation.cancel(); _ = try? await operation.value }
+        XCTAssertTrue(started, "A multipart save must have started before changing the source")
+        guard started else { return }
+        try Data("concurrent writer".utf8).write(to: source); try await remote.upload(source, to: key, overwrite: true)
+        do { _ = try await operation.value; XCTFail("The editor cannot adopt a new ETag during conditional completion") }
+        catch FileEditError.changed { }
+        try await remote.download(key, to: proof); XCTAssertEqual(try Data(contentsOf: proof), Data("concurrent writer".utf8))
+        let savedDraft = try await session.snapshot(); XCTAssertEqual(savedDraft.text, draft)
+        let pending = try await remote.activeMultipartUploads(); XCTAssertEqual(pending, 0)
+        try await session.close(); try await remote.remove(key)
+    }
+    func testCancelledTextEditorSaveAbortsOnlyItsMultipartAndKeepsSourceAndDraft() async throws {
+        let remote = try client(), slow = try client(rate: 64 * 1024), local = try folder(), key = "edit-save-cancel-\(UUID())"
+        defer { try? FileManager.default.removeItem(at: local) }
+        let source = local.appendingPathComponent("source"), proof = local.appendingPathComponent("proof"), original = Data("initial".utf8)
+        try original.write(to: source); try await remote.upload(source, to: key)
+        let session = try await FileEditSession.open(.s3(slow, key)), draft = String(repeating: "a", count: 512 * 1024)
+        defer { try? FileManager.default.removeItem(at: session.directory) }
+        let operation = Task { try await session.save(text: draft) }
+        defer { operation.cancel() }
+        let started = try await waitForEditorMultipart(remote)
+        operation.cancel()
+        do { _ = try await operation.value; XCTFail("Cancelled save cannot commit or report success") }
+        catch is CancellationError { }
+        XCTAssertTrue(started, "Cancel after multipart creation, not just the preflight read")
+        try await remote.download(key, to: proof); XCTAssertEqual(try Data(contentsOf: proof), original)
+        let savedDraft = try await session.snapshot(); XCTAssertEqual(savedDraft.text, draft)
+        let pending = try await remote.activeMultipartUploads(); XCTAssertEqual(pending, 0)
+        try await session.close(); try await remote.remove(key)
+    }
     func testPreviewVerifiesBilingualReservedAndEmptyObjectSnapshotsAndClosesLease() async throws {
         let remote = try client(), local = try folder(), prefix = "preview-\(UUID())/"
         defer { try? FileManager.default.removeItem(at: local) }

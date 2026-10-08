@@ -19,11 +19,17 @@ public enum FileEditError: Error, LocalizedError, Sendable {
 public enum FileEditSource: Sendable {
     case local(URL)
     case remote(RemoteClient, String)
+    case s3(S3Client, String)
     public var name: String {
         switch self {
         case .local(let url): url.lastPathComponent
         case .remote(_, let path): URL(fileURLWithPath: path).lastPathComponent
+        case .s3(_, let key): String(key.split(separator: "/", omittingEmptySubsequences: false).last ?? "")
         }
+    }
+    fileprivate var draftName: String {
+        if case .s3(_, let key) = self { return FilePreview.s3SnapshotName(key) }
+        return name
     }
 }
 
@@ -40,17 +46,27 @@ public actor FileEditSession {
     public nonisolated let directory: URL
     private let source: FileEditSource
     private var baseline: Data
+    private var s3Version: RemoteFileVersion?
     private var bom: Bool
     private var busy = false
     private var closed = false
 
-    private init(source: FileEditSource, directory: URL, data: Data) {
+    private struct ReadResult: Sendable {
+        let data: Data
+        var s3Version: RemoteFileVersion? = nil
+    }
+    private init(source: FileEditSource, directory: URL, read: ReadResult) {
         self.source = source; self.directory = directory
-        draftURL = directory.appendingPathComponent("draft", isDirectory: true).appendingPathComponent(source.name)
-        baseline = Self.digest(data); bom = data.starts(with: [0xef, 0xbb, 0xbf])
+        draftURL = directory.appendingPathComponent("draft", isDirectory: true).appendingPathComponent(source.draftName)
+        baseline = Self.digest(read.data); bom = read.data.starts(with: [0xef, 0xbb, 0xbf]); s3Version = read.s3Version
     }
     public static func open(_ source: FileEditSource) async throws -> FileEditSession {
-        try RemotePath.validateName(source.name)
+        if case .s3(_, let key) = source {
+            try S3Endpoint.validateKey(key)
+            guard !key.isEmpty, !key.hasSuffix("/") else { throw FileEditError.unsupportedText }
+        }
+        if case .s3 = source { try S3BrowserPath.validateLocalName(source.draftName) }
+        else { try RemotePath.validateName(source.draftName) }
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent("aethertransfer-edit-\(UUID().uuidString)")
         do {
             try await worker {
@@ -59,10 +75,10 @@ public actor FileEditSession {
                 try FileManager.default.createDirectory(at: directory.appendingPathComponent("draft"), withIntermediateDirectories: false,
                                                         attributes: [.posixPermissions: 0o700])
             }
-            let data = try await read(source, directory: directory)
-            _ = try decode(data)
-            let session = FileEditSession(source: source, directory: directory, data: data)
-            try await session.write(data)
+            let contents = try await read(source, directory: directory)
+            _ = try decode(contents.data)
+            let session = FileEditSession(source: source, directory: directory, read: contents)
+            try await session.write(contents.data)
             return session
         } catch {
             // Cleanup must still run when the caller cancelled the download/open operation.
@@ -89,8 +105,10 @@ public actor FileEditSession {
         else { data = try await Self.worker { try Self.readLocal(self.draftURL) }; _ = try Self.decode(data) }
         if Self.digest(data) == baseline { return try Self.decode(data) }
         // A content digest catches same-size/same-time changes, including external editor saves.
-        let current = try await Self.read(source, directory: directory)
-        guard Self.digest(current) == baseline else { throw FileEditError.changed }
+        let current: ReadResult
+        do { current = try await Self.read(source, directory: directory) }
+        catch S3Error.notFound { throw FileEditError.changed }
+        guard Self.digest(current.data) == baseline, current.s3Version == s3Version else { throw FileEditError.changed }
         try Task.checkCancellation()
         if Self.digest(data) != baseline {
             let upload = directory.appendingPathComponent("work/save-\(UUID().uuidString)")
@@ -113,9 +131,15 @@ public actor FileEditSession {
                     _ = try FileManager.default.replaceItemAt(destination, withItemAt: temporary)
                 }
             case .remote(let client, let path): try await client.upload(upload, to: path, overwrite: true)
+            case .s3(let client, let key):
+                guard let version = s3Version else { throw FileEditError.changed }
+                do { try await client.upload(upload, to: key, overwrite: true, expectedVersion: version) }
+                catch ResumeTransferError.sourceChanged { throw FileEditError.changed }
+                catch TransferError.conflict(let rejectedKey) where rejectedKey.utf8.elementsEqual(key.utf8) { throw FileEditError.changed }
             }
             let verified = try await Self.read(source, directory: directory)
-            guard Self.digest(verified) == Self.digest(data) else { throw FileEditError.changed }
+            guard Self.digest(verified.data) == Self.digest(data) else { throw FileEditError.changed }
+            s3Version = verified.s3Version
         }
         baseline = Self.digest(data); bom = data.starts(with: [0xef, 0xbb, 0xbf])
         return try Self.decode(data)
@@ -124,8 +148,8 @@ public actor FileEditSession {
         guard !closed else { throw FileEditError.closed }
         guard !busy else { throw FileEditError.busy }
         busy = true; defer { busy = false }
-        let data = try await Self.read(source, directory: directory), snapshot = try Self.decode(data)
-        try await write(data); baseline = Self.digest(data); bom = snapshot.hasUTF8BOM
+        let contents = try await Self.read(source, directory: directory), snapshot = try Self.decode(contents.data)
+        try await write(contents.data); baseline = Self.digest(contents.data); bom = snapshot.hasUTF8BOM; s3Version = contents.s3Version
         return snapshot
     }
     public func exportDraft(to destination: URL, text: String? = nil) async throws {
@@ -183,9 +207,9 @@ public actor FileEditSession {
               data.count == before.st_size else { throw FileEditError.unstableDraft }
         return data
     }
-    private static func read(_ source: FileEditSource, directory: URL) async throws -> Data {
+    private static func read(_ source: FileEditSource, directory: URL) async throws -> ReadResult {
         switch source {
-        case .local(let url): return try await worker { try readLocal(url) }
+        case .local(let url): return try await worker { ReadResult(data: try readLocal(url)) }
         case .remote(let client, let path):
             guard let entry = try await client.list(RemotePath.parent(path)).first(where: { $0.path == RemotePath.normalize(path) }),
                   !entry.isDirectory, !entry.isSymbolicLink else { throw FileEditError.unsupportedText }
@@ -193,7 +217,20 @@ public actor FileEditSession {
             let target = directory.appendingPathComponent("work/read-\(UUID().uuidString)")
             defer { try? FileManager.default.removeItem(at: target) }
             try await client.download(path, to: target, maximumBytes: Int64(maximumBytes))
-            return try await worker { try readLocal(target) }
+            return try await worker { ReadResult(data: try readLocal(target)) }
+        case .s3(let client, let key):
+            let version = try await client.fileVersion(key)
+            guard version.size <= maximumBytes else { throw FileEditError.tooLarge }
+            let target = directory.appendingPathComponent("work/read-\(UUID().uuidString)")
+            defer { try? FileManager.default.removeItem(at: target) }
+            do {
+                try await client.download(key, to: target, expectedVersion: version)
+                let data = try await worker { try readLocal(target) }
+                guard try await client.fileVersion(key) == version else { throw FileEditError.changed }
+                return ReadResult(data: data, s3Version: version)
+            } catch ResumeTransferError.sourceChanged { throw FileEditError.changed }
+            catch S3Error.notFound { throw FileEditError.changed }
+            catch TransferError.conflict(let rejectedKey) where rejectedKey.utf8.elementsEqual(key.utf8) { throw FileEditError.changed }
         }
     }
     private static func worker<T: Sendable>(_ operation: @escaping @Sendable () throws -> T) async throws -> T {
