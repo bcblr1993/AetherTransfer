@@ -182,6 +182,7 @@ struct MainView: View {
         .sheet(isPresented: $workspace.showSync) { SyncReviewView(workspace: workspace, tabs: tabs) }
         .sheet(isPresented: $workspace.showRecovery) { RecoveryView(workspace: workspace, tabs: tabs) }
         .sheet(item: $workspace.permissionRequest) { request in PermissionEditorView(request: request, workspace: workspace) }
+        .sheet(item: $workspace.batchRenameRequest) { request in BatchRenameView(request: request, workspace: workspace) }
         .sheet(item: $editingProfile) { profile in ConnectionView(workspace: workspace, initial: profile, editing: true) }
         .sheet(item: $workspace.connectionPrompt) { profile in ConnectionView(workspace: workspace, initial: profile, loadSaved: true) }
         .alert(L10n.text("操作失败"), isPresented: Binding(get: { workspace.error != nil }, set: { if !$0 { workspace.error = nil } })) {

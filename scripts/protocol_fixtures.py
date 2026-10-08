@@ -185,7 +185,10 @@ class Files(paramiko.SFTPServerInterface):
         try: self.path(path).unlink(); return paramiko.SFTP_OK
         except OSError as e: return paramiko.SFTPServer.convert_errno(e.errno)
     def rename(self, source, target):
-        try: self.path(source).rename(self.path(target)); return paramiko.SFTP_OK
+        try:
+            if source.startswith('/__aether_rename_slow__-'):
+                threading.Event().wait(.25)
+            self.path(source).rename(self.path(target)); return paramiko.SFTP_OK
         except OSError as e: return paramiko.SFTPServer.convert_errno(e.errno)
     def mkdir(self, path, attrs):
         try: self.path(path).mkdir(); return paramiko.SFTP_OK

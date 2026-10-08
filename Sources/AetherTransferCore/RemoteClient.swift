@@ -327,6 +327,12 @@ public struct RemoteClient: Sendable {
             }
             return
         }
+        if !overwrite {
+            let name = URL(fileURLWithPath: destination).lastPathComponent
+            if try await list(RemotePath.parent(destination), includingHidden: true).contains(where: { Data($0.name.utf8) == Data(name.utf8) }) {
+                throw TransferError.conflict(name)
+            }
+        }
         try await command(sftp: "rename \(RemotePath.quoted(source)) \(RemotePath.quoted(destination))", ftp: "RNFR \(source)\nRNTO \(destination)")
     }
     public func remove(_ path: String, directory: Bool) async throws {

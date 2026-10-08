@@ -66,6 +66,11 @@ features:
       body:
         zh: 开发候选提供本地及 FTP / FTPS / SFTP 的 Unix 权限编辑，可选递归应用到文件和文件夹。先扫描范围、检查变化，再写入核对；包括隐藏项目、跳过符号链接，停止保留已完成修改。所有者 / 组编辑及完整界面验收仍待完成。
         en: The development candidate edits Unix permissions for local and FTP / FTPS / SFTP items, with optional recursive application to files and folders. It scans the scope, checks changes and verifies each write, including hidden items and skipping symbolic links. Stopping keeps completed changes. Ownership editing and full UI acceptance remain pending.
+    - kicker: { zh: 命名, en: Rename }
+      title: { zh: 核对新名称，再批量重命名, en: Review names before batch renaming }
+      body:
+        zh: 开发候选提供本地及 FTP / FTPS / SFTP / WebDAV 的文字替换、前后缀和名称编号，逐项预览与排除冲突。停止保留已完成修改及未核对名称；S3 改名、重启恢复与完整界面验收仍待完成。
+        en: The development candidate offers text replacement, prefixes, suffixes and numbering for local and FTP / FTPS / SFTP / WebDAV items, with per-item previews and exclusions. Stopping retains completed changes and unverified names. S3 renaming, restart recovery and full UI acceptance remain pending.
 faq:
   eyebrow: FAQ
   title: { zh: 常见问题, en: Questions }

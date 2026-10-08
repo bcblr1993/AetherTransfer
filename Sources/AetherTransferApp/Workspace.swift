@@ -54,6 +54,8 @@ struct ActivityItem: Identifiable {
     @Published var showInspector = false
     @Published var permissionRequest: PermissionRequest?
     @Published var permissionBusy = false
+    @Published var batchRenameRequest: BatchRenameRequest?
+    @Published var batchRenameBusy = false
     @Published var focusedRemote = false
     @Published var localViewMode: FileViewMode = .list
     @Published var remoteViewMode: FileViewMode = .list
@@ -106,7 +108,7 @@ struct ActivityItem: Identifiable {
     var canEditPermissions: Bool {
         let remote = focusedRemote
         let selected = remote ? remoteSelection : localSelection
-        guard !permissionBusy, !(remote ? loadingRemote || connecting : loadingLocal), !selected.isEmpty,
+        guard !permissionBusy, !batchRenameBusy, !(remote ? loadingRemote || connecting : loadingLocal), !selected.isEmpty,
               !remote || connectedProfile?.protocolKind.supportsUnixPermissions == true else { return false }
         var found = 0
         for entry in remote ? remoteFiles : localFiles where selected.contains(entry.id) {
@@ -122,6 +124,19 @@ struct ActivityItem: Identifiable {
         let entries = (focusedRemote ? remoteFiles : localFiles).filter { (focusedRemote ? remoteSelection : localSelection).contains($0.id) }
         permissionRequest = PermissionRequest(entries: entries, remote: focusedRemote, connection: connectionRevision,
                                               client: focusedRemote ? client : nil)
+    }
+    var canBatchRename: Bool {
+        let selected = focusedRemote ? remoteSelection : localSelection
+        guard !batchRenameBusy, !permissionBusy, !selected.isEmpty,
+              !(focusedRemote ? loadingRemote || connecting || client == nil : loadingLocal) else { return false }
+        return (focusedRemote ? remoteFiles : localFiles).filter { selected.contains($0.id) }.count == selected.count
+    }
+    func batchRename(remote: Bool? = nil) {
+        if let remote { focusedRemote = remote }
+        guard canBatchRename else { return }
+        let selected = focusedRemote ? remoteSelection : localSelection
+        let entries = (focusedRemote ? remoteFiles : localFiles).filter { selected.contains($0.id) }
+        batchRenameRequest = BatchRenameRequest(entries: entries, remote: focusedRemote, connection: connectionRevision, client: focusedRemote ? client : nil)
     }
 
     init(queue: TransferQueue = TransferQueue(limit: 2), editors: FileEditorManager = FileEditorManager(),
@@ -294,7 +309,7 @@ struct ActivityItem: Identifiable {
         browseTask = Task {
             do {
                 let files: [FileEntry]
-                if let client { files = try await client.list(path) }
+                if let client { files = try await client.list(path, includingHidden: true) }
                 else if let s3 {
                     let objects = try await s3.list(prefix: path)
                     files = await Task.detached { objects.map(\.fileEntry) }.value
@@ -621,6 +636,7 @@ struct ActivityItem: Identifiable {
         } catch { self.error = error.localizedDescription }
     }
     func rename(_ entry: FileEntry, remote: Bool) {
+        guard !batchRenameBusy else { return }
         guard !remote || !isS3 else { error = L10n.text("S3 对象复制 / 重命名尚未接入。"); return }
         guard !remote || client != nil else { return }
         guard let name = askName(title: L10n.text("重命名"), initial: entry.name) else { return }

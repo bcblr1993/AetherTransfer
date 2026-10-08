@@ -13,6 +13,7 @@ enum InterfaceStyle {
     static let connectionHeight: CGFloat = 640
     static let recoveryWidth: CGFloat = 760
     static let syncWidth: CGFloat = 1020
+    static let renameWidth: CGFloat = 900
     static let actionMinimumHeight: CGFloat = 32
     static let statusMinimumHeight: CGFloat = 36
     static let groupInset: CGFloat = 8
