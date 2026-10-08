@@ -141,60 +141,61 @@ struct SyncReviewView: View {
     }
     var body: some View {
         let _ = interfaceLocale
-        VStack(alignment: .leading, spacing: InterfaceStyle.sectionGap) {
+        VStack(spacing: 0) {
             SheetHeader(title: L10n.text("同步目录"), subtitle: L10n.text("先预览，再执行所选操作"),
-                        symbol: "arrow.triangle.2.circlepath", inset: 0)
-            HStack(spacing: 20) {
-                location(.left)
-                Image(systemName: model.options.mode == .bidirectional ? "arrow.left.arrow.right" : (model.options.mode == .leftToRight ? "arrow.right" : "arrow.left"))
-                    .font(.title3).foregroundStyle(.blue)
-                location(.right)
-            }
-            HStack(spacing: 20) {
-                Picker(L10n.text("方向"), selection: $model.options.mode) {
-                    Text(L10n.text("向右")).tag(SyncMode.leftToRight)
-                    Text(L10n.text("向左")).tag(SyncMode.rightToLeft)
-                    Text(L10n.text("双向")).tag(SyncMode.bidirectional)
-                }.pickerStyle(.segmented).frame(width: 270)
-                Picker(L10n.text("比较"), selection: $model.options.comparison) {
-                    Text(L10n.text("修改日期")).tag(SyncComparison.modificationDate)
-                    Text(L10n.text("文件大小")).tag(SyncComparison.fileSize)
-                    Text(L10n.text("文件内容")).tag(SyncComparison.contents)
-                }.frame(width: 260)
-                Spacer()
-                Toggle(L10n.text("列出镜像删除项"), isOn: $model.options.mirror)
-                    .disabled(model.options.mode == .bidirectional)
-                    .help(L10n.text("列出目标中缺少源文件的项目；删除项仍需手动选中。"))
-            }
-            DisclosureGroup(L10n.text("更多选项"), isExpanded: $advanced) {
-                HStack(alignment: .top, spacing: 24) {
-                    VStack(alignment: .leading, spacing: 8) {
-                        Toggle(L10n.text("包含隐藏文件"), isOn: $model.options.includeHidden)
-                        if model.options.comparison == .modificationDate {
-                            if model.left?.root.isRemote == true { timeOffset(side: .left) }
-                            if model.right?.root.isRemote == true { timeOffset(side: .right) }
+                        symbol: "arrow.triangle.2.circlepath")
+            Divider()
+            VStack(alignment: .leading, spacing: InterfaceStyle.sectionGap) {
+                HStack(spacing: 20) {
+                    location(.left)
+                    Image(systemName: model.options.mode == .bidirectional ? "arrow.left.arrow.right" : (model.options.mode == .leftToRight ? "arrow.right" : "arrow.left"))
+                        .font(.title3).foregroundStyle(.tint).accessibilityHidden(true)
+                    location(.right)
+                }
+                HStack(spacing: 20) {
+                    Picker(L10n.text("方向"), selection: $model.options.mode) {
+                        Text(L10n.text("向右")).tag(SyncMode.leftToRight)
+                        Text(L10n.text("向左")).tag(SyncMode.rightToLeft)
+                        Text(L10n.text("双向")).tag(SyncMode.bidirectional)
+                    }.pickerStyle(.segmented).frame(width: 270)
+                    Picker(L10n.text("比较"), selection: $model.options.comparison) {
+                        Text(L10n.text("修改日期")).tag(SyncComparison.modificationDate)
+                        Text(L10n.text("文件大小")).tag(SyncComparison.fileSize)
+                        Text(L10n.text("文件内容")).tag(SyncComparison.contents)
+                    }.frame(width: 260)
+                    Spacer()
+                    Toggle(L10n.text("列出镜像删除项"), isOn: $model.options.mirror)
+                        .disabled(model.options.mode == .bidirectional)
+                        .help(L10n.text("列出目标中缺少源文件的项目；删除项仍需手动选中。"))
+                }
+                DisclosureGroup(L10n.text("更多选项"), isExpanded: $advanced) {
+                    HStack(alignment: .top, spacing: 24) {
+                        VStack(alignment: .leading, spacing: 8) {
+                            Toggle(L10n.text("包含隐藏文件"), isOn: $model.options.includeHidden)
+                            if model.options.comparison == .modificationDate {
+                                if model.left?.root.isRemote == true { timeOffset(side: .left) }
+                                if model.right?.root.isRemote == true { timeOffset(side: .right) }
+                            }
+                        }.frame(width: 285, alignment: .leading)
+                        VStack(alignment: .leading, spacing: 4) {
+                            Text(L10n.text("排除路径")).font(.caption).foregroundStyle(.secondary)
+                            TextEditor(text: $model.exclusions).font(.system(.caption, design: .monospaced))
+                                .frame(height: 48).overlay(RoundedRectangle(cornerRadius: 4).stroke(.quaternary))
+                            SupportingText(L10n.text("每行一个相对路径或文件名，不使用通配符。"))
                         }
-                    }.frame(width: 285, alignment: .leading)
-                    VStack(alignment: .leading, spacing: 4) {
-                        Text(L10n.text("排除路径")).font(.caption).foregroundStyle(.secondary)
-                        TextEditor(text: $model.exclusions).font(.system(.caption, design: .monospaced))
-                            .frame(height: 48).overlay(RoundedRectangle(cornerRadius: 4).stroke(.quaternary))
-                        Text(L10n.text("每行一个相对路径或文件名，不使用通配符。")).font(.caption).foregroundStyle(.secondary)
-                    }
-                }.padding(.top, 8)
-            }
-            Text(model.options.comparison == .contents
-                 ? L10n.text("内容比较会读取所有文件；S3 流式校验，其他远程文件逐个临时下载，完成即清理。")
-                 : L10n.text("日期按分钟精度比较；相同大小或日期不能保证内容相同，可改用文件内容比较。"))
-                .font(.caption).foregroundStyle(.secondary)
-            if model.left?.root.isS3 == true || model.right?.root.isS3 == true {
-                Text(L10n.text("S3 上传不会保留源文件的修改日期，建议按文件内容比较。S3 镜像删除项仅供查看，不能执行。"))
-                    .font(.caption).foregroundStyle(.secondary)
-            }
+                    }.padding(.top, 8)
+                }
+                SupportingText(model.options.comparison == .contents
+                     ? L10n.text("内容比较会读取所有文件；S3 流式校验，其他远程文件逐个临时下载，完成即清理。")
+                     : L10n.text("日期按分钟精度比较；相同大小或日期不能保证内容相同，可改用文件内容比较。"))
+                if model.left?.root.isS3 == true || model.right?.root.isS3 == true {
+                    SupportingText(L10n.text("S3 上传不会保留源文件的修改日期，建议按文件内容比较。S3 镜像删除项仅供查看，不能执行。"))
+                }
+            }.padding(InterfaceStyle.pageInset)
             Divider()
-            preview
+            preview.padding(InterfaceStyle.pageInset)
             Divider()
-            HStack {
+            SheetActions {
                 Button(L10n.text("取消")) { model.invalidate(); dismiss() }.keyboardShortcut(.cancelAction)
                 if let plan = model.plan {
                     Button(L10n.text("全选可执行项")) { model.selectAll() }.buttonStyle(.borderless).disabled(plan.items.isEmpty)
@@ -202,11 +203,11 @@ struct SyncReviewView: View {
                 }
                 Spacer()
                 Button(model.busy ? L10n.text("停止预览") : L10n.text("生成预览")) { if model.busy { model.invalidate() } else { model.preview() } }
-                    .buttonStyle(.glass).disabled(model.left == nil || model.right == nil)
+                    .disabled(model.left == nil || model.right == nil)
                 Button(L10n.text("执行所选同步")) { confirm = true }.buttonStyle(.glassProminent)
                     .keyboardShortcut(.defaultAction).disabled(!model.canExecute)
             }
-        }.padding(InterfaceStyle.pageInset).frame(width: 1020, height: 680)
+        }.frame(width: InterfaceStyle.syncWidth, height: 680)
         .onChange(of: model.leftID) { model.invalidate() }
         .onChange(of: model.rightID) { model.invalidate() }
         .onChange(of: model.options) {
@@ -250,7 +251,7 @@ struct SyncReviewView: View {
                     NativeSyncTable(items: plan.items, revision: plan.id, selected: model.selected, resolutions: model.resolutions,
                                     select: model.setSelected, resolve: model.setDirection)
                 }
-                if model.unresolved > 0 { Text(L10n.format("请为已选的 %@ 项同名差异选择方向。", String(describing: model.unresolved))).font(.caption).foregroundStyle(.orange) }
+                if model.unresolved > 0 { InterfaceMessage(text: L10n.format("请为已选的 %@ 项同名差异选择方向。", String(describing: model.unresolved)), severity: .warning) }
             }.frame(maxWidth: .infinity, maxHeight: .infinity)
         } else {
             ContentUnavailableView(L10n.text("预览目录差异"), systemImage: "arrow.triangle.2.circlepath",

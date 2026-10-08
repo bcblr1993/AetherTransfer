@@ -492,3 +492,5 @@
 "认证方式" = "Authentication";
 "私钥文件路径" = "Private key file path";
 "使用系统 SSH agent 中已加载的密钥。认证失败时不会改用密码或私钥文件；仍须核对服务器指纹。" = "Use keys loaded in the system SSH agent. Authentication failures do not fall back to passwords or key files. Server fingerprints still require verification.";
+"已展开" = "Expanded";
+"已收起" = "Collapsed";

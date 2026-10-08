@@ -8,12 +8,83 @@ enum InterfaceStyle {
     static let sectionGap: CGFloat = 16
     static let fieldGap: CGFloat = 12
     static let fieldLabelWidth: CGFloat = 150
+    static let fieldMinimumWidth: CGFloat = 250
     static let connectionWidth: CGFloat = 600
+    static let connectionHeight: CGFloat = 640
+    static let recoveryWidth: CGFloat = 760
+    static let syncWidth: CGFloat = 1020
+    static let actionMinimumHeight: CGFloat = 32
+    static let statusMinimumHeight: CGFloat = 36
+    static let groupInset: CGFloat = 8
+    static let cornerRadius: CGFloat = 10
     static let listRowHeight: CGFloat = 28
     static let columnWidth: CGFloat = 260
     static let paneInset: CGFloat = 12
     static let fileSymbolSize: CGFloat = 14
     static let tabTransition: Double = 0.18
+}
+
+/// A fixed action area shared by sheets. The scrolling body owns its height;
+/// language changes can wrap labels without moving the actions offscreen.
+struct SheetActions<Content: View>: View {
+    @ViewBuilder let content: Content
+    var body: some View {
+        HStack(spacing: InterfaceStyle.fieldGap) { content }
+            .frame(minHeight: InterfaceStyle.actionMinimumHeight)
+            .padding(InterfaceStyle.pageInset)
+    }
+}
+
+/// Explicit columns avoid platform-dependent LabeledContent spacing. Keep the
+/// native field's own accessibility label and its full editable hit area.
+struct FormFieldRow<Content: View>: View {
+    let title: String
+    @ViewBuilder let content: Content
+    var body: some View {
+        HStack(alignment: .firstTextBaseline, spacing: InterfaceStyle.fieldGap) {
+            Text(verbatim: title)
+                .frame(width: InterfaceStyle.fieldLabelWidth, alignment: .leading)
+                .fixedSize(horizontal: false, vertical: true)
+            content.textFieldStyle(.roundedBorder).multilineTextAlignment(.leading)
+                .frame(minWidth: InterfaceStyle.fieldMinimumWidth, maxWidth: .infinity)
+        }
+    }
+}
+
+/// Supporting copy must wrap in English as well as Chinese, including inside
+/// horizontal stacks. No fixed line limit or faded opacity is applied.
+struct SupportingText: View {
+    let text: String
+    init(_ text: String) { self.text = text }
+    var body: some View {
+        Text(verbatim: text).font(.caption).foregroundStyle(.secondary)
+            .fixedSize(horizontal: false, vertical: true)
+    }
+}
+
+struct InterfaceMessage: View {
+    enum Severity { case error, warning }
+    let text: String
+    var severity: Severity = .error
+    var body: some View {
+        HStack(alignment: .top, spacing: 8) {
+            Image(systemName: severity == .error ? "exclamationmark.circle" : "exclamationmark.triangle")
+                .accessibilityHidden(true)
+            Text(verbatim: text).fixedSize(horizontal: false, vertical: true)
+                .textSelection(.enabled)
+        }.font(.callout).foregroundStyle(severity == .error ? Color.red : Color.orange)
+            .frame(maxWidth: .infinity, alignment: .leading)
+    }
+}
+
+struct InterfaceStatusBar<Content: View>: View {
+    @ViewBuilder let content: Content
+    var body: some View {
+        HStack(spacing: 10) { content }
+            .font(.caption).foregroundStyle(.secondary)
+            .frame(minHeight: InterfaceStyle.statusMinimumHeight)
+            .padding(.horizontal, InterfaceStyle.paneInset)
+    }
 }
 
 enum DisplayFormat {

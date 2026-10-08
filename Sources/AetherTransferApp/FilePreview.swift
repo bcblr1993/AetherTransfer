@@ -164,24 +164,26 @@ private struct FilePreviewView: View {
             if let url = model.url { NativeQuickLook(url: url).id(url) }
             else {
                 VStack(spacing: 14) {
-                    Image(systemName: "doc.viewfinder").font(.system(size: 38)).foregroundStyle(.secondary)
-                    Text(model.name).font(.headline).lineLimit(2)
+                    Image(systemName: "doc.viewfinder").font(.system(size: 38)).foregroundStyle(.secondary).accessibilityHidden(true)
+                    Text(model.name).font(.headline).lineLimit(2).truncationMode(.middle).help(model.name)
                     if model.loading {
                         if let progress = model.progress, progress.hasKnownTotal {
                             ProgressView(value: progress.fraction).frame(width: 230)
                         } else { ProgressView().controlSize(.small) }
                         Text(model.progress?.phase ?? L10n.text("正在读取文件…")).font(.callout).foregroundStyle(.secondary)
-                        Button(L10n.text("取消预览")) { model.cancel() }.buttonStyle(.glass)
+                        Button(L10n.text("取消预览")) { model.cancel() }
                     } else {
-                        Text(model.error ?? model.notice).foregroundStyle(model.error == nil ? Color.secondary : Color.red)
-                            .multilineTextAlignment(.center).frame(maxWidth: 420)
+                        if let error = model.error {
+                            InterfaceMessage(text: error).frame(maxWidth: 420)
+                        } else {
+                            SupportingText(model.notice).multilineTextAlignment(.center).frame(maxWidth: 420)
+                        }
                         Button(L10n.text("重新读取")) { model.retry() }.buttonStyle(.glassProminent)
                     }
                 }.padding(30).frame(maxWidth: .infinity, maxHeight: .infinity)
             }
             Divider()
-            HStack { Text(model.notice).lineLimit(1); Spacer(); Text(L10n.text("快速查看")) }
-                .font(.caption).foregroundStyle(.secondary).padding(.horizontal, 16).padding(.vertical, 10)
+            InterfaceStatusBar { Text(model.notice).lineLimit(1).help(model.notice); Spacer(); Text(L10n.text("快速查看")) }
         }
         .onChange(of: interfaceLocale) { refreshTitle() }
         .onExitCommand { NSApp.keyWindow?.performClose(nil) }

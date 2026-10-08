@@ -39,7 +39,7 @@ struct RecoveryView: View {
                         ForEach(displayed) { record in
                             VStack(alignment: .leading, spacing: 8) {
                                 HStack {
-                                    Label(record.name, systemImage: record.direction == .upload ? "arrow.up.circle" : "arrow.down.circle").font(.headline).lineLimit(1)
+                                    Label(record.name, systemImage: record.direction == .upload ? "arrow.up.circle" : "arrow.down.circle").font(.headline).lineLimit(1).truncationMode(.middle).help(record.name)
                                     Spacer()
                                     Text(record.discardPending ? L10n.text("待清理") : L10n.text("已保留")).font(.caption).foregroundStyle(.secondary)
                                 }
@@ -54,11 +54,11 @@ struct RecoveryView: View {
                                         .disabled(busy != nil || busyS3 != nil || (record.direction == .upload && !matches(record)))
                                     if !record.discardPending {
                                         Button(requiresRestart(record) ? L10n.text("从头上传") : L10n.text("继续传输")) { recover(record) }
-                                            .buttonStyle(.glassProminent).disabled(busy != nil || busyS3 != nil || !matches(record))
+                                            .disabled(busy != nil || busyS3 != nil || !matches(record))
                                     }
                                 }
-                                if !matches(record) { Text(L10n.text("请先连接此服务器，并完成认证与主机指纹核对。")).font(.caption).foregroundStyle(.secondary) }
-                                else if requiresRestart(record) { Text(L10n.text("此服务器使用普通 WebDAV PUT；重新上传会从文件开头开始。")).font(.caption).foregroundStyle(.secondary) }
+                                if !matches(record) { SupportingText(L10n.text("请先连接此服务器，并完成认证与主机指纹核对。")) }
+                                else if requiresRestart(record) { SupportingText(L10n.text("此服务器使用普通 WebDAV PUT；重新上传会从文件开头开始。")) }
                             }.padding(.vertical, 12).accessibilityElement(children: .contain)
                             Divider()
                         }
@@ -72,8 +72,7 @@ struct RecoveryView: View {
                                 Text("\(record.endpoint.host):\(record.endpoint.port) · \(record.endpoint.bucket)").font(.caption).foregroundStyle(.secondary)
                                 Text(record.key).font(.caption).lineLimit(1).truncationMode(.middle)
                                 HStack {
-                                    Text(matchesS3(record) ? L10n.text("只清理此任务的 upload ID；不删除已提交对象。") : L10n.text("请先连接同一端点 / 存储桶并重新认证。"))
-                                        .font(.caption).foregroundStyle(.secondary)
+                                    SupportingText(matchesS3(record) ? L10n.text("只清理此任务的 upload ID；不删除已提交对象。") : L10n.text("请先连接同一端点 / 存储桶并重新认证。"))
                                     Spacer()
                                     Button(L10n.text("重试清理")) { cleanupS3(record) }
                                         .disabled(busy != nil || busyS3 != nil || !matchesS3(record))
@@ -81,17 +80,17 @@ struct RecoveryView: View {
                             }.padding(.vertical, 12).accessibilityElement(children: .contain)
                             Divider()
                         }
-                    }.padding(.horizontal, 20)
+                    }.padding(.horizontal, InterfaceStyle.pageInset)
                 }
             }
-            if let error { Text(error).font(.caption).foregroundStyle(.red).textSelection(.enabled).padding(.horizontal, 20).padding(.vertical, 10) }
+            if let error { InterfaceMessage(text: error).padding(InterfaceStyle.pageInset) }
             Divider()
-            HStack {
-                Text(L10n.text("保留的数据会占用磁盘空间；丢弃进度会清理此任务的部分文件。")).font(.caption).foregroundStyle(.secondary)
+            SheetActions {
+                SupportingText(L10n.text("保留的数据会占用磁盘空间；丢弃进度会清理此任务的部分文件。"))
                 Spacer()
                 Button(L10n.text("完成")) { dismiss() }.keyboardShortcut(.cancelAction).disabled(busy != nil || busyS3 != nil)
-            }.padding(20)
-        }.frame(width: 760, height: 520)
+            }
+        }.frame(width: InterfaceStyle.recoveryWidth, height: 520)
         .task { await load() }
         .interactiveDismissDisabled(busy != nil || busyS3 != nil)
     }

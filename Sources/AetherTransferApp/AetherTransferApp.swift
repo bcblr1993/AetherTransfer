@@ -44,14 +44,13 @@ struct TransferSettingsView: View {
                     Text("简体中文").tag("zh-Hans")
                     Text("English").tag("en")
                 }
-                Text(L10n.text("选择显示语言。文件名、路径和服务器名称保持原样。"))
-                    .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                SupportingText(L10n.text("选择显示语言。文件名、路径和服务器名称保持原样。"))
                 Picker(L10n.text("主题"), selection: $appearance) {
                     Text(L10n.text("跟随系统")).tag("system")
                     Text(L10n.text("浅色")).tag("light")
                     Text(L10n.text("深色")).tag("dark")
                 }
-                Text(L10n.text("动效遵循系统“减少动态效果”设置。")).font(.caption).foregroundStyle(.secondary)
+                SupportingText(L10n.text("动效遵循系统“减少动态效果”设置。"))
             }
             Section(L10n.text("传输")) {
                 Picker(L10n.text("同时进行的任务"), selection: $concurrency) {
@@ -64,7 +63,7 @@ struct TransferSettingsView: View {
                     Text("5 MiB/s").tag(5120)
                     Text("20 MiB/s").tag(20480)
                 }
-                Text(L10n.text("速度上限对新任务生效。降低并发数时，已开始的任务会继续运行。")).font(.caption).foregroundStyle(.secondary)
+                SupportingText(L10n.text("速度上限对新任务生效。降低并发数时，已开始的任务会继续运行。"))
             }
         }.formStyle(.grouped).frame(width: 560, height: 470)
         .background { InterfaceWindowTitle(title: L10n.text("AetherTransfer 设置")).frame(width: 0, height: 0).accessibilityHidden(true) }
@@ -80,7 +79,6 @@ struct MainView: View {
     @State private var showConnect = false
     @State private var showActivities = false
     @State private var query = ""
-    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var editingProfile: ServerProfile?
     private var groups: [String] { Set(workspace.profiles.map(\.group)).sorted() }
     var body: some View {
@@ -141,13 +139,17 @@ struct MainView: View {
                     }.transaction { $0.animation = nil }
                     Divider()
                     ActivityView(workspace: workspace, expanded: $showActivities).frame(height: showActivities ? 170 : 44)
-                        .animation(reduceMotion ? nil : .snappy(duration: 0.25), value: showActivities)
+                        // Animating this height resizes both native file panes
+                        // on every frame. Motion stays on the disclosure icon.
+                        .transaction { $0.animation = nil }
                     Divider()
-                    HStack {
+                    InterfaceStatusBar {
                         Text(workspace.connectedProfile.map { "\($0.protocolKind.title) · \($0.name.isEmpty ? $0.host : $0.name)" } ?? L10n.text("未连接"))
+                            .lineLimit(1).truncationMode(.middle)
                         Spacer()
                         Text(L10n.format("%@ 个本地项目 · %@ 个远程项目", String(describing: workspace.localFiles.count), String(describing: workspace.remoteFiles.count)))
-                    }.font(.caption).foregroundStyle(.secondary).padding(.horizontal, 16).padding(.vertical, 8)
+                            .lineLimit(1).monospacedDigit()
+                    }
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
                 if workspace.showInspector {
@@ -181,19 +183,22 @@ struct MainView: View {
             Button(L10n.text("确定")) { workspace.error = nil }
         } message: { Text(workspace.error ?? "") }
         .sheet(item: $workspace.hostChallenge) { challenge in
-            VStack(alignment: .leading, spacing: InterfaceStyle.sectionGap) {
+            VStack(spacing: 0) {
                 SheetHeader(title: L10n.text("核对服务器指纹"),
                             subtitle: L10n.text("请通过可信渠道核对服务器的 SHA-256 指纹。确认后才会进行认证和文件操作。"),
-                            symbol: "lock.shield", inset: 0)
+                            symbol: "lock.shield")
+                Divider()
                 Text(RemoteClient.fingerprint(challenge.key)).font(.system(.body, design: .monospaced))
                     .textSelection(.enabled).padding(12).frame(maxWidth: .infinity, alignment: .leading)
-                    .background(.quaternary, in: RoundedRectangle(cornerRadius: 8))
-                HStack {
+                    .background(.quaternary, in: RoundedRectangle(cornerRadius: InterfaceStyle.cornerRadius))
+                    .padding(InterfaceStyle.pageInset)
+                Divider()
+                SheetActions {
                     Button(L10n.text("取消")) { workspace.hostChallenge = nil; workspace.disconnect() }.keyboardShortcut(.cancelAction)
                     Spacer()
                     Button(L10n.text("信任并连接")) { workspace.approveHostKey() }.buttonStyle(.glassProminent).keyboardShortcut(.defaultAction)
                 }
-            }.padding(InterfaceStyle.pageInset).frame(width: InterfaceStyle.connectionWidth)
+            }.frame(width: InterfaceStyle.connectionWidth)
         }
         .onChange(of: tabs.selected) { workspace.reloadProfiles() }
         .onChange(of: workspace.activities.count) { old, new in if new > old { showActivities = true } }
@@ -211,25 +216,35 @@ private struct ConnectionWelcomeView: View {
         let _ = interfaceLocale
         VStack(spacing: 18) {
             Image(systemName: "arrow.up.arrow.down")
-                .font(.system(size: 30, weight: .medium)).foregroundStyle(.blue.gradient)
-                .frame(width: 76, height: 76).background(.blue.opacity(0.08), in: RoundedRectangle(cornerRadius: 23))
+                .font(.system(size: 30, weight: .medium)).foregroundStyle(.tint)
+                .frame(width: 76, height: 76).background(Color.accentColor.opacity(0.08), in: RoundedRectangle(cornerRadius: 23))
                 .accessibilityHidden(true)
             VStack(spacing: 8) {
                 Text(L10n.text("文件，自由往来")).font(.title2.weight(.semibold))
                 Text(L10n.text("连接服务器，让本地与远程并肩工作。"))
                     .font(.callout).foregroundStyle(.secondary).multilineTextAlignment(.center)
+                    .fixedSize(horizontal: false, vertical: true)
             }
-            HStack(spacing: 8) {
-                ForEach(["SFTP", "FTP", "FTPS", "WebDAV", "S3"], id: \.self) { name in
-                    Text(name).font(.caption.weight(.medium)).foregroundStyle(.secondary)
-                        .padding(.horizontal, 10).padding(.vertical, 5)
-                        .background(.quaternary, in: Capsule())
+            ViewThatFits(in: .horizontal) {
+                protocols(["SFTP", "FTP", "FTPS", "WebDAV", "S3"])
+                VStack(spacing: 8) {
+                    protocols(["SFTP", "FTP", "FTPS"])
+                    protocols(["WebDAV", "S3"])
                 }
             }
             Button(L10n.text("连接服务器"), systemImage: "plus") { connect() }.buttonStyle(.glassProminent).controlSize(.large)
                 .padding(.top, 4)
-            Text(L10n.text("密码可保存在系统钥匙串")).font(.caption).foregroundStyle(.secondary)
+            SupportingText(L10n.text("密码可保存在系统钥匙串"))
         }.padding(32)
+    }
+    private func protocols(_ names: [String]) -> some View {
+        HStack(spacing: 8) {
+            ForEach(names, id: \.self) { name in
+                Text(verbatim: name).font(.caption.weight(.medium)).foregroundStyle(.secondary)
+                    .fixedSize().padding(.horizontal, 10).padding(.vertical, 5)
+                    .background(.quaternary, in: Capsule())
+            }
+        }
     }
 }
 
@@ -366,13 +381,22 @@ struct FilePane: View {
 
 struct ActivityView: View {
     @Environment(\.locale) private var interfaceLocale
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @ObservedObject var workspace: Workspace
     @Binding var expanded: Bool
     var body: some View {
         let _ = interfaceLocale
         VStack(alignment: .leading, spacing: 6) {
             HStack {
-                Button { expanded.toggle() } label: { Label(L10n.text("传输活动"), systemImage: expanded ? "chevron.down" : "chevron.right").font(.callout.weight(.semibold)) }.buttonStyle(.plain)
+                Button { expanded.toggle() } label: {
+                    HStack(spacing: 6) {
+                        Image(systemName: "chevron.right")
+                            .rotationEffect(.degrees(expanded ? 90 : 0))
+                            .animation(reduceMotion ? nil : .smooth(duration: InterfaceStyle.tabTransition), value: expanded)
+                            .accessibilityHidden(true)
+                        Text(L10n.text("传输活动"))
+                    }.font(.callout.weight(.semibold))
+                }.buttonStyle(.plain).accessibilityValue(expanded ? L10n.text("已展开") : L10n.text("已收起"))
                 Spacer()
                 Button(L10n.text("保留的传输…"), systemImage: "clock.arrow.circlepath") { workspace.showRecovery = true }.buttonStyle(.borderless).font(.caption)
                 Text(workspace.activities.isEmpty ? L10n.text("暂无任务") : L10n.format("%@ 个进行中 · %@ 个任务", String(describing: workspace.activities.filter { $0.state == "传输中" }.count), String(describing: workspace.activities.count))).font(.caption).foregroundStyle(.secondary)
@@ -526,7 +550,7 @@ struct ConnectionView: View {
                                     } }
                                 inputRow(L10n.text("私钥口令")) { SecureField(L10n.text("私钥口令"), text: $passphrase, prompt: Text(L10n.text("可选"))).labelsHidden() }
                             }
-                        }.padding(8)
+                        }.padding(InterfaceStyle.groupInset)
                     } label: {
                         Text(L10n.text("连接信息")).font(.headline)
                     }
@@ -537,27 +561,24 @@ struct ConnectionView: View {
                                 Toggle(profile.protocolKind == .s3 ? L10n.text("将访问密钥 / 令牌保存到钥匙串") : L10n.text("将密码 / 口令保存到钥匙串"), isOn: $remember)
                             }
                             if profile.protocolKind == .sftp && profile.effectiveSSHAuthentication == .agent {
-                                Text(L10n.text("使用系统 SSH agent 中已加载的密钥。认证失败时不会改用密码或私钥文件；仍须核对服务器指纹。"))
-                                    .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                                SupportingText(L10n.text("使用系统 SSH agent 中已加载的密钥。认证失败时不会改用密码或私钥文件；仍须核对服务器指纹。"))
                             }
-                            if profile.protocolKind == .ftp { Text(L10n.text("FTP 会以明文传输认证和文件内容。建议优先选择 SFTP 或 FTPS。")).font(.caption).foregroundStyle(.secondary) }
-                            if profile.protocolKind == .webdav { Text(L10n.text("HTTP 会以明文传输认证和文件内容。建议优先选择 WebDAV · HTTPS。")).font(.caption).foregroundStyle(.secondary) }
-                            if profile.protocolKind.isWebDAV { Text(L10n.text("填写服务器主机和 WebDAV 起始路径；如 /remote.php/dav/files/用户名/。HTTPS 会验证服务器证书。")).font(.caption).foregroundStyle(.secondary) }
+                            if profile.protocolKind == .ftp { SupportingText(L10n.text("FTP 会以明文传输认证和文件内容。建议优先选择 SFTP 或 FTPS。")) }
+                            if profile.protocolKind == .webdav { SupportingText(L10n.text("HTTP 会以明文传输认证和文件内容。建议优先选择 WebDAV · HTTPS。")) }
+                            if profile.protocolKind.isWebDAV { SupportingText(L10n.text("填写服务器主机和 WebDAV 起始路径；如 /remote.php/dav/files/用户名/。HTTPS 会验证服务器证书。")) }
                             if profile.protocolKind == .s3 {
-                                Text(L10n.text("使用 HTTPS 路径式端点；服务器地址仅填主机名。R2 区域通常填 auto。支持前缀浏览、文件和目录传输以及对象删除；重启续传正在适配。"))
-                                .font(.caption).foregroundStyle(.secondary)
-                                Text(L10n.text("自定义 CA 仍验证证书和服务器名称；留空时使用应用自带的公共根证书。"))
-                                .font(.caption).foregroundStyle(.secondary)
+                                SupportingText(L10n.text("使用 HTTPS 路径式端点；服务器地址仅填主机名。R2 区域通常填 auto。支持前缀浏览、文件和目录传输以及对象删除；重启续传正在适配。"))
+                                SupportingText(L10n.text("自定义 CA 仍验证证书和服务器名称；留空时使用应用自带的公共根证书。"))
                             }
-                            if let error { Label(error, systemImage: "exclamationmark.triangle").font(.callout).foregroundStyle(.red).fixedSize(horizontal: false, vertical: true) }
-                        }.padding(8)
+                            if let error { InterfaceMessage(text: error) }
+                        }.padding(InterfaceStyle.groupInset)
                     } label: {
                         Text(L10n.text("连接设置")).font(.headline)
                     }
                 }.padding(InterfaceStyle.pageInset)
             }.disabled(saving)
             Divider()
-            HStack(spacing: 12) {
+            SheetActions {
                 Button(L10n.text("取消")) { dismiss() }.keyboardShortcut(.cancelAction).disabled(saving)
                 Spacer()
                 if saving { ProgressView().controlSize(.small) }
@@ -576,8 +597,8 @@ struct ConnectionView: View {
                     }
                 }.buttonStyle(.glassProminent).keyboardShortcut(.defaultAction)
                     .disabled(saving || (try? profile.validate()) == nil || (profile.protocolKind == .s3 && (!editing || remember) && (accessKey.isEmpty || secretKey.isEmpty)))
-            }.padding(20)
-        }.frame(width: InterfaceStyle.connectionWidth, height: 640)
+            }
+        }.frame(width: InterfaceStyle.connectionWidth, height: InterfaceStyle.connectionHeight)
         .onAppear { focusedField = editing ? .name : .host }
         .task {
             guard editing || loadSaved else { return }
@@ -610,11 +631,6 @@ struct ConnectionView: View {
         .interactiveDismissDisabled(saving)
     }
     private func inputRow<Content: View>(_ title: String, @ViewBuilder content: () -> Content) -> some View {
-        LabeledContent {
-            content().textFieldStyle(.roundedBorder).multilineTextAlignment(.leading)
-                .frame(minWidth: 250, maxWidth: .infinity)
-        } label: {
-            Text(title).frame(width: InterfaceStyle.fieldLabelWidth, alignment: .leading)
-        }
+        FormFieldRow(title: title, content: content)
     }
 }

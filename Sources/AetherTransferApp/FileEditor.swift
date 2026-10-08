@@ -298,7 +298,7 @@ private struct FileEditorView: View {
         let _ = interfaceLocale
         VStack(spacing: 0) {
             HStack(spacing: 12) {
-                Label(model.name, systemImage: "doc.text").font(.headline).lineLimit(1)
+                Label(model.name, systemImage: "doc.text").font(.headline).lineLimit(1).truncationMode(.middle).help(model.name)
                 if model.isDirty { Circle().fill(.orange).frame(width: 6, height: 6).accessibilityLabel(L10n.text("有未保存更改")) }
                 Spacer()
                 if model.external {
@@ -314,26 +314,25 @@ private struct FileEditorView: View {
                     .accessibilityLabel(L10n.text("编辑选项"))
                 Button(model.external ? L10n.text("回传") : L10n.text("保存"), systemImage: "arrow.up.doc") { model.save() }
                     .buttonStyle(.glassProminent).keyboardShortcut("s").disabled(!model.ready || !model.isDirty)
-            }.padding(.horizontal, 18).padding(.vertical, 12)
+            }.padding(.horizontal, InterfaceStyle.pageInset).padding(.vertical, InterfaceStyle.paneInset)
             Text(model.location).font(.system(.caption, design: .monospaced)).foregroundStyle(.secondary)
                 .lineLimit(1).truncationMode(.middle).frame(maxWidth: .infinity, alignment: .leading)
-                .padding(.horizontal, 18).padding(.bottom, 12)
+                .padding(.horizontal, InterfaceStyle.pageInset).padding(.bottom, InterfaceStyle.paneInset)
             Divider()
             NativeTextEditor(text: Binding(get: { model.text }, set: { model.changeText($0) }), editable: model.ready && !model.external)
                 .overlay { if model.loading { ProgressView(L10n.text("正在读取文本…")).padding(20).background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12)) } }
             if let error = model.error {
                 Divider()
-                Label(error, systemImage: "exclamationmark.triangle").font(.callout).foregroundStyle(.orange)
-                    .textSelection(.enabled).frame(maxWidth: .infinity, alignment: .leading).padding(14)
+                InterfaceMessage(text: error).padding(InterfaceStyle.paneInset)
             }
             Divider()
-            HStack(spacing: 10) {
+            InterfaceStatusBar {
                 if model.saving { ProgressView().controlSize(.small) }
-                Text(model.notice).lineLimit(1)
+                Text(model.notice).lineLimit(1).help(model.notice)
                 if model.saving || model.loading { Button(L10n.text("取消")) { model.cancelOperation() }.buttonStyle(.borderless) }
                 else if !model.ready { Button(L10n.text("重新读取")) { model.load() }.buttonStyle(.borderless) }
                 Spacer(); Text(L10n.text("UTF-8 · 5 MiB 上限"))
-            }.font(.caption).foregroundStyle(.secondary).padding(.horizontal, 18).frame(height: 36)
+            }
         }
         .preferredColorScheme(appearance == "dark" ? .dark : (appearance == "light" ? .light : nil))
     }

@@ -104,8 +104,7 @@ struct PermissionEditorView: View {
                         Toggle(L10n.text("包括文件夹中的项目"), isOn: Binding(get: { model.recursive }, set: { model.setRecursive($0) }))
                             .toggleStyle(.checkbox)
                     }
-                    Text(model.recursive ? L10n.text("包括隐藏项目；文件和文件夹应用相同权限，符号链接跳过。") : L10n.text("仅修改所选项目，不递归修改文件夹中的内容。"))
-                        .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                    SupportingText(model.recursive ? L10n.text("包括隐藏项目；文件和文件夹应用相同权限，符号链接跳过。") : L10n.text("仅修改所选项目，不递归修改文件夹中的内容。"))
                     if model.loading {
                         ProgressView(model.recursive ? L10n.text("扫描权限范围…") : L10n.text("读取权限…"))
                         if model.recursive {
@@ -127,7 +126,7 @@ struct PermissionEditorView: View {
                             permissionRow("用户组", shift: 3)
                             permissionRow("其他用户", shift: 0)
                         }.padding(16).frame(maxWidth: .infinity, alignment: .leading)
-                            .background(.quaternary, in: RoundedRectangle(cornerRadius: 10))
+                            .background(.quaternary, in: RoundedRectangle(cornerRadius: InterfaceStyle.cornerRadius))
                         HStack {
                             Text(L10n.text("八进制权限")).frame(width: InterfaceStyle.fieldLabelWidth, alignment: .leading)
                             TextField("0644", text: $model.modeText).textFieldStyle(.roundedBorder)
@@ -136,8 +135,7 @@ struct PermissionEditorView: View {
                             Text(model.mode?.symbolic ?? "---------").font(.system(.callout, design: .monospaced))
                         }
                         if model.mode == nil {
-                            Text(model.modeText.isEmpty ? L10n.text("权限不一致，请明确选择要设置的权限。") : FilePermissionError.invalidMode.localizedDescription)
-                                .font(.caption).foregroundStyle(.secondary)
+                            SupportingText(model.modeText.isEmpty ? L10n.text("权限不一致，请明确选择要设置的权限。") : FilePermissionError.invalidMode.localizedDescription)
                         }
                         DisclosureGroup(L10n.text("特殊权限")) {
                             VStack(alignment: .leading, spacing: 8) {
@@ -154,19 +152,17 @@ struct PermissionEditorView: View {
                     if let result = model.result {
                         Label(result.error == nil && !result.cancelled ? L10n.text("权限已应用") : (result.cancelled ? L10n.text("权限操作已停止") : L10n.text("权限操作未全部完成")),
                               systemImage: result.error == nil && !result.cancelled ? "checkmark.circle" : "exclamationmark.circle")
-                        Text(L10n.format("已核对完成 %@ / %@；已完成的修改不会回滚。", String(result.completed), String(result.total)))
-                            .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                        SupportingText(L10n.format("已核对完成 %@ / %@；已完成的修改不会回滚。", String(result.completed), String(result.total)))
                         if result.cancelled || result.error != nil {
-                            Text(L10n.text("未核对的项目可能已写入，请重新读取实际权限。"))
-                                .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                            SupportingText(L10n.text("未核对的项目可能已写入，请重新读取实际权限。"))
                         }
-                        if let error = result.error { Text(error).font(.callout).foregroundStyle(.red).textSelection(.enabled) }
+                        if let error = result.error { InterfaceMessage(text: error) }
                     }
-                    if let error = model.error { Text(error).font(.callout).foregroundStyle(.red).textSelection(.enabled) }
+                    if let error = model.error { InterfaceMessage(text: error) }
                 }.padding(InterfaceStyle.pageInset)
             }.disabled(model.applying)
             Divider()
-            HStack {
+            SheetActions {
                 Button(model.applying ? L10n.text("停止") : (model.result != nil ? L10n.text("完成") : L10n.text("取消"))) {
                     if model.applying { model.cancel() } else { model.cancel(); dismiss() }
                 }.keyboardShortcut(.cancelAction)
@@ -177,8 +173,8 @@ struct PermissionEditorView: View {
                     Button(model.recursive ? L10n.text("应用到全部项目") : L10n.text("应用权限")) { model.apply() }.buttonStyle(.glassProminent)
                         .keyboardShortcut(.defaultAction).disabled(!model.canApply)
                 }
-            }.padding(InterfaceStyle.pageInset)
-        }.frame(width: 600, height: 560)
+            }
+        }.frame(width: InterfaceStyle.connectionWidth, height: 560)
             .interactiveDismissDisabled(model.applying)
             .task { model.load(); octalFocused = true }
             .onChange(of: model.loading) { _, loading in if !loading { octalFocused = true } }

@@ -14,7 +14,7 @@ struct FileInformationView: View {
         let _ = interfaceLocale
         let selection = entries
         ScrollView {
-            VStack(alignment: .leading, spacing: 20) {
+            VStack(alignment: .leading, spacing: InterfaceStyle.sectionGap) {
                 HStack {
                     Text(L10n.text("文件信息")).font(.headline)
                     Spacer()
@@ -35,10 +35,10 @@ struct FileInformationView: View {
                     field(L10n.text("修改时间"), entry.modified.map { $0.formatted(Date.FormatStyle(date: .abbreviated, time: .standard).locale(interfaceLocale)) } ?? "—")
                     field(L10n.text("权限"), entry.permissions.isEmpty ? "—" : entry.permissions)
                     Button(L10n.text("编辑权限…"), systemImage: "lock.open") { workspace.editPermissions() }
-                        .buttonStyle(.glass).disabled(!workspace.canEditPermissions)
+                        .disabled(!workspace.canEditPermissions)
                     if !entry.isDirectory && !entry.isSymbolicLink {
                         Button(L10n.text("快速查看"), systemImage: "eye") { workspace.preview(entry, remote: workspace.focusedRemote) }
-                            .buttonStyle(.glass).frame(maxWidth: .infinity, alignment: .leading)
+                            .frame(maxWidth: .infinity, alignment: .leading)
                     }
                 } else if selection.count > 1 {
                     Text(L10n.format("已选择 %@ 个项目", String(describing: selection.count))).font(.title3.weight(.semibold))
@@ -51,11 +51,11 @@ struct FileInformationView: View {
                     }
                     field(L10n.text("所选文件大小"), bytes.overflow ? "—" : DisplayFormat.bytes(bytes.value))
                     Button(L10n.text("编辑权限…"), systemImage: "lock.open") { workspace.editPermissions() }
-                        .buttonStyle(.glass).disabled(!workspace.canEditPermissions)
+                        .disabled(!workspace.canEditPermissions)
                 } else {
                     ContentUnavailableView(L10n.text("选择文件"), systemImage: "info.circle", description: Text(L10n.text("查看大小、路径和修改时间。")))
                 }
-            }.frame(maxWidth: .infinity, alignment: .leading).padding(20)
+            }.frame(maxWidth: .infinity, alignment: .leading).padding(InterfaceStyle.pageInset)
         }
     }
     private func kind(_ entry: FileEntry) -> String {
