@@ -51,7 +51,7 @@ struct NativeFileColumns: NSViewRepresentable {
             scroll.tile(); strip.layoutSubtreeIfNeeded()
         }
         if previousIDs != columns.map(\.id), let last = strip.columns.last {
-            scroll.contentView.scrollToVisible(last.frame)
+            strip.scrollToVisible(last.frame)
             scroll.reflectScrolledClipView(scroll.contentView)
         }
         coordinator.controllers[columns.last?.id ?? ""]?.view.table.focusIfNeeded()
