@@ -15,6 +15,7 @@ public enum FilePreviewError: Error, LocalizedError, Sendable {
 public enum FilePreviewSource: Sendable {
     case local(URL)
     case remote(RemoteClient, String)
+    case s3(S3Client, String)
 }
 
 /// Local files stay in place; only verified remote snapshots own temporary storage.
@@ -76,7 +77,36 @@ public struct FilePreview: Sendable {
                 try await lease.close()
                 throw error
             }
+        case .s3(let client, let key):
+            try S3Endpoint.validateKey(key)
+            guard !key.isEmpty, !key.hasSuffix("/") else { throw FilePreviewError.unsupportedFile }
+            let version = try await client.fileVersion(key)
+            guard maximumRemoteBytes > 0, version.size <= maximumRemoteBytes else { throw FilePreviewError.tooLarge }
+            try Task.checkCancellation()
+            let lease = try await TreeIO.run { try PreviewCacheLease(parentURL: temporaryParent) }
+            // Object keys stay byte-exact on the wire. Only the private snapshot's
+            // filename is mapped; dot components and long names cannot escape its lease.
+            let destination = lease.payload.appendingPathComponent(s3SnapshotName(key))
+            do {
+                try await client.download(key, to: destination, expectedVersion: version, progress: progress)
+                guard try await client.fileVersion(key) == version else { throw FilePreviewError.changed }
+                try Task.checkCancellation()
+                return FilePreview(url: destination, byteCount: version.size, lease: lease)
+            } catch {
+                try await lease.close()
+                throw error
+            }
         }
+    }
+    static func s3SnapshotName(_ key: String) -> String {
+        let name = String(key.split(separator: "/", omittingEmptySubsequences: false).last ?? "")
+        if !name.isEmpty, name != ".", name != "..", !name.utf8.contains(0), name.utf8.count <= 240 { return name }
+        let suffix = (name as NSString).pathExtension
+        if !suffix.isEmpty, suffix.utf8.count <= 32,
+           suffix.utf8.allSatisfy({ (65...90).contains($0) || (97...122).contains($0) || (48...57).contains($0) }) {
+            return "preview." + suffix
+        }
+        return "preview"
     }
     public func close() async throws {
         try await lease?.close()

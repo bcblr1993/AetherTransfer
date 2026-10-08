@@ -4,6 +4,28 @@ import XCTest
 @testable import AetherTransferCore
 
 final class FilePreviewTests: XCTestCase {
+    func testS3SnapshotNamesStayWithinPrivatePayloadAndRetainUsefulExtensions() throws {
+        let parent = URL(fileURLWithPath: "/private-preview/payload", isDirectory: true)
+        for key in ["folder/..", "folder/.", "folder/", String(repeating: "中", count: 100) + ".png", String(repeating: "a", count: 900)] {
+            let name = FilePreview.s3SnapshotName(key)
+            let destination = parent.appendingPathComponent(name).standardizedFileURL
+            XCTAssertEqual(destination.deletingLastPathComponent(), parent.standardizedFileURL)
+            XCTAssertFalse(name.contains("/")); XCTAssertLessThanOrEqual(name.utf8.count, 240)
+        }
+        XCTAssertEqual(FilePreview.s3SnapshotName("files/中文 +#%?.txt"), "中文 +#%?.txt")
+        XCTAssertEqual(FilePreview.s3SnapshotName("files/.lease"), ".lease")
+        XCTAssertEqual(FilePreview.s3SnapshotName(String(repeating: "中", count: 100) + ".png"), "preview.png")
+    }
+    func testS3PreviewRejectsPrefixesBeforeRequestingOrCreatingCache() async throws {
+        let root = FileManager.default.temporaryDirectory.appendingPathComponent("aethertransfer-preview-test-\(UUID())")
+        let client = S3Client(endpoint: S3Endpoint(host: "127.0.0.1", port: 1, bucket: "preview-test"),
+                              credentials: S3Credentials(accessKey: "fixture", secretKey: "fixture"))
+        for key in ["", "folder/"] {
+            do { _ = try await FilePreview.open(.s3(client, key), temporaryParent: root); XCTFail("Prefixes cannot be previewed") }
+            catch FilePreviewError.unsupportedFile { }
+        }
+        XCTAssertFalse(FileManager.default.fileExists(atPath: root.path))
+    }
     func testLocalPreviewKeepsLargeFileInPlaceAndClosePreservesIt() async throws {
         let root = FileManager.default.temporaryDirectory.appendingPathComponent("aethertransfer-preview-test-\(UUID())")
         try FileManager.default.createDirectory(at: root, withIntermediateDirectories: false)

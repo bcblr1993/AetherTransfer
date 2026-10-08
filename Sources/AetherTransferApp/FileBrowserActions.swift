@@ -17,7 +17,7 @@ enum FileViewMode: Hashable { case icons, list }
         }
         add(entry.isDirectory ? L10n.text("打开") : (remote ? L10n.text("下载") : L10n.text("打开")), #selector(openItem(_:)))
         if !entry.isDirectory && !entry.isSymbolicLink { add(L10n.text("编辑文本…"), #selector(editItem(_:)), enabled: !remote || !workspace.isS3) }
-        add(L10n.text("快速查看"), #selector(previewItem(_:)), enabled: !entry.isDirectory && !entry.isSymbolicLink && (!remote || !workspace.isS3))
+        add(L10n.text("快速查看"), #selector(previewItem(_:)), enabled: !entry.isDirectory && !entry.isSymbolicLink)
         add(L10n.text("文件信息"), #selector(informationItem(_:)))
         if !remote { add(L10n.text("上传"), #selector(uploadItems), enabled: workspace.hasRemoteConnection) }
         if remote && entry.isDirectory { add(L10n.text("下载"), #selector(downloadItems), enabled: workspace.hasRemoteConnection) }

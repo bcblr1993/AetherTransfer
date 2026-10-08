@@ -273,8 +273,8 @@ struct ActivityItem: Identifiable {
     }
     func preview(_ entry: FileEntry, remote: Bool) {
         guard !entry.isDirectory, !entry.isSymbolicLink else { return }
-        guard !remote || !isS3 else { error = L10n.text("S3 快速查看尚未接入；可先下载文件。"); return }
-        if remote, let client { previews.open(entry, source: .remote(client, entry.path)) }
+        if remote, let s3Client, let key = entry.s3Key { previews.open(entry, source: .s3(s3Client, key)) }
+        else if remote, let client { previews.open(entry, source: .remote(client, entry.path)) }
         else if !remote { previews.open(entry, source: .local(URL(fileURLWithPath: entry.path))) }
     }
     func previewSelection(remote: Bool? = nil) {

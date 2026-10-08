@@ -41,6 +41,79 @@ private final class S3TreeProgressRecorder: @unchecked Sendable {
         try FileManager.default.createDirectory(at: url, withIntermediateDirectories: false)
         return url
     }
+    func testPreviewVerifiesBilingualReservedAndEmptyObjectSnapshotsAndClosesLease() async throws {
+        let remote = try client(), local = try folder(), prefix = "preview-\(UUID())/"
+        defer { try? FileManager.default.removeItem(at: local) }
+        let source = local.appendingPathComponent("source"), cache = local.appendingPathComponent("previews", isDirectory: true)
+        for name in ["中文 +#%?.txt", ".lease", "empty.txt"] {
+            let bytes = name == "empty.txt" ? Data() : Data("Verified preview 中文 \(name)".utf8)
+            try bytes.write(to: source); let key = prefix + name
+            try await remote.upload(source, to: key)
+            let before = try await remote.fileVersion(key)
+            let preview = try await FilePreview.open(.s3(remote, key), temporaryParent: cache)
+            XCTAssertEqual(preview.url.lastPathComponent, name)
+            XCTAssertEqual(preview.url.deletingLastPathComponent().lastPathComponent, "payload")
+            XCTAssertEqual(preview.byteCount, Int64(bytes.count)); XCTAssertEqual(try Data(contentsOf: preview.url), bytes)
+            let directory = try XCTUnwrap(preview.directory)
+            XCTAssertEqual((try FileManager.default.attributesOfItem(atPath: directory.path)[.posixPermissions] as? NSNumber)?.intValue, 0o700)
+            let active = try await FilePreview.reclaimAbandoned(in: cache)
+            XCTAssertEqual(active.inUse, 1); XCTAssertEqual(active.removed, 0)
+            try await preview.close(); try await preview.close()
+            XCTAssertTrue(try FileManager.default.contentsOfDirectory(atPath: cache.path).isEmpty)
+            let after = try await remote.fileVersion(key); XCTAssertEqual(after, before)
+            try await remote.remove(key)
+        }
+    }
+    func testPreviewLimitAndMissingObjectRejectBeforeCreatingCache() async throws {
+        let remote = try client(), local = try folder(), key = "preview-limit-\(UUID())"
+        defer { try? FileManager.default.removeItem(at: local) }
+        let source = local.appendingPathComponent("source"), cache = local.appendingPathComponent("previews", isDirectory: true)
+        try Data(repeating: 0x41, count: 1024).write(to: source); try await remote.upload(source, to: key)
+        do { _ = try await FilePreview.open(.s3(remote, key), maximumRemoteBytes: 32, temporaryParent: cache); XCTFail("Oversized preview must reject") }
+        catch FilePreviewError.tooLarge { }
+        XCTAssertFalse(FileManager.default.fileExists(atPath: cache.path))
+        try await remote.remove(key)
+        do { _ = try await FilePreview.open(.s3(remote, key), temporaryParent: cache); XCTFail("Missing object must reject") }
+        catch S3Error.notFound { }
+        XCTAssertFalse(FileManager.default.fileExists(atPath: cache.path))
+    }
+    func testCancelledPreviewRemovesSnapshotAndKeepsRemoteObject() async throws {
+        let remote = try client(), local = try folder(), key = "preview-cancel-\(UUID())"
+        defer { try? FileManager.default.removeItem(at: local) }
+        let source = local.appendingPathComponent("source"), cache = local.appendingPathComponent("previews", isDirectory: true)
+        try Data(repeating: 0x37, count: 256 * 1024).write(to: source); try await remote.upload(source, to: key)
+        let before = try await remote.fileVersion(key), slow = try client(rate: 64 * 1024)
+        let started = expectation(description: "Preview download has bytes"), recorder = S3ProgressRecorder(started)
+        let operation = Task { try await FilePreview.open(.s3(slow, key), temporaryParent: cache) { recorder.record($0) } }
+        await fulfillment(of: [started], timeout: 12)
+        let active = try await FilePreview.reclaimAbandoned(in: cache); XCTAssertEqual(active.inUse, 1)
+        operation.cancel()
+        do { _ = try await operation.value; XCTFail("Cancelled preview cannot publish a snapshot") }
+        catch is CancellationError { }
+        XCTAssertTrue(try FileManager.default.contentsOfDirectory(atPath: cache.path).isEmpty)
+        let after = try await remote.fileVersion(key); XCTAssertEqual(after, before)
+        try await remote.remove(key)
+    }
+    func testPreviewSourceChangedDuringDownloadDoesNotPublishSnapshot() async throws {
+        let remote = try client(), local = try folder(), key = "preview-change-\(UUID())"
+        defer { try? FileManager.default.removeItem(at: local) }
+        let source = local.appendingPathComponent("source"), cache = local.appendingPathComponent("previews", isDirectory: true)
+        let size = 256 * 1024
+        try Data(repeating: 0x38, count: size).write(to: source); try await remote.upload(source, to: key)
+        let slow = try client(rate: 64 * 1024)
+        let started = expectation(description: "Preview download has bytes"), recorder = S3ProgressRecorder(started)
+        let operation = Task { try await FilePreview.open(.s3(slow, key), temporaryParent: cache) { recorder.record($0) } }
+        await fulfillment(of: [started], timeout: 12)
+        try Data(repeating: 0x39, count: size).write(to: source); try await remote.upload(source, to: key, overwrite: true)
+        do {
+            let unexpected = try await operation.value
+            try await unexpected.close(); XCTFail("Changed source cannot publish a preview")
+        } catch FilePreviewError.changed { }
+        catch ResumeTransferError.sourceChanged { }
+        catch TransferError.conflict { }
+        XCTAssertTrue(try FileManager.default.contentsOfDirectory(atPath: cache.path).isEmpty)
+        try await remote.remove(key)
+    }
     func testListUsesRealPaginationAndEncodedPrefixes() async throws {
         let remote = try client()
         let objects = try await remote.list(prefix: "pages/")
