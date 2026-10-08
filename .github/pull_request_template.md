@@ -9,4 +9,3 @@ Describe the concrete behavior before and after.
 - [ ] Real protocol / UI checks appropriate to the change
 
 ## Remaining limitations
-

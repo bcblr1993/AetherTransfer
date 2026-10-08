@@ -3,113 +3,267 @@ import AppKit
 import AetherTransferCore
 
 @main struct AetherTransferApp: App {
-    @StateObject private var workspace = Workspace()
+    @StateObject private var tabs = BrowserTabs()
+    @NSApplicationDelegateAdaptor(TransferAppDelegate.self) private var appDelegate
+    @AppStorage("appearance") private var appearance = "system"
+    @AppStorage(AppLanguage.preferenceKey) private var language = "system"
     var body: some Scene {
         WindowGroup("AetherTransfer") {
-            MainView(workspace: workspace).frame(minWidth: 1000, minHeight: 640)
+            MainView(workspace: tabs.current, tabs: tabs).frame(minWidth: 1000, minHeight: 640)
+                .environment(\.locale, (AppLanguage(rawValue: language) ?? .system).locale)
+                .preferredColorScheme(appearance == "dark" ? .dark : (appearance == "light" ? .light : nil))
+                .onAppear { appDelegate.editors = tabs.editors; appDelegate.tabs = tabs }
         }
         .defaultSize(width: 1240, height: 800)
         .commands {
-            CommandGroup(after: .newItem) {
-                Button("选择本地文件夹…") { workspace.chooseLocal() }.keyboardShortcut("o")
-                Button("刷新") { workspace.refreshLocal(); workspace.refreshRemote() }.keyboardShortcut("r")
-                Button("上传所选文件") { workspace.uploadSelection() }.keyboardShortcut("u", modifiers: [.command, .shift])
-                Button("下载所选文件") { workspace.downloadSelection() }.keyboardShortcut("d", modifiers: [.command, .shift])
-            }
-            CommandMenu("显示") {
-                Toggle("显示隐藏文件", isOn: $workspace.showHidden).keyboardShortcut(".", modifiers: [.command, .shift])
+            WorkspaceFileCommands(workspace: tabs.current, tabs: tabs)
+            CommandGroup(after: .textEditing) {
+                Button(L10n.text("查找…")) {
+                    let sender = NSMenuItem(); sender.tag = NSTextFinder.Action.showFindInterface.rawValue
+                    NSApp.sendAction(#selector(NSTextView.performFindPanelAction(_:)), to: nil, from: sender)
+                }.keyboardShortcut("f")
             }
         }
+        Settings { TransferSettingsView(tabs: tabs).modifier(AppPresentation()) }
+    }
+}
+
+struct TransferSettingsView: View {
+    @Environment(\.locale) private var interfaceLocale
+    @ObservedObject var tabs: BrowserTabs
+    @AppStorage("maxConcurrentTransfers") private var concurrency = 2
+    @AppStorage("transferRateKiB") private var rate = 0
+    @AppStorage("appearance") private var appearance = "system"
+    @AppStorage(AppLanguage.preferenceKey) private var language = "system"
+    var body: some View {
+        let _ = interfaceLocale
+        Form {
+            Section(L10n.text("外观")) {
+                Picker(L10n.text("语言"), selection: $language) {
+                    Text(L10n.text("跟随系统")).tag("system")
+                    Text("简体中文").tag("zh-Hans")
+                    Text("English").tag("en")
+                }
+                SupportingText(L10n.text("选择显示语言。文件名、路径和服务器名称保持原样。"))
+                Picker(L10n.text("主题"), selection: $appearance) {
+                    Text(L10n.text("跟随系统")).tag("system")
+                    Text(L10n.text("浅色")).tag("light")
+                    Text(L10n.text("深色")).tag("dark")
+                }
+                SupportingText(L10n.text("动效遵循系统“减少动态效果”设置。"))
+            }
+            Section(L10n.text("传输")) {
+                Picker(L10n.text("同时进行的任务"), selection: $concurrency) {
+                    ForEach(1...8, id: \.self) { Text("\($0)").tag($0) }
+                }
+                Picker(L10n.text("每个任务的速度上限"), selection: $rate) {
+                    Text(L10n.text("不限速")).tag(0)
+                    Text("256 KiB/s").tag(256)
+                    Text("1 MiB/s").tag(1024)
+                    Text("5 MiB/s").tag(5120)
+                    Text("20 MiB/s").tag(20480)
+                }
+                SupportingText(L10n.text("速度上限对新任务生效。降低并发数时，已开始的任务会继续运行。"))
+            }
+        }.formStyle(.grouped).frame(width: 560, height: 470)
+        .background { InterfaceWindowTitle(title: L10n.text("AetherTransfer 设置")).frame(width: 0, height: 0).accessibilityHidden(true) }
+        .preferredColorScheme(appearance == "dark" ? .dark : (appearance == "light" ? .light : nil))
+        .onChange(of: concurrency) { _, value in tabs.setConcurrency(value) }
     }
 }
 
 struct MainView: View {
+    @Environment(\.locale) private var interfaceLocale
     @ObservedObject var workspace: Workspace
+    @ObservedObject var tabs: BrowserTabs
     @State private var showConnect = false
-    @State private var showActivities = true
+    @State private var showActivities = false
+    @State private var activityCount = 0
     @State private var query = ""
+    @State private var editingProfile: ServerProfile?
+    private var groups: [String] { Set(workspace.profiles.map(\.group)).sorted() }
     var body: some View {
+        let _ = interfaceLocale
         NavigationSplitView {
             List(selection: $workspace.selectedServer) {
-                Section("位置") {
-                    Button { workspace.localPath = FileManager.default.homeDirectoryForCurrentUser.path; workspace.refreshLocal() } label: { Label("个人文件夹", systemImage: "house") }.buttonStyle(.plain)
-                    Button { workspace.localPath = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Downloads").path; workspace.refreshLocal() } label: { Label("下载", systemImage: "arrow.down.circle") }.buttonStyle(.plain)
+                Section(L10n.text("位置")) {
+                    Button { workspace.localPath = FileManager.default.homeDirectoryForCurrentUser.path; workspace.refreshLocal() } label: { Label(L10n.text("个人文件夹"), systemImage: "house") }.buttonStyle(.plain)
+                    Button { workspace.localPath = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Downloads").path; workspace.refreshLocal() } label: { Label(L10n.text("下载"), systemImage: "arrow.down.circle") }.buttonStyle(.plain)
                 }
-                Section("服务器") {
-                    ForEach(workspace.profiles) { profile in
-                        VStack(alignment: .leading, spacing: 3) {
-                            Label(profile.name.isEmpty ? profile.host : profile.name, systemImage: "server.rack")
-                            Text(profile.protocolKind.title).font(.caption).foregroundStyle(.secondary)
-                        }.tag(profile.id).onTapGesture(count: 2) { workspace.connectSaved(profile) }
-                        .contextMenu { Button("连接") { workspace.connectSaved(profile) } }
+                Section(L10n.text("服务器")) {
+                    ForEach(groups, id: \.self) { group in
+                        if !group.isEmpty { Text(group).font(.caption).foregroundStyle(.secondary) }
+                        ForEach(workspace.profiles.filter { $0.group == group }) { profile in
+                            VStack(alignment: .leading, spacing: 3) {
+                                Label(profile.name.isEmpty ? profile.host : profile.name, systemImage: "server.rack")
+                                Text(profile.protocolKind.title).font(.caption).foregroundStyle(.secondary)
+                            }.tag(profile.id).onTapGesture(count: 2) { workspace.connectSaved(profile) }
+                            .contextMenu {
+                                Button(L10n.text("连接")) { workspace.connectSaved(profile) }
+                                Button(L10n.text("编辑…")) { editingProfile = profile }
+                                Divider()
+                                Button(L10n.text("移除收藏…"), role: .destructive) { workspace.removeProfile(profile) }
+                            }
+                        }
                     }
-                    Button { showConnect = true } label: { Label("添加服务器", systemImage: "plus") }.buttonStyle(.plain)
+                    Button { showConnect = true } label: { Label(L10n.text("添加服务器"), systemImage: "plus") }.buttonStyle(.plain)
+                    Menu {
+                        Button(L10n.text("导入收藏…")) { workspace.importProfiles() }
+                        Button(L10n.text("导出收藏…")) { workspace.exportProfiles() }.disabled(workspace.profiles.isEmpty)
+                    } label: {
+                        Label {
+                            Text(L10n.text("管理收藏"))
+                        } icon: {
+                            Image(systemName: "ellipsis.circle").foregroundStyle(.tint)
+                        }
+                    }.menuStyle(.button).buttonStyle(.plain).menuIndicator(.hidden)
                 }
             }
             .navigationSplitViewColumnWidth(min: 180, ideal: 210, max: 280)
         } detail: {
-            VStack(spacing: 0) {
-                HSplitView {
-                    FilePane(title: "本地", path: $workspace.localPath, files: workspace.localFiles,
-                             selection: $workspace.localSelection, loading: workspace.loadingLocal,
-                             query: query, remote: false, workspace: workspace)
-                    if workspace.connectedProfile != nil {
-                        FilePane(title: workspace.connectedProfile?.name.isEmpty == false ? workspace.connectedProfile!.name : "远程",
-                                 path: $workspace.remotePath, files: workspace.remoteFiles, selection: $workspace.remoteSelection,
-                                 loading: workspace.loadingRemote, query: query, remote: true, workspace: workspace)
-                    } else {
-                        ContentUnavailableView {
-                            Label("连接服务器", systemImage: "externaldrive.connected.to.line.below")
-                        } description: { Text("选择收藏或添加 FTP / SFTP 连接，开始浏览与传输。") }
-                        actions: { Button("快速连接", systemImage: "bolt") { showConnect = true }.buttonStyle(.glassProminent) }
-                        .frame(minWidth: 350, maxWidth: .infinity, maxHeight: .infinity)
+            HStack(spacing: 0) {
+                VStack(spacing: 0) {
+                    BrowserTabBar(tabs: tabs)
+                    Divider()
+                    HSplitView {
+                        FilePane(title: L10n.text("本地"), path: $workspace.localPath, files: workspace.localFiles,
+                                 selection: $workspace.localSelection, loading: workspace.loadingLocal,
+                                 query: query, remote: false, workspace: workspace)
+                        if workspace.connectedProfile != nil {
+                            FilePane(title: workspace.connectedProfile?.name.isEmpty == false ? workspace.connectedProfile!.name : L10n.text("远程"),
+                                     path: $workspace.remotePath, files: workspace.remoteFiles, selection: $workspace.remoteSelection,
+                                     loading: workspace.loadingRemote, query: query, remote: true, workspace: workspace)
+                        } else if workspace.connecting {
+                            VStack(spacing: InterfaceStyle.fieldGap) {
+                                ProgressView(L10n.text("正在连接…"))
+                                Button(L10n.text("取消")) { workspace.disconnect() }
+                            }.frame(minWidth: 350, maxWidth: .infinity, maxHeight: .infinity)
+                        } else {
+                            ConnectionWelcomeView { showConnect = true }
+                                .frame(minWidth: 350, maxWidth: .infinity, maxHeight: .infinity)
+                        }
+                    }.transaction { $0.animation = nil }
+                    Divider()
+                    ActivityView(workspace: workspace, expanded: $showActivities).frame(height: showActivities ? 170 : 44)
+                        // Animating this height resizes both native file panes
+                        // on every frame. Motion stays on the disclosure icon.
+                        .transaction { $0.animation = nil }
+                    Divider()
+                    InterfaceStatusBar {
+                        Text(workspace.connecting ? L10n.text("正在连接…") : workspace.connectedProfile.map { "\($0.protocolKind.title) · \($0.name.isEmpty ? $0.host : $0.name)" } ?? L10n.text("未连接"))
+                            .lineLimit(1).truncationMode(.middle)
+                        Spacer()
+                        Text(L10n.format("%@ 个本地项目 · %@ 个远程项目", String(describing: workspace.localFiles.count), String(describing: workspace.remoteFiles.count)))
+                            .lineLimit(1).monospacedDigit()
                     }
                 }
-                if showActivities {
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                if workspace.showInspector {
                     Divider()
-                    ActivityView(workspace: workspace).frame(height: 170)
+                    FileInformationView(workspace: workspace).frame(width: 280)
+                        .background(.bar)
                 }
-                Divider()
-                HStack {
-                    Text(workspace.connectedProfile.map { "\($0.protocolKind.title) · \($0.name.isEmpty ? $0.host : $0.name)" } ?? "未连接")
-                    Spacer()
-                    Text("\(workspace.localFiles.count) 个本地项目 · \(workspace.remoteFiles.count) 个远程项目")
-                }.font(.caption).foregroundStyle(.secondary).padding(.horizontal, 16).padding(.vertical, 8)
             }
         }
         .navigationTitle("AetherTransfer")
         .toolbar {
             ToolbarItemGroup {
-                Button("连接", systemImage: "plus") { showConnect = true }
-                Button("刷新", systemImage: "arrow.clockwise") { workspace.refreshLocal(); workspace.refreshRemote() }
-                Button("上传", systemImage: "arrow.up") { workspace.uploadSelection() }.disabled(workspace.localSelection.isEmpty || workspace.client == nil)
-                Button("下载", systemImage: "arrow.down") { workspace.downloadSelection() }.disabled(workspace.remoteSelection.isEmpty)
+                Button(L10n.text("连接"), systemImage: "plus") { showConnect = true }
+                Button(L10n.text("刷新"), systemImage: "arrow.clockwise") { workspace.refreshLocal(); workspace.refreshRemote() }
+                Button(L10n.text("上传"), systemImage: "arrow.up") { workspace.uploadSelection() }.disabled(!workspace.canUploadSelection)
+                Button(L10n.text("下载"), systemImage: "arrow.down") { workspace.downloadSelection() }.disabled(!workspace.canDownloadSelection)
             }
-            ToolbarItem { Button("活动", systemImage: "list.bullet.rectangle") { showActivities.toggle() } }
-            ToolbarItem { Button("断开", systemImage: "eject") { workspace.disconnect() }.disabled(workspace.client == nil) }
+            ToolbarItem { Button(L10n.text("活动"), systemImage: "list.bullet.rectangle") { showActivities.toggle() } }
+            ToolbarItem { Button(L10n.text("文件信息"), systemImage: "info.circle") { workspace.showInspector.toggle() } }
+            ToolbarItem { Button(L10n.text("同步"), systemImage: "arrow.triangle.2.circlepath") { workspace.showSync = true } }
+            ToolbarItem { Button(L10n.text("断开"), systemImage: "eject") { workspace.disconnect() }.disabled(!workspace.hasRemoteConnection && !workspace.connecting) }
         }
-        .searchable(text: $query, prompt: "筛选当前目录")
+        .searchable(text: $query, prompt: L10n.text("筛选当前目录"))
         .sheet(isPresented: $showConnect) { ConnectionView(workspace: workspace) }
-        .alert("操作失败", isPresented: Binding(get: { workspace.error != nil }, set: { if !$0 { workspace.error = nil } })) {
-            Button("确定") { workspace.error = nil }
+        .sheet(isPresented: $workspace.showSync) { SyncReviewView(workspace: workspace, tabs: tabs) }
+        .sheet(isPresented: $workspace.showRecovery) { RecoveryView(workspace: workspace, tabs: tabs) }
+        .sheet(item: $workspace.permissionRequest) { request in PermissionEditorView(request: request, workspace: workspace) }
+        .sheet(item: $workspace.batchRenameRequest) { request in BatchRenameView(request: request, workspace: workspace) }
+        .sheet(item: $editingProfile) { profile in ConnectionView(workspace: workspace, initial: profile, editing: true) }
+        .sheet(item: $workspace.connectionPrompt) { profile in ConnectionView(workspace: workspace, initial: profile, loadSaved: true) }
+        .alert(L10n.text("操作失败"), isPresented: Binding(get: { workspace.error != nil }, set: { if !$0 { workspace.error = nil } })) {
+            Button(L10n.text("确定")) { workspace.error = nil }
         } message: { Text(workspace.error ?? "") }
         .sheet(item: $workspace.hostChallenge) { challenge in
-            VStack(alignment: .leading, spacing: 20) {
-                Label("核对服务器指纹", systemImage: "lock.shield").font(.title2)
-                Text("请通过可信渠道核对服务器的 SHA-256 指纹。确认后才会进行认证和文件操作。")
-                Text(RemoteClient.fingerprint(challenge.key)).font(.system(.body, design: .monospaced)).textSelection(.enabled)
-                HStack {
-                    Button("取消") { workspace.hostChallenge = nil; workspace.disconnect() }
+            VStack(spacing: 0) {
+                SheetHeader(title: L10n.text("核对服务器指纹"),
+                            subtitle: L10n.text("请通过可信渠道核对服务器的 SHA-256 指纹。确认后才会进行认证和文件操作。"),
+                            symbol: "lock.shield")
+                Divider()
+                VStack(alignment: .leading, spacing: InterfaceStyle.fieldGap) {
+                    FormFieldRow(title: L10n.text("服务器地址")) { Text(challenge.profile.host).textSelection(.enabled) }
+                    FormFieldRow(title: L10n.text("端口")) { Text(String(challenge.profile.port)).monospacedDigit() }
+                    FormFieldRow(title: L10n.text("用户名")) { Text(challenge.profile.username).textSelection(.enabled) }
+                    Text(RemoteClient.fingerprint(challenge.key)).font(.system(.body, design: .monospaced))
+                        .textSelection(.enabled).padding(12).frame(maxWidth: .infinity, alignment: .leading)
+                        .background(.quaternary, in: RoundedRectangle(cornerRadius: InterfaceStyle.cornerRadius))
+                }.padding(InterfaceStyle.pageInset)
+                Divider()
+                SheetActions {
+                    Button(L10n.text("取消")) { workspace.hostChallenge = nil; workspace.disconnect() }.keyboardShortcut(.cancelAction)
                     Spacer()
-                    Button("信任并连接") { workspace.approveHostKey() }.buttonStyle(.glassProminent)
+                    Button(L10n.text("信任并连接")) { workspace.approveHostKey() }.buttonStyle(.glassProminent).keyboardShortcut(.defaultAction)
                 }
-            }.padding(28).frame(width: 570)
+            }.frame(width: InterfaceStyle.connectionWidth)
         }
-        .onChange(of: workspace.showHidden) { workspace.refreshLocal() }
+        .onChange(of: tabs.selected) { workspace.reloadProfiles() }
+        .onReceive(workspace.activityStore.itemCountChanges) { count in
+            if count > activityCount { showActivities = true }
+            activityCount = count
+        }
+        .onReceive(NotificationCenter.default.publisher(for: .init("AetherTransferEditedFile"))) { _ in
+            workspace.refreshLocal(); workspace.refreshRemote()
+        }
+        .onAppear { workspace.reloadProfiles() }
+    }
+}
+
+private struct ConnectionWelcomeView: View {
+    @Environment(\.locale) private var interfaceLocale
+    let connect: () -> Void
+    var body: some View {
+        let _ = interfaceLocale
+        VStack(spacing: 18) {
+            Image(systemName: "arrow.up.arrow.down")
+                .font(.system(size: 30, weight: .medium)).foregroundStyle(.tint)
+                .frame(width: 76, height: 76).background(Color.accentColor.opacity(0.08), in: RoundedRectangle(cornerRadius: 23))
+                .accessibilityHidden(true)
+            VStack(spacing: 8) {
+                Text(L10n.text("文件，自由往来")).font(.title2.weight(.semibold))
+                Text(L10n.text("连接服务器，让本地与远程并肩工作。"))
+                    .font(.callout).foregroundStyle(.secondary).multilineTextAlignment(.center)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            ViewThatFits(in: .horizontal) {
+                protocols(["SFTP", "FTP", "FTPS", "WebDAV", "S3"])
+                VStack(spacing: 8) {
+                    protocols(["SFTP", "FTP", "FTPS"])
+                    protocols(["WebDAV", "S3"])
+                }
+            }
+            Button(L10n.text("连接服务器"), systemImage: "plus") { connect() }.buttonStyle(.glassProminent).controlSize(.large)
+                .padding(.top, 4)
+            SupportingText(L10n.text("密码可保存在系统钥匙串"))
+        }.padding(32)
+    }
+    private func protocols(_ names: [String]) -> some View {
+        HStack(spacing: 8) {
+            ForEach(names, id: \.self) { name in
+                Text(verbatim: name).font(.caption.weight(.medium)).foregroundStyle(.secondary)
+                    .fixedSize().padding(.horizontal, 10).padding(.vertical, 5)
+                    .background(.quaternary, in: Capsule())
+            }
+        }
     }
 }
 
 struct FilePane: View {
+    @Environment(\.locale) private var interfaceLocale
     let title: String
     @Binding var path: String
     let files: [FileEntry]
@@ -118,128 +272,467 @@ struct FilePane: View {
     let query: String
     let remote: Bool
     @ObservedObject var workspace: Workspace
-    var filtered: [FileEntry] { files.filter { (workspace.showHidden || !$0.name.hasPrefix(".")) && (query.isEmpty || $0.name.localizedCaseInsensitiveContains(query)) } }
+    @State private var sortField: FileSortField = .name
+    @State private var descending = false
+    @State private var presentationRevision = UUID()
+    @State private var filtered: [FileEntry] = []
+    @State private var columnHistory = FileColumnHistory()
+    @State private var columns: [FileColumnContent] = []
+    @State private var presenting = true
+    private struct PresentationRequest: Hashable {
+        let revision: UUID
+        let query: String
+        let hidden: Bool
+        let field: FileSortField
+        let descending: Bool
+        let mode: FileViewMode
+        let workspace: UUID
+        let namespace: UUID
+    }
+    @State private var presentedRequest: PresentationRequest?
+    // A reused native pane is immediately inert while its new workspace's
+    // snapshot is being prepared. Old rows must never act on a new connection.
+    private var presentationPending: Bool { presenting || presentedRequest != request }
+    private var request: PresentationRequest {
+        PresentationRequest(revision: remote ? workspace.remoteRevision : workspace.localRevision,
+                            query: query, hidden: workspace.showHidden, field: sortField, descending: descending,
+                            mode: viewMode.wrappedValue, workspace: workspace.id,
+                            namespace: remote ? workspace.connectionRevision : workspace.id)
+    }
+    private var viewMode: Binding<FileViewMode> {
+        remote ? $workspace.remoteViewMode : $workspace.localViewMode
+    }
+
     var body: some View {
+        let _ = interfaceLocale
         VStack(spacing: 0) {
             HStack {
-                Image(systemName: remote ? "network" : "internaldrive")
-                Text(title).fontWeight(.semibold)
+                Image(systemName: remote ? "network" : "internaldrive").foregroundStyle(.secondary)
+                Text(title).font(.callout.weight(.semibold)).lineLimit(1).truncationMode(.middle)
                 Spacer()
-                if loading { ProgressView().controlSize(.small) }
-                Button("上一级", systemImage: "arrow.up") { workspace.parent(remote: remote) }.labelStyle(.iconOnly)
-                Button("新建文件夹", systemImage: "folder.badge.plus") { workspace.createFolder(remote: remote) }.labelStyle(.iconOnly)
-                if !remote { Button("选择文件夹", systemImage: "folder") { workspace.chooseLocal() }.labelStyle(.iconOnly) }
-            }.padding(12)
-            TextField("路径", text: $path).textFieldStyle(.roundedBorder).font(.system(.body, design: .monospaced))
-                .onSubmit { if remote { workspace.refreshRemote() } else { workspace.refreshLocal() } }
-                .padding(.horizontal, 12).padding(.bottom, 10)
-            Table(filtered, selection: $selection) {
-                TableColumn("名称") { entry in
-                    Label { Text(entry.name) } icon: {
-                        Image(systemName: entry.isDirectory ? "folder.fill" : "doc").foregroundStyle(entry.isDirectory ? Color.accentColor : Color.secondary)
-                    }
-                        .onTapGesture(count: 2) { workspace.open(entry, remote: remote) }
-                }.width(min: 140, ideal: 240)
-                TableColumn("大小") { entry in
-                    Text(entry.isDirectory ? "—" : ByteCountFormatter.string(fromByteCount: entry.size, countStyle: .file))
-                        .foregroundStyle(.secondary).monospacedDigit()
-                }.width(80)
-                TableColumn("修改日期") { entry in
-                    Text(entry.modified?.formatted(date: .numeric, time: .shortened) ?? "—").foregroundStyle(.secondary)
-                }.width(min: 100, ideal: 150)
-            }
-            .contextMenu(forSelectionType: String.self) { ids in
-                if let entry = files.first(where: { ids.contains($0.id) }) {
-                    Button(entry.isDirectory ? "打开" : (remote ? "下载" : "打开")) { workspace.open(entry, remote: remote) }
-                    if !remote { Button("上传") { workspace.upload(files.filter { ids.contains($0.id) }) }.disabled(workspace.client == nil) }
-                    Button("重命名…") { workspace.rename(entry, remote: remote) }
-                    Button("删除…", role: .destructive) { workspace.delete(entry, remote: remote) }
-                }
-            } primaryAction: { ids in
-                if let entry = files.first(where: { ids.contains($0.id) }) { workspace.open(entry, remote: remote) }
-            }
-            .overlay { if filtered.isEmpty && !loading { ContentUnavailableView("没有文件", systemImage: "folder", description: Text(query.isEmpty ? "此目录为空。" : "没有匹配的项目。")) } }
-        }.frame(minWidth: 350, maxWidth: .infinity, maxHeight: .infinity)
-    }
-}
-
-struct ActivityView: View {
-    @ObservedObject var workspace: Workspace
-    var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            HStack { Text("传输活动").font(.headline); Spacer(); Text("\(workspace.activities.filter { $0.state == "传输中" }.count) 个进行中").foregroundStyle(.secondary) }.padding(.horizontal, 14).padding(.top, 10)
-            if workspace.activities.isEmpty {
-                Text("上传或下载文件后，在这里查看进度。").foregroundStyle(.secondary).frame(maxWidth: .infinity, maxHeight: .infinity)
-            } else {
-                List(workspace.activities) { item in
-                    HStack {
-                        Image(systemName: item.direction == "上传" ? "arrow.up.circle" : "arrow.down.circle")
-                        VStack(alignment: .leading, spacing: 3) {
-                            Text(item.name).lineLimit(1)
-                            if item.state == "传输中" { ProgressView(value: item.progress).frame(maxWidth: 220) }
-                            if let error = item.error { Text(error).font(.caption).foregroundStyle(.red).lineLimit(2) }
+                if loading || presentationPending { ProgressView().controlSize(.small) }
+                Picker(L10n.format("%@视图", String(describing: title)), selection: viewMode) {
+                    Image(systemName: "square.grid.2x2").accessibilityLabel(L10n.text("图标视图")).tag(FileViewMode.icons)
+                    Image(systemName: "list.bullet").accessibilityLabel(L10n.text("列表视图")).tag(FileViewMode.list)
+                    Image(systemName: "rectangle.split.3x1").accessibilityLabel(L10n.text("列视图")).tag(FileViewMode.columns)
+                }.pickerStyle(.segmented).labelsHidden().frame(width: 112)
+                if viewMode.wrappedValue != .list {
+                    Menu(L10n.text("排序"), systemImage: "arrow.up.arrow.down") {
+                        Picker(L10n.text("排序依据"), selection: $sortField) {
+                            Text(L10n.text("名称")).tag(FileSortField.name); Text(L10n.text("大小")).tag(FileSortField.size); Text(L10n.text("修改日期")).tag(FileSortField.modified)
                         }
-                        Spacer()
-                        Text(item.state).foregroundStyle(item.state == "失败" ? .red : .secondary)
-                        if item.state == "传输中" { Button("取消", systemImage: "xmark.circle") { workspace.cancel(item.id) }.labelStyle(.iconOnly).buttonStyle(.borderless) }
-                    }
-                }.listStyle(.plain)
+                        Divider()
+                        Button(descending ? L10n.text("升序") : L10n.text("降序")) { descending.toggle() }
+                    }.labelStyle(.iconOnly).menuStyle(.borderlessButton)
+                }
+                Button(L10n.text("上一级"), systemImage: "arrow.up") { workspace.parent(remote: remote) }.labelStyle(.iconOnly)
+                Button(L10n.text("新建文件夹"), systemImage: "folder.badge.plus") { workspace.createFolder(remote: remote) }.labelStyle(.iconOnly)
+                if !remote { Button(L10n.text("选择文件夹"), systemImage: "folder") { workspace.chooseLocal() }.labelStyle(.iconOnly) }
+            }.padding(.horizontal, InterfaceStyle.paneInset).padding(.vertical, 10).controlSize(.small)
+            TextField(remote && workspace.isS3 ? L10n.text("前缀（根目录为空，如 photos/）") : L10n.text("路径"), text: $path).textFieldStyle(.roundedBorder).font(.system(.callout, design: .monospaced))
+                .onSubmit { if remote { workspace.refreshRemote() } else { workspace.refreshLocal() } }
+                .padding(.horizontal, InterfaceStyle.paneInset).padding(.bottom, 10)
+            Group {
+                if viewMode.wrappedValue == .icons {
+                    NativeFileIcons(files: filtered, revision: presentationRevision, selection: $selection, remote: remote, workspace: workspace)
+                } else if viewMode.wrappedValue == .columns {
+                    NativeFileColumns(columns: columns, selection: $selection, remote: remote, workspace: workspace,
+                                      emptyMessage: query.isEmpty ? L10n.text("此目录为空。") : L10n.text("没有匹配的项目。"))
+                } else {
+                    NativeFileTable(files: filtered, revision: presentationRevision, selection: $selection,
+                                    sortField: $sortField, descending: $descending, remote: remote, workspace: workspace)
+                }
             }
+                .disabled(loading || presentationPending)
+                .overlay { if viewMode.wrappedValue != .columns && filtered.isEmpty && !loading && !presentationPending { ContentUnavailableView(L10n.text("没有文件"), systemImage: "folder", description: Text(query.isEmpty ? L10n.text("此目录为空。") : L10n.text("没有匹配的项目。"))) .allowsHitTesting(false) } }
+
+        }.frame(minWidth: 350, maxWidth: .infinity, maxHeight: .infinity)
+        .onChange(of: viewMode.wrappedValue) { _, _ in workspace.focusedRemote = remote }
+        .task(id: request) {
+            // Read entries and revision from the same observable source. A child can see a new
+            // revision before its parent passes the refreshed value-type files argument.
+            let current = request, snapshot = remote ? workspace.remoteFiles : workspace.localFiles
+            let directory = remote ? workspace.remoteListingPath : workspace.localListingPath
+            let previous = presentedRequest, previousColumns = columns
+            let history = previous?.workspace == current.workspace && previous?.namespace == current.namespace ? columnHistory : FileColumnHistory()
+            presenting = true
+            do {
+                if !current.query.isEmpty { try await Task.sleep(for: .milliseconds(120)) }
+                let preparation = Task.detached {
+                    try Task.checkCancellation()
+                    let filtered = FilePresentation.entries(snapshot, query: current.query, showHidden: current.hidden, field: current.field, descending: current.descending)
+                    var updated = FileColumnHistory(), prepared: [FileColumnContent] = []
+                    if current.mode == .columns {
+                        updated = history
+                        updated.accept(FileColumnSnapshot(path: directory, files: snapshot, revision: current.revision))
+                        let sameOptions = previous?.query == current.query && previous?.hidden == current.hidden
+                            && previous?.field == current.field && previous?.descending == current.descending
+                        for (index, column) in updated.columns.enumerated() {
+                            try Task.checkCancellation()
+                            let old = sameOptions ? previousColumns.first { $0.snapshot.id == column.id && $0.snapshot.revision == column.revision } : nil
+                            let files = index == updated.columns.count - 1 ? filtered : (old?.files ?? FilePresentation.entries(column.files,
+                                query: current.query, showHidden: current.hidden, field: current.field, descending: current.descending))
+                            prepared.append(FileColumnContent(snapshot: column, files: files, revision: old?.revision ?? UUID(),
+                                                              branchSelection: updated.branchSelection(at: index)))
+                        }
+                    }
+                    try Task.checkCancellation()
+                    return (filtered, updated, prepared)
+                }
+                let result = try await withTaskCancellationHandler(operation: { try await preparation.value }, onCancel: { preparation.cancel() })
+                try Task.checkCancellation()
+                filtered = result.0; columnHistory = result.1; columns = result.2
+                presentationRevision = UUID(); presentedRequest = current; presenting = false
+                selection.formIntersection(Set(result.0.map(\.id)))
+            } catch is CancellationError { } catch { presenting = false }
+        }
+        .dropDestination(for: URL.self) { urls, _ in
+            guard viewMode.wrappedValue != .columns, remote, workspace.canReceiveUpload, !urls.isEmpty, urls.allSatisfy(\.isFileURL) else { return false }
+            workspace.uploadURLs(urls); return true
         }
     }
 }
 
+struct ActivityView: View {
+    @Environment(\.locale) private var interfaceLocale
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
+    let workspace: Workspace
+    @ObservedObject private var activities: TransferActivities
+    @Binding var expanded: Bool
+    init(workspace: Workspace, expanded: Binding<Bool>) {
+        self.workspace = workspace
+        _activities = ObservedObject(wrappedValue: workspace.activityStore)
+        _expanded = expanded
+    }
+    var body: some View {
+        let _ = interfaceLocale
+        VStack(alignment: .leading, spacing: 6) {
+            HStack {
+                Button { expanded.toggle() } label: {
+                    HStack(spacing: 6) {
+                        Image(systemName: "chevron.right")
+                            .rotationEffect(.degrees(expanded ? 90 : 0))
+                            .animation(reduceMotion ? nil : .smooth(duration: InterfaceStyle.tabTransition), value: expanded)
+                            .accessibilityHidden(true)
+                        Text(L10n.text("传输活动"))
+                    }.font(.callout.weight(.semibold))
+                }.buttonStyle(.plain).accessibilityValue(expanded ? L10n.text("已展开") : L10n.text("已收起"))
+                Spacer()
+                Button(L10n.text("保留的传输…"), systemImage: "clock.arrow.circlepath") { workspace.showRecovery = true }.buttonStyle(.borderless).font(.caption)
+                Text(activities.items.isEmpty ? L10n.text("暂无任务") : L10n.format("%@ 个进行中 · %@ 个任务", String(describing: activities.items.filter { $0.state == "传输中" }.count), String(describing: activities.items.count))).font(.caption).foregroundStyle(.secondary)
+                if !activities.items.isEmpty { Button(L10n.text("清除已结束任务")) { workspace.clearFinishedActivities() }.buttonStyle(.borderless).font(.caption) }
+            }.padding(.horizontal, 14).frame(height: 38)
+            if expanded && activities.items.isEmpty {
+                Text(L10n.text("上传或下载文件后，在这里查看进度。")).foregroundStyle(.secondary).frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else if expanded {
+                ScrollView {
+                    LazyVStack(spacing: 0) {
+                        ForEach(activities.items) { item in
+                            HStack {
+                                Image(systemName: item.direction == "同步" ? "arrow.triangle.2.circlepath" : (item.direction == "上传" ? "arrow.up.circle" : "arrow.down.circle"))
+                                VStack(alignment: .leading, spacing: 3) {
+                                    Text(item.name).lineLimit(1)
+                                    if ["传输中", "已暂停", "待续传", "保留中"].contains(item.state) {
+                                        if item.hasKnownTotal {
+                                            ProgressView(value: item.progress).frame(maxWidth: 220)
+                                            Text(L10n.format("%@：%@ / %@", String(describing: item.direction == "同步" ? L10n.text("同步总量") : (item.scope == .directory ? L10n.text("目录处理总量") : L10n.text("当前文件"))), String(describing: DisplayFormat.bytes(item.bytes)), String(describing: DisplayFormat.bytes(item.total)))).font(.caption).foregroundStyle(.secondary)
+                                        } else { ProgressView().controlSize(.small) }
+                                        if let rate = item.rate {
+                                            HStack(spacing: 8) {
+                                                Text(L10n.format("%@ %@/s", String(describing: item.scope == .file ? L10n.text("传输") : L10n.text("处理")), String(describing: DisplayFormat.bytes(Int64(min(rate.bytesPerSecond, Double(Int64.max).nextDown)), style: .binary))))
+                                                if let remaining = rate.remainingSeconds {
+                                                    Text(L10n.format("预计剩余 %@", String(describing: Self.remainingText(remaining))))
+                                                }
+                                            }.font(.caption).foregroundStyle(.secondary).monospacedDigit()
+                                        }
+                                        if let phase = item.phase { Text(phase).font(.caption).foregroundStyle(.secondary) }
+                                    }
+                                    if let completed = item.completedItems, let total = item.totalItems {
+                                        Text(L10n.format("已处理 %@ / %@ 个项目%@", String(describing: completed), String(describing: total), String(describing: item.skippedItems > 0 ? L10n.format(" · 跳过 %@ 项", String(describing: item.skippedItems)) : "")))
+                                            .font(.caption).foregroundStyle(.secondary).monospacedDigit()
+                                    }
+                                    if let error = item.error {
+                                        Text(error).font(.caption).foregroundStyle(.red).lineLimit(2)
+                                            .help(error).textSelection(.enabled)
+                                            .contextMenu {
+                                                Button(L10n.text("复制错误信息"), systemImage: "doc.on.doc") {
+                                                    NSPasteboard.general.clearContents()
+                                                    NSPasteboard.general.setString(error, forType: .string)
+                                                }
+                                            }
+                                    }
+                                    if item.scope == .directory && (item.state == "失败" || item.state == "已取消") {
+                                        Text(L10n.text("重新选择目录并确认冲突后，可再次传输。")).font(.caption).foregroundStyle(.secondary)
+                                    }
+                                }
+                                Spacer()
+                                Label(L10n.text(item.state), systemImage: item.state == "完成" ? "checkmark.circle.fill" : (item.state == "失败" ? "exclamationmark.circle" : "circle.dotted"))
+                                    .font(.caption).foregroundStyle(item.state == "失败" ? Color.red : (item.state == "完成" ? Color.green : Color.secondary))
+                                if item.state == "传输中" { Button(L10n.text("暂停"), systemImage: "pause.circle") { workspace.pause(item.id) }.labelStyle(.iconOnly).buttonStyle(.borderless) }
+                                if item.state == "已暂停" { Button(L10n.text("继续"), systemImage: "play.circle") { workspace.resume(item.id) }.labelStyle(.iconOnly).buttonStyle(.borderless) }
+                                if item.canRetain && (item.state == "传输中" || item.state == "已暂停") {
+                                    Button(L10n.text("保留进度"), systemImage: "clock.arrow.circlepath") { workspace.retain(item.id) }.buttonStyle(.borderless)
+                                }
+                                if item.state == "传输中" || item.state == "等待中" || item.state == "已暂停" { Button(L10n.text("取消"), systemImage: "xmark.circle") { workspace.cancel(item.id) }.labelStyle(.iconOnly).buttonStyle(.borderless) }
+                                if item.state == "待续传" || (item.state == "失败" && item.canRetain) {
+                                    Button(item.requiresRestart ? L10n.text("从头上传") : L10n.text("继续传输"), systemImage: "play.circle") { workspace.retry(item.id) }.buttonStyle(.borderless)
+                                    Button(L10n.text("丢弃进度"), systemImage: "trash") { workspace.discardRetained(item.id) }.labelStyle(.iconOnly).buttonStyle(.borderless)
+                                } else if item.state == "失败" || item.state == "已取消" {
+                                    if item.canRetry {
+                                        Button(L10n.text("重试"), systemImage: "arrow.clockwise") { workspace.retry(item.id) }.labelStyle(.iconOnly).buttonStyle(.borderless)
+                                    } else if item.direction == "同步" {
+                                        Button(L10n.text("重新预览"), systemImage: "arrow.triangle.2.circlepath") { workspace.showSync = true }.buttonStyle(.borderless)
+                                    }
+                                }
+                            }.padding(.vertical, 10).accessibilityElement(children: .contain)
+                            Divider()
+                        }
+                    }.padding(.horizontal, 14)
+                }
+            }
+        }
+    }
+    private static func remainingText(_ seconds: Double) -> String {
+        if seconds >= 3600 { return L10n.format("约 %@ 小时", String(describing: Int(min(ceil(seconds / 3600), 9999)))) }
+        if seconds >= 60 { return L10n.format("约 %@ 分钟", String(describing: Int(ceil(seconds / 60)))) }
+        return L10n.format("约 %@ 秒", String(describing: Int(max(1, ceil(seconds)))))
+    }
+}
+
 struct ConnectionView: View {
+    @Environment(\.locale) private var interfaceLocale
     @Environment(\.dismiss) private var dismiss
-    @ObservedObject var workspace: Workspace
-    @State private var profile = ServerProfile()
+    // The form owns its draft. File listings and transfer progress must not
+    // invalidate every field while the native sheet is presenting or editing.
+    let workspace: Workspace
+    @State private var profile: ServerProfile
+    @State private var portText: String
     @State private var password = ""
     @State private var passphrase = ""
     @State private var remember = false
+    @State private var accessKey = ""
+    @State private var secretKey = ""
+    @State private var sessionToken = ""
+    @State private var saving = false
     @State private var save = true
     @State private var error: String?
+    @FocusState private var focusedField: ConnectionField?
+    private enum ConnectionField: Hashable { case name, host }
+    let editing: Bool
+    let loadSaved: Bool
+    init(workspace: Workspace, initial: ServerProfile = ServerProfile(), editing: Bool = false, loadSaved: Bool = false) {
+        self.workspace = workspace; self.editing = editing; self.loadSaved = loadSaved
+        _profile = State(initialValue: initial)
+        _portText = State(initialValue: String(initial.port))
+    }
     var body: some View {
+        let _ = interfaceLocale
         VStack(spacing: 0) {
-            Form {
-                Section("连接服务器") {
-                    TextField("名称", text: $profile.name)
-                    Picker("协议", selection: $profile.protocolKind) { ForEach(TransferProtocol.allCases, id: \.self) { Text($0.title).tag($0) } }
-                    TextField("服务器地址", text: $profile.host)
-                    TextField("端口", value: $profile.port, format: .number.grouping(.never))
-                    TextField("用户名", text: $profile.username)
-                    SecureField("密码", text: $password)
-                    TextField("远程路径", text: $profile.initialPath)
-                    if profile.protocolKind == .sftp {
-                        HStack {
-                            TextField("SSH 私钥", text: $profile.privateKeyPath)
-                            Button("选择…") {
-                                let panel = NSOpenPanel(); panel.showsHiddenFiles = true
-                                if panel.runModal() == .OK { profile.privateKeyPath = panel.url?.path ?? "" }
+            SheetHeader(title: editing ? L10n.text("编辑服务器") : L10n.text("连接服务器"),
+                        subtitle: editing ? L10n.text("保存连接资料与认证选项。") : L10n.text("连接到服务器，浏览和传输文件。"),
+                        symbol: "server.rack")
+            Divider()
+            ScrollView {
+                VStack(alignment: .leading, spacing: InterfaceStyle.sectionGap) {
+                    GroupBox {
+                        VStack(alignment: .leading, spacing: InterfaceStyle.fieldGap) {
+                            inputRow(L10n.text("名称")) { TextField(L10n.text("名称"), text: $profile.name, prompt: Text(L10n.text("例如：我的服务器"))).labelsHidden().focused($focusedField, equals: .name) }
+                            inputRow(L10n.text("收藏分组")) { TextField(L10n.text("收藏分组"), text: $profile.group, prompt: Text(L10n.text("可选"))).labelsHidden() }
+                            inputRow(L10n.text("协议")) {
+                                Picker(L10n.text("协议"), selection: $profile.protocolKind) { ForEach(TransferProtocol.allCases, id: \.self) { Text($0.title).tag($0) } }.labelsHidden()
                             }
-                        }
-                        SecureField("私钥口令", text: $passphrase)
+                            if profile.protocolKind == .sftp {
+                                inputRow(L10n.text("SSH 配置")) {
+                                    Toggle(L10n.text("读取本机 SSH 配置"), isOn: Binding(get: { profile.sshConfiguration == true }, set: { profile.sshConfiguration = $0 ? true : nil }))
+                                }
+                            }
+                            inputRow(L10n.text("服务器地址")) { TextField(L10n.text("服务器地址"), text: $profile.host, prompt: Text(profile.protocolKind == .sftp && profile.sshConfiguration == true ? L10n.text("主机名或 SSH 配置别名") : L10n.text("例如 files.example.com"))).labelsHidden().focused($focusedField, equals: .host) }
+                            if profile.protocolKind == .sftp && profile.sshConfiguration == true {
+                                inputRow(L10n.text("端口")) {
+                                    VStack(alignment: .leading, spacing: InterfaceStyle.fieldGap) {
+                                        Toggle(L10n.text("使用配置中的端口"), isOn: Binding(get: { profile.sshUseConfiguredPort != false }, set: { profile.sshUseConfiguredPort = $0 }))
+                                        if profile.sshUseConfiguredPort == false { portField }
+                                    }
+                                }
+                            } else {
+                                inputRow(L10n.text("端口")) { portField }
+                            }
+                        }.padding(InterfaceStyle.groupInset)
+                    } label: {
+                        Text(L10n.text("连接信息")).font(.headline)
                     }
+                    GroupBox {
+                        VStack(alignment: .leading, spacing: InterfaceStyle.fieldGap) {
+                            if profile.protocolKind == .s3 {
+                                inputRow(L10n.text("存储桶")) { TextField(L10n.text("存储桶"), text: Binding(get: { profile.s3Bucket ?? "" }, set: { profile.s3Bucket = $0 }), prompt: Text(L10n.text("存储桶名称"))).labelsHidden() }
+                                inputRow(L10n.text("区域")) { TextField(L10n.text("区域"), text: Binding(get: { profile.s3Region ?? "us-east-1" }, set: { profile.s3Region = $0 })).labelsHidden() }
+                                inputRow("Access Key") { TextField("Access Key", text: $accessKey).labelsHidden() }
+                                inputRow("Secret Key") { SecureField("Secret Key", text: $secretKey, prompt: Text(L10n.text("输入访问密钥"))).labelsHidden() }
+                                inputRow("Session Token") { SecureField(L10n.text("Session Token（可选）"), text: $sessionToken, prompt: Text(L10n.text("可选"))).labelsHidden() }
+                                inputRow(L10n.text("起始前缀")) { TextField(L10n.text("起始前缀"), text: $profile.initialPath, prompt: Text(L10n.text("根目录留空，如 photos/"))).labelsHidden() }
+                                inputRow(L10n.text("自定义 CA")) { HStack {
+                                        TextField(L10n.text("自定义 CA（可选）"), text: Binding(get: { profile.s3CertificateAuthorityPath ?? "" }, set: { profile.s3CertificateAuthorityPath = $0.isEmpty ? nil : $0 }), prompt: Text(L10n.text("可选：证书文件路径"))).labelsHidden()
+                                        Button(L10n.text("选择…")) {
+                                            let panel = NSOpenPanel(); panel.canChooseDirectories = false
+                                            if panel.runModal() == .OK { profile.s3CertificateAuthorityPath = panel.url?.path }
+                                        }
+                                    } }
+                            } else {
+                                inputRow(L10n.text("用户名")) { TextField(L10n.text("用户名"), text: $profile.username, prompt: Text(profile.protocolKind == .sftp && profile.sshConfiguration == true ? L10n.text("留空使用配置或本机用户名") : L10n.text("登录用户名"))).labelsHidden() }
+                                if profile.protocolKind == .sftp {
+                                    inputRow(L10n.text("认证方式")) {
+                                        Picker(L10n.text("认证方式"), selection: Binding(get: { profile.effectiveSSHAuthentication }, set: { profile.sshAuthentication = $0 })) {
+                                            ForEach(SSHAuthentication.allCases, id: \.self) { Text($0.title).tag($0) }
+                                        }.labelsHidden()
+                                    }
+                                }
+                                if profile.protocolKind != .sftp || profile.effectiveSSHAuthentication == .password {
+                                    inputRow(L10n.text("密码")) { SecureField(L10n.text("密码"), text: $password, prompt: Text(L10n.text("输入密码"))).labelsHidden() }
+                                }
+                                inputRow(L10n.text("远程路径")) { TextField(L10n.text("远程路径"), text: $profile.initialPath).labelsHidden() }
+                            }
+                            if profile.protocolKind == .sftp && profile.effectiveSSHAuthentication == .privateKey {
+                                inputRow(L10n.text("SSH 私钥")) { HStack {
+                                        TextField(L10n.text("SSH 私钥"), text: $profile.privateKeyPath, prompt: Text(profile.sshConfiguration == true ? L10n.text("留空使用配置中的私钥文件") : L10n.text("私钥文件路径"))).labelsHidden()
+                                        Button(L10n.text("选择…")) {
+                                            let panel = NSOpenPanel(); panel.showsHiddenFiles = true
+                                            if panel.runModal() == .OK { profile.privateKeyPath = panel.url?.path ?? "" }
+                                        }
+                                    } }
+                                inputRow(L10n.text("私钥口令")) { SecureField(L10n.text("私钥口令"), text: $passphrase, prompt: Text(L10n.text("可选"))).labelsHidden() }
+                            }
+                        }.padding(InterfaceStyle.groupInset)
+                    } label: {
+                        Text(L10n.text("认证与目录")).font(.headline)
+                    }
+                    GroupBox {
+                        VStack(alignment: .leading, spacing: 10) {
+                            if !editing { Toggle(L10n.text("保存服务器收藏"), isOn: $save) }
+                            if profile.protocolKind != .sftp || profile.effectiveSSHAuthentication != .agent {
+                                Toggle(profile.protocolKind == .s3 ? L10n.text("将访问密钥 / 令牌保存到钥匙串") : L10n.text("将密码 / 口令保存到钥匙串"), isOn: $remember)
+                            }
+                            if profile.protocolKind == .sftp && profile.effectiveSSHAuthentication == .agent {
+                                SupportingText(L10n.text("使用系统 SSH agent 中已加载的密钥。认证失败时不会改用密码或私钥文件；仍须核对服务器指纹。"))
+                            }
+                            if profile.protocolKind == .sftp && profile.sshConfiguration == true {
+                                SupportingText(L10n.text("读取主机别名、用户名、端口与私钥文件。所选认证方式保持不变；连接前仍须核对实际服务器指纹。代理和 Match 配置暂不支持。"))
+                            }
+                            if profile.protocolKind == .ftp { SupportingText(L10n.text("FTP 会以明文传输认证和文件内容。建议优先选择 SFTP 或 FTPS。")) }
+                            if profile.protocolKind == .webdav { SupportingText(L10n.text("HTTP 会以明文传输认证和文件内容。建议优先选择 WebDAV · HTTPS。")) }
+                            if profile.protocolKind.isWebDAV { SupportingText(L10n.text("填写服务器主机和 WebDAV 起始路径；如 /remote.php/dav/files/用户名/。HTTPS 会验证服务器证书。")) }
+                            if profile.protocolKind == .s3 {
+                                SupportingText(L10n.text("使用 HTTPS 路径式端点；服务器地址仅填主机名。R2 区域通常填 auto。支持前缀浏览、文件和目录传输以及对象删除；重启续传正在适配。"))
+                                SupportingText(L10n.text("自定义 CA 仍验证证书和服务器名称；留空时使用应用自带的公共根证书。"))
+                            }
+                        }.padding(InterfaceStyle.groupInset)
+                    } label: {
+                        Text(L10n.text("连接设置")).font(.headline)
+                    }
+                }.padding(InterfaceStyle.pageInset)
+            }.disabled(saving)
+            Divider()
+            if saving || error != nil || instruction != nil {
+                SheetFeedback {
+                    if saving {
+                        ProgressView(editing ? L10n.text("正在保存连接…") : L10n.text("正在准备连接…")).controlSize(.small)
+                    } else if let error { InterfaceMessage(text: error) }
+                    else if let instruction { SupportingText(instruction) }
                 }
-                Section {
-                    Toggle("保存服务器收藏", isOn: $save)
-                    Toggle("将密码 / 口令保存到钥匙串", isOn: $remember)
-                    if profile.protocolKind == .ftp { Text("FTP 会以明文传输认证和文件内容。建议优先选择 SFTP 或 FTPS。").font(.caption).foregroundStyle(.secondary) }
-                    if let error { Text(error).foregroundStyle(.red) }
-                }
-            }.formStyle(.grouped)
-            HStack {
-                Button("取消") { dismiss() }.keyboardShortcut(.cancelAction)
+                Divider()
+            }
+            SheetActions {
+                Button(L10n.text("取消")) { dismiss() }.keyboardShortcut(.cancelAction).disabled(saving)
                 Spacer()
-                Button("连接") {
-                    do {
-                        let credentials = Credentials(password: password, passphrase: passphrase)
-                        try profile.validate()
-                        if save { try workspace.save(profile, credentials: credentials, remember: remember) }
-                        workspace.connect(profile, credentials: credentials); dismiss()
-                    } catch { self.error = error.localizedDescription }
+                Button(editing ? L10n.text("保存") : L10n.text("连接")) {
+                    guard canSubmit else { return }
+                    saving = true; error = nil
+                    Task {
+                        defer { saving = false }
+                        do {
+                            let credentials = Credentials(password: password, passphrase: passphrase, accessKey: accessKey, secretKey: secretKey, sessionToken: sessionToken)
+                            try profile.validate()
+                            if profile.protocolKind == .s3 && (!editing || remember) { try credentials.s3.validate() }
+                            let prepared = !editing ? try await SSHConnectionPreparation.prepare(profile) : nil
+                            if save || editing { profile = try await workspace.save(profile, credentials: credentials, remember: remember) }
+                            if let prepared { workspace.connect(try prepared.withSavedSource(profile), credentials: credentials) }
+                            dismiss()
+                        } catch { self.error = error.localizedDescription }
+                    }
                 }.buttonStyle(.glassProminent).keyboardShortcut(.defaultAction)
-            }.padding(20)
-        }.frame(width: 540, height: 600)
-        .onChange(of: profile.protocolKind) { _, kind in profile.port = kind.defaultPort }
+                    .disabled(!canSubmit)
+            }
+        }.frame(width: InterfaceStyle.connectionWidth, height: InterfaceStyle.connectionHeight)
+        .onAppear { focusedField = editing ? .name : .host }
+        .task {
+            guard editing || loadSaved else { return }
+            do {
+                let requested = profile
+                let stored = try await Task.detached { try CredentialStore.load(profile: requested) }.value
+                guard profile.credentialIdentity == requested.credentialIdentity else { return }
+                password = stored.password; passphrase = stored.passphrase
+                accessKey = stored.accessKey; secretKey = stored.secretKey; sessionToken = stored.sessionToken
+                remember = !password.isEmpty || !passphrase.isEmpty || !accessKey.isEmpty || !secretKey.isEmpty || !sessionToken.isEmpty
+            } catch { self.error = error.localizedDescription }
+        }
+        .onChange(of: profile.credentialIdentity) { old, new in
+            if (editing || loadSaved) && old != new {
+                password = ""; passphrase = ""; accessKey = ""; secretKey = ""; sessionToken = ""; remember = false
+            }
+        }
+        .onChange(of: profile.effectiveSSHAuthentication) { old, new in
+            if old != new { password = ""; passphrase = ""; remember = false }
+        }
+        .onChange(of: profile.privateKeyPath) { old, new in
+            if old != new { passphrase = "" }
+        }
+        .onChange(of: profile.sshConfiguration) { old, new in
+            if old != new { password = ""; passphrase = ""; remember = false }
+        }
+        .onChange(of: profile.protocolKind) { old, kind in
+            profile.port = kind.defaultPort
+            portText = String(kind.defaultPort)
+            password = ""; passphrase = ""; accessKey = ""; secretKey = ""; sessionToken = ""; remember = false
+            if kind == .s3 { profile.initialPath = "" }
+            else if old == .s3 { profile.initialPath = "/" }
+        }
+        .onChange(of: profile) { _, _ in if !saving { error = nil } }
+        .onChange(of: portText) { _, _ in if !saving { error = nil } }
+        .onChange(of: remember) { _, _ in if !saving { error = nil } }
+        .onChange(of: [password, passphrase, accessKey, secretKey, sessionToken]) { _, _ in if !saving { error = nil } }
+        .interactiveDismissDisabled(saving)
+    }
+    private var portField: some View {
+        TextField(L10n.text("端口"), text: Binding(get: { portText }, set: {
+            portText = $0; profile.port = Int($0) ?? 0
+        }), prompt: Text(String(profile.protocolKind.defaultPort)))
+        .labelsHidden()
+    }
+    private var canSubmit: Bool { !saving && instruction == nil }
+    private var instruction: String? {
+        if profile.host.isEmpty { return L10n.text("填写服务器地址后继续设置认证信息。") }
+        let configuredSSH = profile.protocolKind == .sftp && profile.sshConfiguration == true
+        if (!configuredSSH || profile.sshUseConfiguredPort == false) && !(1...65535).contains(profile.port) {
+            return L10n.text("端口应为 1 至 65535 之间的整数。")
+        }
+        if profile.protocolKind == .s3 {
+            if (profile.s3Bucket ?? "").isEmpty { return L10n.text("填写存储桶名称。") }
+            if (profile.s3Region ?? "us-east-1").isEmpty { return L10n.text("填写存储区域；R2 通常使用 auto。") }
+        } else {
+            if profile.username.isEmpty && !configuredSSH { return L10n.text("填写服务器登录用户名。") }
+            if profile.protocolKind == .sftp && profile.effectiveSSHAuthentication == .privateKey && profile.privateKeyPath.isEmpty && !configuredSSH {
+                return L10n.text("选择 SSH 私钥文件。")
+            }
+        }
+        do {
+            try profile.validate()
+            if profile.protocolKind == .s3 && (!editing || remember) {
+                if accessKey.isEmpty || secretKey.isEmpty { return L10n.text("填写 Access Key 和 Secret Key。") }
+                try S3Credentials(accessKey: accessKey, secretKey: secretKey, sessionToken: sessionToken).validate()
+            }
+        } catch { return error.localizedDescription }
+        return nil
+    }
+    private func inputRow<Content: View>(_ title: String, @ViewBuilder content: () -> Content) -> some View {
+        FormFieldRow(title: title, content: content)
     }
 }

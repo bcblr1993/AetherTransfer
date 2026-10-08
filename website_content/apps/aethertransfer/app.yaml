@@ -8,8 +8,8 @@ tagline:
   zh: 原生文件传输工作台，让每一步清楚可控
   en: A native file transfer workspace, clear at every step
 summary:
-  zh: "面向 Apple 芯片 Mac 的原生文件传输客户端，正在开发双栏浏览、FTP / SFTP 连接与传输活动管理。以 Transmit 的完整文件工作流为功能目标，采用 macOS 26 Liquid Glass 界面。"
-  en: "A native file transfer client for Apple silicon Mac. Dual-pane browsing, FTP / SFTP connections and transfer activity are in development, with Transmit workflow parity as the goal and a macOS 26 Liquid Glass interface."
+  zh: "面向 Apple 芯片 Mac 的原生文件传输客户端，开发候选提供双栏浏览、FTP / FTPS / SFTP / WebDAV 与 S3 文件和目录传输、任务管理与冲突处理。以 Transmit 的完整文件工作流为功能目标，采用 macOS 26 Liquid Glass 界面。"
+  en: "A native file transfer client for Apple silicon Mac. The development candidate includes dual-pane browsing, FTP / FTPS / SFTP / WebDAV and S3 file and folder transfers, a task queue and conflict choices, with Transmit workflow parity as the goal and a macOS 26 Liquid Glass interface."
 platforms:
   - id: mac
     status: dev
@@ -21,8 +21,8 @@ hero:
   eyebrow: { zh: 文件传输 · 原生 Mac · 开发中, en: File transfer · Native Mac · In development }
   title: { zh: "文件两端，\n尽在掌握。", en: "Two sides.\nOne clear workspace." }
   lead:
-    zh: "在一个原生窗口中浏览本地与远程文件，掌握连接与传输状态。\n从 FTP / SFTP 核心开始，逐步完成云存储、目录同步与编辑工作流。"
-    en: "Browse local and remote files in one native window, with clear connection and transfer status.\nStarting with FTP / SFTP, then building out cloud storage, folder sync and editing workflows."
+    zh: "在一个原生窗口中浏览本地与远程文件，掌握连接与传输状态。\n开发候选已加入 S3 前缀浏览、目录同步与文本编辑；各协议的完整工作流仍在开发和验收。"
+    en: "Browse local and remote files in one native window, with clear connection and transfer status.\nThe development candidate includes S3 prefix browsing, folder sync and text editing; complete workflows for each protocol are still in development and validation."
   requirements: { zh: Apple 芯片 Mac · macOS 26.0+, en: Apple silicon Mac · macOS 26.0+ }
 features:
   eyebrow: { zh: 开发方向, en: Development goals }
@@ -34,18 +34,43 @@ features:
     - kicker: { zh: 浏览, en: Browse }
       title: { zh: 本地与远程双栏, en: Local and remote, side by side }
       body:
-        zh: 文件列表、路径导航与系统快捷键，结合原生工具栏和 Liquid Glass 操作控件。
-        en: File lists, path navigation and keyboard shortcuts with native toolbars and Liquid Glass controls.
+        zh: 列表与图标浏览、路径导航和系统快捷键。列视图已进入开发候选，鼠标、键盘及拖放仍在验收；三种视图沿用统一的原生控件与 Liquid Glass 操作区。
+        en: List and icon browsing, path navigation and keyboard shortcuts. Column browsing is in the development candidate, with mouse, keyboard and drag-and-drop acceptance still pending. All views share native controls and Liquid Glass actions.
     - kicker: { zh: 传输, en: Transfer }
       title: { zh: 可靠传输与可见进度, en: Reliable transfers and visible progress }
       body:
-        zh: 正在构建 FTP / FTPS / SFTP、任务队列、冲突处理与恢复能力；完成校验后才将文件标记为成功。
-        en: Building FTP / FTPS / SFTP support, a task queue, conflict handling and recovery. Files are only marked successful after completion checks.
+        zh: 开发候选提供 FTP / FTPS / SFTP 和 WebDAV（HTTP、HTTPS）、任务队列与冲突处理。单文件可保留进度、重启后核对恢复；WebDAV 下载要求服务器支持 Range，上传须明确选择从头上传。目录任务恢复与完整云服务仍在开发。
+        en: The development candidate includes FTP / FTPS / SFTP and WebDAV (HTTP, HTTPS), a task queue and conflict handling. Single-file progress can be retained and verified after restart. WebDAV downloads require server Range support; uploads require an explicit restart. Folder-job recovery and the full cloud service range remain in development.
+    - kicker: { zh: 云存储, en: Cloud storage }
+      title: { zh: S3 原生文件工作流, en: Native S3 file workflows }
+      body:
+        zh: 开发候选支持前缀浏览、文件与递归目录队列传输、空目录、整体进度和覆盖 / 跳过 / 保留两份。已接入快速查看、UTF-8 编辑和单向 / 双向同步，核对内容与原对象版本，编辑冲突保留草稿。S3 镜像删除不可执行；完整界面矩阵、重启恢复及 AWS / R2 实际服务兼容性仍待完成。
+        en: The development candidate supports prefix browsing, queued file and recursive folder transfers, empty folders, overall progress and overwrite / skip / keep-both choices. Preview, UTF-8 editing and one-way / two-way sync are integrated, with content and original object-version checks and draft preservation on editing conflicts. S3 mirror deletions cannot run. Full UI acceptance, restart recovery and actual AWS / R2 compatibility remain pending.
     - kicker: { zh: 隐私, en: Privacy }
       title: { zh: 凭据留在系统钥匙串, en: Credentials in system Keychain }
       body:
-        zh: 连接配置保存在本地，密码与口令由 Keychain 管理。SFTP 核对主机密钥，TLS 验证证书。
-        en: Local connection profiles with passwords and passphrases in Keychain. SFTP verifies host keys and TLS validates certificates.
+        zh: 连接配置保存在本地，密码、口令及用户选择保存的 S3 密钥 / 令牌由 Keychain 管理。开发候选提供 SFTP 密码、私钥文件与系统 SSH agent 选择，可选读取本机 SSH 主机别名、用户名、端口和私钥配置，核对实际服务器指纹；TLS 验证证书。自动认证、完整 SSH 配置与界面验收仍待完成。
+        en: Local profiles keep passwords, passphrases and optionally saved S3 keys / tokens in Keychain. The development candidate offers SFTP password, key-file and system SSH agent choices, plus optional local SSH host aliases, usernames, ports and key-file settings with actual server fingerprint verification. TLS validates certificates. Automatic authentication, full SSH configuration and UI acceptance remain pending.
+    - kicker: { zh: 同步, en: Sync }
+      title: { zh: 看清差异，再决定同步, en: Review differences before syncing }
+      body:
+        zh: 开发候选已加入本地、已连接服务器与 S3 目录的单向、双向差异预览，逐项选择方向与操作。预览后文件变化会要求重新比较。其他协议镜像删除默认不选中；S3 镜像删除仅列出不可执行项。
+        en: The development candidate includes one-way and two-way previews across local folders, connected servers and S3 prefixes, with per-item direction and action choices. Changed files require a new preview. Mirror deletions start unchecked for other protocols; S3 mirror deletions are listed but cannot run.
+    - kicker: { zh: 编辑, en: Edit }
+      title: { zh: 原生编辑，保存后回传, en: Native editing and save-back }
+      body:
+        zh: 开发候选支持本地与远程 UTF-8 文本的原生编辑，也可选择本机编辑器，保存后自动回传。检测到原文件内容变化时保留草稿；其他编码、草稿恢复与完整编辑器兼容性仍在开发。
+        en: The development candidate supports native editing of local and remote UTF-8 text, or a chosen local editor with automatic save-back. Detected source changes preserve the draft; other encodings, draft recovery and broader editor compatibility remain in development.
+    - kicker: { zh: 权限, en: Permissions }
+      title: { zh: 看清权限，明确应用, en: Review permissions before applying }
+      body:
+        zh: 开发候选提供本地及 FTP / FTPS / SFTP 的 Unix 权限编辑，可选递归应用到文件和文件夹。先扫描范围、检查变化，再写入核对；包括隐藏项目、跳过符号链接，停止保留已完成修改。所有者 / 组编辑及完整界面验收仍待完成。
+        en: The development candidate edits Unix permissions for local and FTP / FTPS / SFTP items, with optional recursive application to files and folders. It scans the scope, checks changes and verifies each write, including hidden items and skipping symbolic links. Stopping keeps completed changes. Ownership editing and full UI acceptance remain pending.
+    - kicker: { zh: 命名, en: Rename }
+      title: { zh: 核对新名称，再批量重命名, en: Review names before batch renaming }
+      body:
+        zh: 开发候选提供本地及 FTP / FTPS / SFTP / WebDAV 的文字替换、前后缀和名称编号，逐项预览与排除冲突。停止保留已完成修改及未核对名称；S3 改名、重启恢复与完整界面验收仍待完成。
+        en: The development candidate offers text replacement, prefixes, suffixes and numbering for local and FTP / FTPS / SFTP / WebDAV items, with per-item previews and exclusions. Stopping retains completed changes and unverified names. S3 renaming, restart recovery and full UI acceptance remain pending.
 faq:
   eyebrow: FAQ
   title: { zh: 常见问题, en: Questions }
@@ -53,8 +78,10 @@ faq:
   items:
     - q: { zh: 现在可以下载使用吗？, en: Can I download it now? }
       a: { zh: 目前处于开发阶段，尚未发布安装包。源码与进度会在 GitHub 仓库中更新。, en: It is in development and no installer has been released. Source and progress will be available on GitHub. }
-    - q: { zh: 与 ApexTerm 有什么不同？, en: How does it differ from ApexTerm? }
-      a: { zh: ApexTerm 专注 SSH 终端与运维；AetherTransfer 专注文件浏览、批量传输、任务管理与目录同步。, en: ApexTerm focuses on SSH terminals and operations. AetherTransfer focuses on file browsing, batch transfers, task management and folder sync. }
+    - q: { zh: 与 AetherTerm 有什么不同？, en: How does it differ from AetherTerm? }
+      a: { zh: AetherTerm 专注 SSH 终端与运维；AetherTransfer 专注文件浏览、批量传输、任务管理与目录同步。, en: AetherTerm focuses on SSH terminals and operations. AetherTransfer focuses on file browsing, batch transfers, task management and folder sync. }
+    - q: { zh: 界面支持哪些语言和外观？, en: Which languages and appearances are available? }
+      a: { zh: 开发候选提供跟随系统、简体中文与 English，并支持系统浅深色外观。中英文共用原生布局与交互，文件名和路径保持原样；完整窗口与无障碍矩阵仍在验收。, en: "The development candidate offers system language, Simplified Chinese and English, with system light and dark appearances. Both languages share native layouts and interactions while preserving file names and paths. The full window and accessibility matrix is still being validated." }
     - q: { zh: 是否已经支持全部云服务？, en: Are all cloud services supported already? }
       a: { zh: 还没有。完整目标包含多种云服务，但每一种都需要独立实现与真实验证，未来版本会明确列出支持范围。, en: Not yet. The goal includes multiple cloud services, each requiring its own implementation and real validation. Future releases will specify actual support. }
 cta:
