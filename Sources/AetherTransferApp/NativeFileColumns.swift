@@ -246,8 +246,7 @@ struct NativeFileColumns: NSViewRepresentable {
         empty.alignment = .center; empty.setAccessibilityElement(false)
         scroll.hasVerticalScroller = true; scroll.hasHorizontalScroller = false; scroll.autohidesScrollers = true
         scroll.borderType = .noBorder
-        table.style = .inset; table.rowHeight = InterfaceStyle.listRowHeight; table.usesAutomaticRowHeights = false
-        table.usesAlternatingRowBackgroundColors = false; table.allowsMultipleSelection = true; table.allowsEmptySelection = true
+        InterfaceStyle.configure(table); table.allowsMultipleSelection = true; table.allowsEmptySelection = true
         table.headerView = nil; table.columnAutoresizingStyle = .firstColumnOnlyAutoresizingStyle
         table.autoresizingMask = [.width]; table.intercellSpacing = NSSize(width: 6, height: 2)
         let name = NSTableColumn(identifier: .init("name")); name.width = InterfaceStyle.columnWidth; name.minWidth = 120

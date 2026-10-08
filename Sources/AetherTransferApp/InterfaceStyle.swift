@@ -16,6 +16,7 @@ enum InterfaceStyle {
     static let renameWidth: CGFloat = 900
     static let actionMinimumHeight: CGFloat = 32
     static let statusMinimumHeight: CGFloat = 36
+    static let feedbackMaximumHeight: CGFloat = 112
     static let groupInset: CGFloat = 8
     static let cornerRadius: CGFloat = 10
     static let listRowHeight: CGFloat = 28
@@ -23,6 +24,13 @@ enum InterfaceStyle {
     static let paneInset: CGFloat = 12
     static let fileSymbolSize: CGFloat = 14
     static let tabTransition: Double = 0.18
+    @MainActor static let listFont = NSFont.systemFont(ofSize: NSFont.systemFontSize)
+    @MainActor static func configure(_ table: NSTableView) {
+        table.style = .inset
+        table.rowHeight = listRowHeight
+        table.usesAutomaticRowHeights = false
+        table.usesAlternatingRowBackgroundColors = false
+    }
 }
 
 /// A fixed action area shared by sheets. The scrolling body owns its height;
@@ -33,6 +41,39 @@ struct SheetActions<Content: View>: View {
         HStack(spacing: InterfaceStyle.fieldGap) { content }
             .frame(minHeight: InterfaceStyle.actionMinimumHeight)
             .padding(InterfaceStyle.pageInset)
+    }
+}
+
+/// Keep guidance beside the actions. Long server errors remain readable in a
+/// bounded scroll area instead of pushing the primary action out of the sheet.
+struct SheetFeedback<Content: View>: View {
+    @ViewBuilder let content: Content
+    var body: some View {
+        ViewThatFits(in: .vertical) {
+            messages.fixedSize(horizontal: false, vertical: true)
+            ScrollView { messages }.scrollBounceBehavior(.basedOnSize)
+        }
+        .frame(maxHeight: InterfaceStyle.feedbackMaximumHeight)
+        .padding(.horizontal, InterfaceStyle.pageInset)
+        .padding(.vertical, InterfaceStyle.fieldGap)
+    }
+    private var messages: some View {
+        VStack(alignment: .leading, spacing: 8) { content }
+            .frame(maxWidth: .infinity, alignment: .leading)
+    }
+}
+
+/// Automatic browser focus is only a fallback. Never replace a field editor,
+/// a keyboard-focused control, or the responder of an attached/modal sheet.
+@MainActor enum BrowserInitialFocus {
+    static func request(_ view: NSView) -> Bool {
+        guard let window = view.window, window.isKeyWindow, !window.isSheet,
+              window.attachedSheet == nil, NSApp.modalWindow == nil,
+              !view.isHiddenOrHasHiddenAncestor, view.acceptsFirstResponder else { return false }
+        if let responder = window.firstResponder,
+           responder !== window, responder !== window.contentView,
+           !(responder is BrowserTable), !(responder is BrowserIconGrid) { return false }
+        return window.makeFirstResponder(view) && window.firstResponder === view
     }
 }
 

@@ -83,7 +83,7 @@ struct RecoveryView: View {
                     }.padding(.horizontal, InterfaceStyle.pageInset)
                 }
             }
-            if let error { InterfaceMessage(text: error).padding(InterfaceStyle.pageInset) }
+            if let error { SheetFeedback { InterfaceMessage(text: error) } }
             Divider()
             SheetActions {
                 SupportingText(L10n.text("保留的数据会占用磁盘空间；丢弃进度会清理此任务的部分文件。"))

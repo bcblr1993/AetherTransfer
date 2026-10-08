@@ -19,8 +19,7 @@ struct NativeFileTable: NSViewRepresentable {
         scroll.hasVerticalScroller = true; scroll.hasHorizontalScroller = false
         scroll.autohidesScrollers = true; scroll.borderType = .noBorder
         let table = BrowserTable()
-        table.style = .inset; table.rowHeight = InterfaceStyle.listRowHeight; table.usesAutomaticRowHeights = false
-        table.usesAlternatingRowBackgroundColors = false; table.allowsMultipleSelection = true
+        InterfaceStyle.configure(table); table.allowsMultipleSelection = true
         table.allowsEmptySelection = true; table.columnAutoresizingStyle = .firstColumnOnlyAutoresizingStyle
         table.autoresizingMask = [.width]; table.intercellSpacing = NSSize(width: 6, height: 2)
         for (key, title, width) in [("name", L10n.text("名称"), 250.0), ("size", L10n.text("大小"), 90.0), ("modified", L10n.text("修改日期"), 140.0)] {
@@ -132,7 +131,7 @@ struct NativeFileTable: NSViewRepresentable {
             if name { return FileNameCell(identifier: identifier) }
             let cell = NSTableCellView(); cell.identifier = identifier
             let text = NSTextField(labelWithString: "")
-            text.font = .systemFont(ofSize: NSFont.systemFontSize)
+            text.font = InterfaceStyle.listFont
             text.textColor = name ? .labelColor : .secondaryLabelColor
             text.lineBreakMode = name ? .byTruncatingMiddle : .byTruncatingTail
             text.translatesAutoresizingMaskIntoConstraints = false
@@ -190,13 +189,13 @@ struct NativeFileTable: NSViewRepresentable {
     var moveRight: (() -> Void)?
     private var initialFocusPending = true
     func focusIfNeeded() {
-        guard initialFocusPending, isEnabled, let window, initialFocusRequested?() == true else { return }
-        initialFocusPending = false; window.makeFirstResponder(self)
+        guard initialFocusPending, isEnabled, initialFocusRequested?() == true else { return }
+        if BrowserInitialFocus.request(self) { initialFocusPending = false }
     }
     override func viewDidMoveToWindow() { super.viewDidMoveToWindow(); focusIfNeeded() }
     override func becomeFirstResponder() -> Bool {
         let result = super.becomeFirstResponder()
-        if result { focused?() }
+        if result { initialFocusPending = false; focused?() }
         return result
     }
     override func menu(for event: NSEvent) -> NSMenu? { menuProvider?(event) }

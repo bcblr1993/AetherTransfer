@@ -13,8 +13,8 @@ struct NativeSyncTable: NSViewRepresentable {
     func makeCoordinator() -> Coordinator { Coordinator(self) }
     func makeNSView(context: Context) -> NSScrollView {
         let scroll = NSScrollView(); scroll.hasVerticalScroller = true; scroll.autohidesScrollers = true
-        let table = NSTableView(); table.style = .inset; table.rowHeight = InterfaceStyle.listRowHeight; table.usesAutomaticRowHeights = false
-        table.usesAlternatingRowBackgroundColors = true; table.columnAutoresizingStyle = .lastColumnOnlyAutoresizingStyle
+        let table = NSTableView(); InterfaceStyle.configure(table)
+        table.columnAutoresizingStyle = .lastColumnOnlyAutoresizingStyle
         table.allowsEmptySelection = true
         for (id, title, width) in [("check", L10n.text("执行"), 42.0), ("path", L10n.text("相对路径"), 370.0), ("action", L10n.text("操作"), 190.0), ("sizes", L10n.text("左侧 / 右侧大小"), 200.0)] {
             let column = NSTableColumn(identifier: NSUserInterfaceItemIdentifier(id))
@@ -119,7 +119,7 @@ struct NativeSyncTable: NSViewRepresentable {
         private func textCell(_ id: NSUserInterfaceItemIdentifier) -> NSTableCellView {
             let cell = NSTableCellView(); cell.identifier = id
             let text = NSTextField(labelWithString: ""); text.translatesAutoresizingMaskIntoConstraints = false
-            text.font = .systemFont(ofSize: 12); text.lineBreakMode = .byTruncatingMiddle
+            text.font = InterfaceStyle.listFont; text.lineBreakMode = .byTruncatingMiddle
             cell.addSubview(text); cell.textField = text
             NSLayoutConstraint.activate([text.leadingAnchor.constraint(equalTo: cell.leadingAnchor, constant: 4),
                                          text.trailingAnchor.constraint(equalTo: cell.trailingAnchor, constant: -4),

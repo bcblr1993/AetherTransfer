@@ -190,13 +190,14 @@ struct NativeFileIcons: NSViewRepresentable {
     var initialFocusRequested: (() -> Bool)?
     private var initialFocusPending = true
     func focusIfNeeded() {
-        guard initialFocusPending, isEnabled, let window, initialFocusRequested?() == true else { return }
-        initialFocusPending = false; window.makeFirstResponder(self)
+        guard initialFocusPending, isEnabled, initialFocusRequested?() == true else { return }
+        if BrowserInitialFocus.request(self) { initialFocusPending = false }
     }
     override func viewDidMoveToWindow() { super.viewDidMoveToWindow(); focusIfNeeded() }
     override func becomeFirstResponder() -> Bool {
         guard isEnabled else { return false }
-        let result = super.becomeFirstResponder(); if result { focused?() }; return result
+        let result = super.becomeFirstResponder()
+        if result { initialFocusPending = false; focused?() }; return result
     }
     override func menu(for event: NSEvent) -> NSMenu? { menuProvider?(event) }
     override func mouseDown(with event: NSEvent) {

@@ -9,7 +9,7 @@ import AetherTransferCore
         super.init(frame: .zero)
         self.identifier = identifier
         let text = NSTextField(labelWithString: "")
-        text.font = .systemFont(ofSize: NSFont.systemFontSize)
+        text.font = InterfaceStyle.listFont
         text.textColor = .labelColor; text.lineBreakMode = .byTruncatingMiddle
         text.translatesAutoresizingMaskIntoConstraints = false
         addSubview(text); textField = text

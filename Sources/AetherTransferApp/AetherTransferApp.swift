@@ -487,6 +487,7 @@ struct ConnectionView: View {
     // invalidate every field while the native sheet is presenting or editing.
     let workspace: Workspace
     @State private var profile: ServerProfile
+    @State private var portText: String
     @State private var password = ""
     @State private var passphrase = ""
     @State private var remember = false
@@ -503,6 +504,7 @@ struct ConnectionView: View {
     init(workspace: Workspace, initial: ServerProfile = ServerProfile(), editing: Bool = false, loadSaved: Bool = false) {
         self.workspace = workspace; self.editing = editing; self.loadSaved = loadSaved
         _profile = State(initialValue: initial)
+        _portText = State(initialValue: String(initial.port))
     }
     var body: some View {
         let _ = interfaceLocale
@@ -530,12 +532,18 @@ struct ConnectionView: View {
                                 inputRow(L10n.text("端口")) {
                                     VStack(alignment: .leading, spacing: InterfaceStyle.fieldGap) {
                                         Toggle(L10n.text("使用配置中的端口"), isOn: Binding(get: { profile.sshUseConfiguredPort != false }, set: { profile.sshUseConfiguredPort = $0 }))
-                                        if profile.sshUseConfiguredPort == false { TextField(L10n.text("端口"), value: $profile.port, format: .number.grouping(.never)).labelsHidden() }
+                                        if profile.sshUseConfiguredPort == false { portField }
                                     }
                                 }
                             } else {
-                                inputRow(L10n.text("端口")) { TextField(L10n.text("端口"), value: $profile.port, format: .number.grouping(.never)).labelsHidden() }
+                                inputRow(L10n.text("端口")) { portField }
                             }
+                        }.padding(InterfaceStyle.groupInset)
+                    } label: {
+                        Text(L10n.text("连接信息")).font(.headline)
+                    }
+                    GroupBox {
+                        VStack(alignment: .leading, spacing: InterfaceStyle.fieldGap) {
                             if profile.protocolKind == .s3 {
                                 inputRow(L10n.text("存储桶")) { TextField(L10n.text("存储桶"), text: Binding(get: { profile.s3Bucket ?? "" }, set: { profile.s3Bucket = $0 }), prompt: Text(L10n.text("存储桶名称"))).labelsHidden() }
                                 inputRow(L10n.text("区域")) { TextField(L10n.text("区域"), text: Binding(get: { profile.s3Region ?? "us-east-1" }, set: { profile.s3Region = $0 })).labelsHidden() }
@@ -576,7 +584,7 @@ struct ConnectionView: View {
                             }
                         }.padding(InterfaceStyle.groupInset)
                     } label: {
-                        Text(L10n.text("连接信息")).font(.headline)
+                        Text(L10n.text("认证与目录")).font(.headline)
                     }
                     GroupBox {
                         VStack(alignment: .leading, spacing: 10) {
@@ -597,7 +605,6 @@ struct ConnectionView: View {
                                 SupportingText(L10n.text("使用 HTTPS 路径式端点；服务器地址仅填主机名。R2 区域通常填 auto。支持前缀浏览、文件和目录传输以及对象删除；重启续传正在适配。"))
                                 SupportingText(L10n.text("自定义 CA 仍验证证书和服务器名称；留空时使用应用自带的公共根证书。"))
                             }
-                            if let error { InterfaceMessage(text: error) }
                         }.padding(InterfaceStyle.groupInset)
                     } label: {
                         Text(L10n.text("连接设置")).font(.headline)
@@ -605,11 +612,20 @@ struct ConnectionView: View {
                 }.padding(InterfaceStyle.pageInset)
             }.disabled(saving)
             Divider()
+            if saving || error != nil || instruction != nil {
+                SheetFeedback {
+                    if saving {
+                        ProgressView(editing ? L10n.text("正在保存连接…") : L10n.text("正在准备连接…")).controlSize(.small)
+                    } else if let error { InterfaceMessage(text: error) }
+                    else if let instruction { SupportingText(instruction) }
+                }
+                Divider()
+            }
             SheetActions {
                 Button(L10n.text("取消")) { dismiss() }.keyboardShortcut(.cancelAction).disabled(saving)
                 Spacer()
-                if saving { ProgressView().controlSize(.small) }
                 Button(editing ? L10n.text("保存") : L10n.text("连接")) {
+                    guard canSubmit else { return }
                     saving = true; error = nil
                     Task {
                         defer { saving = false }
@@ -624,7 +640,7 @@ struct ConnectionView: View {
                         } catch { self.error = error.localizedDescription }
                     }
                 }.buttonStyle(.glassProminent).keyboardShortcut(.defaultAction)
-                    .disabled(saving || (try? profile.validate()) == nil || (profile.protocolKind == .s3 && (!editing || remember) && (accessKey.isEmpty || secretKey.isEmpty)))
+                    .disabled(!canSubmit)
             }
         }.frame(width: InterfaceStyle.connectionWidth, height: InterfaceStyle.connectionHeight)
         .onAppear { focusedField = editing ? .name : .host }
@@ -655,11 +671,47 @@ struct ConnectionView: View {
         }
         .onChange(of: profile.protocolKind) { old, kind in
             profile.port = kind.defaultPort
+            portText = String(kind.defaultPort)
             password = ""; passphrase = ""; accessKey = ""; secretKey = ""; sessionToken = ""; remember = false
             if kind == .s3 { profile.initialPath = "" }
             else if old == .s3 { profile.initialPath = "/" }
         }
+        .onChange(of: profile) { _, _ in if !saving { error = nil } }
+        .onChange(of: portText) { _, _ in if !saving { error = nil } }
+        .onChange(of: remember) { _, _ in if !saving { error = nil } }
+        .onChange(of: [password, passphrase, accessKey, secretKey, sessionToken]) { _, _ in if !saving { error = nil } }
         .interactiveDismissDisabled(saving)
+    }
+    private var portField: some View {
+        TextField(L10n.text("端口"), text: Binding(get: { portText }, set: {
+            portText = $0; profile.port = Int($0) ?? 0
+        }), prompt: Text(String(profile.protocolKind.defaultPort)))
+        .labelsHidden()
+    }
+    private var canSubmit: Bool { !saving && instruction == nil }
+    private var instruction: String? {
+        if profile.host.isEmpty { return L10n.text("填写服务器地址后继续设置认证信息。") }
+        let configuredSSH = profile.protocolKind == .sftp && profile.sshConfiguration == true
+        if (!configuredSSH || profile.sshUseConfiguredPort == false) && !(1...65535).contains(profile.port) {
+            return L10n.text("端口应为 1 至 65535 之间的整数。")
+        }
+        if profile.protocolKind == .s3 {
+            if (profile.s3Bucket ?? "").isEmpty { return L10n.text("填写存储桶名称。") }
+            if (profile.s3Region ?? "us-east-1").isEmpty { return L10n.text("填写存储区域；R2 通常使用 auto。") }
+        } else {
+            if profile.username.isEmpty && !configuredSSH { return L10n.text("填写服务器登录用户名。") }
+            if profile.protocolKind == .sftp && profile.effectiveSSHAuthentication == .privateKey && profile.privateKeyPath.isEmpty && !configuredSSH {
+                return L10n.text("选择 SSH 私钥文件。")
+            }
+        }
+        do {
+            try profile.validate()
+            if profile.protocolKind == .s3 && (!editing || remember) {
+                if accessKey.isEmpty || secretKey.isEmpty { return L10n.text("填写 Access Key 和 Secret Key。") }
+                try S3Credentials(accessKey: accessKey, secretKey: secretKey, sessionToken: sessionToken).validate()
+            }
+        } catch { return error.localizedDescription }
+        return nil
     }
     private func inputRow<Content: View>(_ title: String, @ViewBuilder content: () -> Content) -> some View {
         FormFieldRow(title: title, content: content)
