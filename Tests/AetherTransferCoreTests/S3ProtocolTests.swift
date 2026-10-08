@@ -132,8 +132,14 @@ private final class S3TreeProgressRecorder: @unchecked Sendable {
         for _ in 0..<120 {
             let current = Set(try fm.contentsOfDirectory(at: temporary, includingPropertiesForKeys: nil))
             for candidate in current.subtracting(before) where candidate.lastPathComponent.hasPrefix("aethertransfer-edit-") {
-                let files = (try? fm.contentsOfDirectory(at: candidate.appendingPathComponent("work"), includingPropertiesForKeys: [.fileSizeKey])) ?? []
-                if files.contains(where: { $0.pathExtension == "part" && ((try? $0.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0) > 0 }) {
+                // S3 downloads own a nested staging directory; legacy protocols use a sibling .part file.
+                let files = fm.enumerator(at: candidate.appendingPathComponent("work"),
+                                          includingPropertiesForKeys: [.fileSizeKey, .isRegularFileKey])?.allObjects as? [URL] ?? []
+                if files.contains(where: {
+                    guard let info = try? $0.resourceValues(forKeys: [.fileSizeKey, .isRegularFileKey]),
+                          info.isRegularFile == true, let size = info.fileSize else { return false }
+                    return size > 0 && size < bytes.count
+                }) {
                     pending = candidate; break
                 }
             }
