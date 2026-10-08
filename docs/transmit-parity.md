@@ -26,6 +26,8 @@
 
 权限工作流已进入所选项目及可选递归范围的开发候选，本地／FTP／FTPS／SFTP 共用双语弹窗。先扫描、全范围重查、跳过符号链接，再对子项和父目录依次应用并核对。所有者／组、ACL、时间戳、自动规则与实际窗口验收仍待完成；协议通过不代表完整元数据或全部 Transmit 对齐完成，见 `file-permissions.md`。
 
+SFTP 已接入显式密码／私钥文件／SSH agent 选择，各方式不隐式回退，保留主机信任与旧收藏兼容。Transmit 的完整自动认证顺序、SSH config、默认密钥、ProxyCommand／跳板机、OTP 和密钥管理继续保持待办；agent 的真实服务器与 GUI 验收须另行完成，见 `ssh-authentication.md`。
+
 参考：
 - https://help.panic.com/transmit/transmit5/features/
 - https://help.panic.com/transmit/transmit5/protocols/

@@ -205,8 +205,7 @@ struct ActivityItem: Identifiable {
             do {
                 let credentials = try await Task.detached { try CredentialStore.load(profile: profile) }.value
                 guard generation == authenticationGeneration else { return }
-                let missing = profile.protocolKind == .s3 ? credentials.accessKey.isEmpty || credentials.secretKey.isEmpty
-                    : credentials.password.isEmpty && profile.privateKeyPath.isEmpty
+                let missing = credentials.needsPrompt(for: profile)
                 if missing { connectionPrompt = profile } else { connect(profile, credentials: credentials) }
             } catch { self.error = error.localizedDescription }
         }
@@ -216,7 +215,7 @@ struct ActivityItem: Identifiable {
         authenticationGeneration = UUID(); hostChallenge = nil
         browseTask?.cancel()
         connectionRevision = UUID()
-        connectedProfile = profile; self.credentials = credentials
+        connectedProfile = profile; self.credentials = credentials.forProfile(profile)
         selectedServer = profile.id; remotePath = profile.protocolKind == .s3 ? profile.initialPath : RemotePath.normalize(profile.initialPath)
         remoteListingPath = remotePath
         remoteFiles = []; remoteRevision = UUID(); connecting = true

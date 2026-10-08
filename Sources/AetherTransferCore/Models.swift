@@ -44,6 +44,7 @@ public struct ServerProfile: Identifiable, Codable, Hashable, Sendable {
     public var protocolKind: TransferProtocol
     public var initialPath: String
     public var privateKeyPath: String
+    public var sshAuthentication: SSHAuthentication?
     public var trustedHostKey: String?
     public var s3Bucket: String?
     public var s3Region: String?
@@ -52,19 +53,27 @@ public struct ServerProfile: Identifiable, Codable, Hashable, Sendable {
     public var retiredCredentialIDs: [UUID]?
     public init(id: UUID = UUID(), name: String = "", group: String = "", host: String = "", port: Int = 22,
                 username: String = "", protocolKind: TransferProtocol = .sftp, initialPath: String = "/",
-                privateKeyPath: String = "", trustedHostKey: String? = nil,
+                privateKeyPath: String = "", sshAuthentication: SSHAuthentication? = nil, trustedHostKey: String? = nil,
                 s3Bucket: String? = nil, s3Region: String? = nil, s3CertificateAuthorityPath: String? = nil) {
         self.id = id; self.name = name; self.group = group; self.host = host; self.port = port
         self.username = username; self.protocolKind = protocolKind; self.initialPath = initialPath
         self.privateKeyPath = privateKeyPath; self.trustedHostKey = trustedHostKey
+        self.sshAuthentication = sshAuthentication
         self.s3Bucket = s3Bucket; self.s3Region = s3Region; self.s3CertificateAuthorityPath = s3CertificateAuthorityPath
         self.credentialID = nil; self.retiredCredentialIDs = nil
     }
     public var s3Endpoint: S3Endpoint {
         S3Endpoint(host: host, port: port, bucket: s3Bucket ?? "", region: s3Region ?? "us-east-1")
     }
-    public var credentialIdentity: [String] {
+    public var effectiveSSHAuthentication: SSHAuthentication {
+        sshAuthentication ?? (privateKeyPath.isEmpty ? .password : .privateKey)
+    }
+    public var connectionIdentity: [String] {
         [host, String(port), protocolKind.rawValue, username, s3Bucket ?? "", s3Region ?? "", s3CertificateAuthorityPath ?? ""]
+    }
+    public var credentialIdentity: [String] {
+        connectionIdentity + (protocolKind == .sftp ? [effectiveSSHAuthentication.rawValue,
+            effectiveSSHAuthentication == .privateKey ? privateKeyPath : ""] : [])
     }
     public func validate() throws {
         if protocolKind == .s3 {
@@ -74,6 +83,9 @@ public struct ServerProfile: Identifiable, Codable, Hashable, Sendable {
         guard !host.isEmpty, !host.contains(where: { $0.isWhitespace }), !host.contains("/"),
               !host.contains("@"), !host.contains("?"), !host.contains("#"), (1...65535).contains(port),
               !username.isEmpty else { throw TransferError.invalidConnection }
+        if protocolKind == .sftp && effectiveSSHAuthentication == .privateKey {
+            guard !privateKeyPath.isEmpty, !privateKeyPath.utf8.contains(0) else { throw SSHAuthenticationError.privateKeyRequired }
+        }
         try RemotePath.validate(initialPath)
     }
     public func url(path: String, directory: Bool = false) throws -> String {

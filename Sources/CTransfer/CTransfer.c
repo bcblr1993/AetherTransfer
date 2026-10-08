@@ -196,6 +196,16 @@ ATRequest *at_create(const char *url, const char *user, const char *password,
     }
     return r;
 }
+int at_ssh_auth(ATRequest *r, int mechanism) {
+    long mask;
+    switch (mechanism) {
+        case 0: mask = CURLSSH_AUTH_PASSWORD; break;
+        case 1: mask = CURLSSH_AUTH_PUBLICKEY; break;
+        case 2: mask = CURLSSH_AUTH_AGENT; break;
+        default: return CURLE_BAD_FUNCTION_ARGUMENT;
+    }
+    return curl_easy_setopt(r->curl, CURLOPT_SSH_AUTH_TYPES, mask);
+}
 int at_http(ATRequest *r, const char *method, const char *headers, const char *body) {
     char *copy = strdup(headers);
     if (!copy) return CURLE_OUT_OF_MEMORY;

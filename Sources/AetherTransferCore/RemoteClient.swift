@@ -110,7 +110,7 @@ public struct RemoteClient: Sendable {
     public let certificateAuthority: URL?
     public init(profile: ServerProfile, credentials: Credentials, control: TransferControl? = nil, rateLimit: Int64 = 0,
                 certificateAuthority: URL? = nil) {
-        self.profile = profile; self.credentials = credentials; self.control = control; self.rateLimit = max(0, rateLimit)
+        self.profile = profile; self.credentials = credentials.forProfile(profile); self.control = control; self.rateLimit = max(0, rateLimit)
         self.certificateAuthority = certificateAuthority ?? Bundle.main.url(forResource: "cacert", withExtension: "pem")
     }
 
@@ -127,14 +127,22 @@ public struct RemoteClient: Sendable {
                          progress: @escaping @Sendable (TransferProgress) -> Void = { _ in }) async throws -> String {
         try Task.checkCancellation()
         let url = try profile.url(path: path, directory: directory)
+        if profile.protocolKind == .sftp && profile.effectiveSSHAuthentication == .agent {
+            guard let socket = ProcessInfo.processInfo.environment["SSH_AUTH_SOCK"], !socket.isEmpty,
+                  !socket.utf8.contains(0) else { throw SSHAuthenticationError.agentUnavailable }
+        }
+        let privateKey = profile.protocolKind == .sftp && profile.effectiveSSHAuthentication == .privateKey ? profile.privateKeyPath : ""
         let request = url.withCString { url in profile.username.withCString { user in credentials.password.withCString { password in
-            profile.privateKeyPath.withCString { key in credentials.passphrase.withCString { passphrase in
+            privateKey.withCString { key in credentials.passphrase.withCString { passphrase in
                 (profile.trustedHostKey ?? "").withCString { fingerprint in at_create(url, user, password, key, passphrase, fingerprint) }
             }}
         }}}
         guard let request else { throw TransferError.remote(L10n.text("无法创建传输连接。")) }
         let digest = mode == 5 ? NativeDigest() : nil
         let box = RequestBox(pointer: request, callback: progress, digest: digest)
+        if profile.protocolKind == .sftp {
+            guard at_ssh_auth(request, profile.effectiveSSHAuthentication.nativeValue) == 0 else { throw SSHAuthenticationError.configuration }
+        }
         if let digest {
             at_body_sink(request, { context, bytes, count in
                 guard let context else { return }

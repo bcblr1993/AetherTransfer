@@ -26,8 +26,8 @@ public struct ProfileStore: Sendable {
         var result = existing
         for var profile in imported {
             try profile.validate()
-            // An imported file must not authorize a new host or select a private key on this Mac.
-            profile.trustedHostKey = nil; profile.privateKeyPath = ""
+            // Importing must not authorize a host, local key or the local agent.
+            profile.trustedHostKey = nil; profile.privateKeyPath = ""; profile.sshAuthentication = nil
             profile.s3CertificateAuthorityPath = nil
             // An imported UUID must never select credentials already stored on this Mac.
             profile.credentialID = UUID(); profile.retiredCredentialIDs = nil
@@ -41,17 +41,22 @@ public struct ProfileStore: Sendable {
 public enum CredentialStore {
     private static let kinds = ["password", "passphrase", "s3-access", "s3-secret", "s3-session"]
     public static func save(_ credentials: Credentials, profile: ServerProfile, remember: Bool) throws {
+        let credentials = credentials.forProfile(profile)
         let values = profile.protocolKind == .s3
             ? ["s3-access": credentials.accessKey, "s3-secret": credentials.secretKey, "s3-session": credentials.sessionToken]
             : ["password": credentials.password, "passphrase": credentials.passphrase]
         for kind in kinds { try save(remember ? values[kind] ?? "" : "", id: profile.credentialID ?? profile.id, kind: kind) }
     }
     public static func load(profile: ServerProfile) throws -> Credentials {
+        if profile.protocolKind == .sftp && profile.effectiveSSHAuthentication == .agent { return Credentials() }
         let id = profile.credentialID ?? profile.id
         if profile.protocolKind == .s3 {
             return try Credentials(accessKey: load(id: id, kind: "s3-access"), secretKey: load(id: id, kind: "s3-secret"), sessionToken: load(id: id, kind: "s3-session"))
         }
-        return try Credentials(password: load(id: id), passphrase: load(id: id, kind: "passphrase"))
+        if profile.protocolKind == .sftp && profile.effectiveSSHAuthentication == .privateKey {
+            return try Credentials(passphrase: load(id: id, kind: "passphrase"))
+        }
+        return try Credentials(password: load(id: id))
     }
     public static func remove(id: UUID) throws { for kind in kinds { try save("", id: id, kind: kind) } }
     private static func query(_ id: UUID, kind: String) -> [String: Any] {

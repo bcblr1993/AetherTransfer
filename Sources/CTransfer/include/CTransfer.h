@@ -23,6 +23,8 @@ int at_tls(ATRequest *request, int required, const char *certificate_authority);
 int at_http(ATRequest *request, const char *method, const char *headers, const char *body);
 int at_s3(ATRequest *request, const char *method);
 int at_ftp_list_all(ATRequest *request);
+// 0 password, 1 private-key file, 2 agent; no fallback to another mechanism.
+int at_ssh_auth(ATRequest *request, int mechanism);
 // A multipart part reads this exact source-file slice; no whole-file buffer or copy.
 int at_upload_window(ATRequest *request, int64_t start, int64_t length);
 long at_response_code(ATRequest *request);

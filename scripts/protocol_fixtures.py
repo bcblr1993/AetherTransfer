@@ -1,5 +1,7 @@
 """Run Swift integration tests against disposable loopback FTP/SFTP/WebDAV servers."""
 import errno
+import hashlib
+from contextlib import contextmanager
 import logging
 import os
 from pathlib import Path
@@ -30,6 +32,35 @@ from cheroot.wsgi import Server as DAVServer
 from cheroot.server import HTTPConnection
 
 logging.disable(logging.CRITICAL)
+
+@contextmanager
+def isolated_ssh_agent(key):
+    # Short path stays below Darwin's Unix-domain socket limit. Never add a key
+    # to the user's agent or mutate the parent's SSH environment.
+    with tempfile.TemporaryDirectory(prefix='at-agent-', dir='/tmp') as directory:
+        folder = Path(directory)
+        socket_path = folder / 'agent.sock'
+        private_key = folder / 'key.pem'
+        key.write_private_key_file(str(private_key)); private_key.chmod(0o600)
+        process = subprocess.Popen(['/usr/bin/ssh-agent', '-D', '-a', str(socket_path)],
+                                   stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        try:
+            for _ in range(100):
+                if process.poll() is not None: raise RuntimeError('Owned SSH agent exited before setup')
+                if socket_path.exists(): break
+                threading.Event().wait(.05)
+            else: raise RuntimeError('Owned SSH agent socket was not created')
+            environment = os.environ.copy(); environment['SSH_AUTH_SOCK'] = str(socket_path)
+            environment.pop('SSH_AGENT_PID', None)
+            subprocess.run(['/usr/bin/ssh-add', '-q', str(private_key)], env=environment, check=True, timeout=10,
+                           stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            yield str(socket_path)
+        finally:
+            if process.poll() is None:
+                process.terminate()
+                try: process.wait(timeout=5)
+                except subprocess.TimeoutExpired: process.kill(); process.wait(timeout=5)
+    print('Owned SSH agent stopped; temporary socket and private key removed.', flush=True)
 
 class DAVConnection(HTTPConnection):
     def close(self):
@@ -100,12 +131,17 @@ class TLSWSGIServer(ThreadingMixIn, WSGIServer):
 
 class Authentication(paramiko.ServerInterface):
     accepted_key = None
+    auth_markers = None
     def check_auth_password(self, username, password):
-        return paramiko.AUTH_SUCCESSFUL if username == 'fixture' and password == 'fixture-only' else paramiko.AUTH_FAILED
+        return paramiko.AUTH_SUCCESSFUL if username in ('fixture', 'password-only') and password == 'fixture-only' else paramiko.AUTH_FAILED
     def get_allowed_auths(self, username):
-        return 'password,publickey'
+        return 'password' if username == 'password-only' else 'password,publickey'
     def check_auth_publickey(self, username, key):
-        return paramiko.AUTH_SUCCESSFUL if username == 'fixture' and key == self.accepted_key else paramiko.AUTH_FAILED
+        slow = username.startswith('agent-slow-') and key == self.accepted_key
+        if slow:
+            (self.auth_markers / hashlib.sha256(username.encode()).hexdigest()).touch()
+            threading.Event().wait(2)
+        return paramiko.AUTH_SUCCESSFUL if (username == 'fixture' or slow) and key == self.accepted_key else paramiko.AUTH_FAILED
     def check_channel_request(self, kind, channel_id):
         return paramiko.OPEN_SUCCEEDED if kind == 'session' else paramiko.OPEN_FAILED_ADMINISTRATIVELY_PROHIBITED
 
@@ -215,6 +251,8 @@ with tempfile.TemporaryDirectory(prefix='aethertransfer-fixture-') as directory:
     key = paramiko.RSAKey.generate(2048)
     client_key = paramiko.RSAKey.generate(2048)
     Authentication.accepted_key = client_key
+    Authentication.auth_markers = certificates / 'auth-markers'
+    Authentication.auth_markers.mkdir()
     client_key_file = certificates / 'client-key.pem'
     client_key.write_private_key_file(str(client_key_file), password='fixture-passphrase')
     client_key_file.chmod(0o600)
@@ -323,19 +361,29 @@ with tempfile.TemporaryDirectory(prefix='aethertransfer-fixture-') as directory:
     env.update(AT_FTP_PORT=str(ftp.socket.getsockname()[1]), AT_SFTP_PORT=str(listener.getsockname()[1]),
                AT_SFTP_KEY=key.get_base64(), AT_FTPES_PORT=str(ftpes.socket.getsockname()[1]),
                AT_FTPS_PORT=str(ftps.socket.getsockname()[1]), AT_TLS_CA=str(cert_file), AT_SFTP_PRIVATE_KEY=str(client_key_file),
+               AT_SFTP_AUTH_MARKERS=str(Authentication.auth_markers),
                AT_WEBDAV_PORT=str(dav_port), AT_WEBDAVS_PORT=str(dav_tls_port), AT_WEBDAV_DIGEST_PORT=str(dav_digest_port))
     try:
-        if '--serve' in sys.argv:
-            report = Path('reports/fixture.json')
-            report.parent.mkdir(exist_ok=True)
-            report.write_text(json.dumps({'ftp': int(env['AT_FTP_PORT']), 'sftp': int(env['AT_SFTP_PORT']), 'webdav': dav_port,
-                                         'webdavs': dav_tls_port, 'key': env['AT_SFTP_KEY'], 'root': str(root)}))
-            print('Disposable loopback protocol fixtures ready.', flush=True)
-            try: threading.Event().wait()
-            except KeyboardInterrupt: pass
-            result = None
-        else:
-            result = subprocess.run(['swift', 'test', '--filter', 'ProtocolIntegrationTests'], env=env)
+        with isolated_ssh_agent(client_key) as agent_socket:
+            env['SSH_AUTH_SOCK'] = agent_socket; env.pop('SSH_AGENT_PID', None)
+            env.pop('AT_SSH_AGENT_STOPPED', None)
+            if '--serve' in sys.argv:
+                report = Path('reports/fixture.json')
+                report.parent.mkdir(exist_ok=True)
+                report.write_text(json.dumps({'ftp': int(env['AT_FTP_PORT']), 'sftp': int(env['AT_SFTP_PORT']), 'webdav': dav_port,
+                                             'webdavs': dav_tls_port, 'key': env['AT_SFTP_KEY'], 'root': str(root)}))
+                print('Disposable loopback protocol fixtures ready.', flush=True)
+                try: threading.Event().wait()
+                except KeyboardInterrupt: pass
+                result = None
+            else:
+                result = subprocess.run(['swift', 'test', '--filter', 'ProtocolIntegrationTests'], env=env)
+        if result is not None and result.returncode == 0:
+            # A second process sees the now-removed socket. It must not fall back
+            # to the valid password or key file supplied by the test.
+            env['AT_SSH_AGENT_STOPPED'] = '1'
+            subprocess.run([sys.executable, 'scripts/clean_generated.py', 'swift'], check=True)
+            result = subprocess.run(['swift', 'test', '--filter', 'ProtocolIntegrationTests.testUnavailableSSHAgentNeverFallsBack'], env=env)
     finally:
         stopping.set(); ftp_thread.join(timeout=2)
         ftp.close_all(); ftpes.close_all(); ftps.close_all(); listener.close()

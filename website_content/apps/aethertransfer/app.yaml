@@ -49,8 +49,8 @@ features:
     - kicker: { zh: 隐私, en: Privacy }
       title: { zh: 凭据留在系统钥匙串, en: Credentials in system Keychain }
       body:
-        zh: 连接配置保存在本地，密码、口令及用户选择保存的 S3 密钥 / 令牌由 Keychain 管理。SFTP 核对主机密钥，TLS 验证证书。
-        en: Local connection profiles with passwords, passphrases and optionally saved S3 keys / tokens in Keychain. SFTP verifies host keys and TLS validates certificates.
+        zh: 连接配置保存在本地，密码、口令及用户选择保存的 S3 密钥 / 令牌由 Keychain 管理。开发候选提供 SFTP 密码、私钥文件与系统 SSH agent 选择，核对主机密钥；TLS 验证证书。自动 SSH 配置与完整界面仍待验收。
+        en: Local profiles keep passwords, passphrases and optionally saved S3 keys / tokens in Keychain. The development candidate offers SFTP password, key-file and system SSH agent choices with host-key verification. TLS validates certificates. Automatic SSH configuration and full UI acceptance remain pending.
     - kicker: { zh: 同步, en: Sync }
       title: { zh: 看清差异，再决定同步, en: Review differences before syncing }
       body:

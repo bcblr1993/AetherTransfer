@@ -504,12 +504,21 @@ struct ConnectionView: View {
                                     } }
                             } else {
                                 inputRow(L10n.text("用户名")) { TextField(L10n.text("用户名"), text: $profile.username, prompt: Text(L10n.text("登录用户名"))).labelsHidden() }
-                                inputRow(L10n.text("密码")) { SecureField(L10n.text("密码"), text: $password, prompt: Text(L10n.text("输入密码"))).labelsHidden() }
+                                if profile.protocolKind == .sftp {
+                                    inputRow(L10n.text("认证方式")) {
+                                        Picker(L10n.text("认证方式"), selection: Binding(get: { profile.effectiveSSHAuthentication }, set: { profile.sshAuthentication = $0 })) {
+                                            ForEach(SSHAuthentication.allCases, id: \.self) { Text($0.title).tag($0) }
+                                        }.labelsHidden()
+                                    }
+                                }
+                                if profile.protocolKind != .sftp || profile.effectiveSSHAuthentication == .password {
+                                    inputRow(L10n.text("密码")) { SecureField(L10n.text("密码"), text: $password, prompt: Text(L10n.text("输入密码"))).labelsHidden() }
+                                }
                                 inputRow(L10n.text("远程路径")) { TextField(L10n.text("远程路径"), text: $profile.initialPath).labelsHidden() }
                             }
-                            if profile.protocolKind == .sftp {
+                            if profile.protocolKind == .sftp && profile.effectiveSSHAuthentication == .privateKey {
                                 inputRow(L10n.text("SSH 私钥")) { HStack {
-                                        TextField(L10n.text("SSH 私钥"), text: $profile.privateKeyPath, prompt: Text(L10n.text("可选：私钥文件路径"))).labelsHidden()
+                                        TextField(L10n.text("SSH 私钥"), text: $profile.privateKeyPath, prompt: Text(L10n.text("私钥文件路径"))).labelsHidden()
                                         Button(L10n.text("选择…")) {
                                             let panel = NSOpenPanel(); panel.showsHiddenFiles = true
                                             if panel.runModal() == .OK { profile.privateKeyPath = panel.url?.path ?? "" }
@@ -524,7 +533,13 @@ struct ConnectionView: View {
                     GroupBox {
                         VStack(alignment: .leading, spacing: 10) {
                             if !editing { Toggle(L10n.text("保存服务器收藏"), isOn: $save) }
-                            Toggle(profile.protocolKind == .s3 ? L10n.text("将访问密钥 / 令牌保存到钥匙串") : L10n.text("将密码 / 口令保存到钥匙串"), isOn: $remember)
+                            if profile.protocolKind != .sftp || profile.effectiveSSHAuthentication != .agent {
+                                Toggle(profile.protocolKind == .s3 ? L10n.text("将访问密钥 / 令牌保存到钥匙串") : L10n.text("将密码 / 口令保存到钥匙串"), isOn: $remember)
+                            }
+                            if profile.protocolKind == .sftp && profile.effectiveSSHAuthentication == .agent {
+                                Text(L10n.text("使用系统 SSH agent 中已加载的密钥。认证失败时不会改用密码或私钥文件；仍须核对服务器指纹。"))
+                                    .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
+                            }
                             if profile.protocolKind == .ftp { Text(L10n.text("FTP 会以明文传输认证和文件内容。建议优先选择 SFTP 或 FTPS。")).font(.caption).foregroundStyle(.secondary) }
                             if profile.protocolKind == .webdav { Text(L10n.text("HTTP 会以明文传输认证和文件内容。建议优先选择 WebDAV · HTTPS。")).font(.caption).foregroundStyle(.secondary) }
                             if profile.protocolKind.isWebDAV { Text(L10n.text("填写服务器主机和 WebDAV 起始路径；如 /remote.php/dav/files/用户名/。HTTPS 会验证服务器证书。")).font(.caption).foregroundStyle(.secondary) }
@@ -579,6 +594,12 @@ struct ConnectionView: View {
             if (editing || loadSaved) && old != new {
                 password = ""; passphrase = ""; accessKey = ""; secretKey = ""; sessionToken = ""; remember = false
             }
+        }
+        .onChange(of: profile.effectiveSSHAuthentication) { old, new in
+            if old != new { password = ""; passphrase = ""; remember = false }
+        }
+        .onChange(of: profile.privateKeyPath) { old, new in
+            if old != new { passphrase = "" }
         }
         .onChange(of: profile.protocolKind) { old, kind in
             profile.port = kind.defaultPort

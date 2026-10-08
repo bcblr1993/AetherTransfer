@@ -11,7 +11,7 @@ public actor ProfileRepository {
         if incoming.protocolKind == .s3 && remember { try credentials.s3.validate() }
         var profile = incoming, profiles = try store.load()
         let previous = profiles.first(where: { $0.id == profile.id })
-        if let previous, previous.credentialIdentity != profile.credentialIdentity {
+        if let previous, previous.connectionIdentity != profile.connectionIdentity {
             profile.trustedHostKey = nil
         }
         let stagedID = UUID(); profile.credentialID = stagedID
