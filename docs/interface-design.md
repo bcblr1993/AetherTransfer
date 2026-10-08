@@ -58,4 +58,8 @@ AetherTransfer 的界面目标是原生、清晰、精致、紧凑。中文和�
 
 全部视觉矩阵、表单输入与动画门禁仍未完成。2026-10-08 19:59 的连接按钮操作使原生界面控制辅助进程再次崩溃，应用进程仍运行；崩溃栈是辅助进程的 `Array.remove(at:)`，不作为应用崩溃或动画结果。重置与重连未恢复，没有强制退出或覆盖运行包。验收停留在英文／浅色，原系统语言／系统外观尚待通过界面恢复。恢复控制并正常退出后继续验收；编译通过不能作为“好看、丝滑”的完成证明。
 
+23:07 后控制恢复，确认旧应用进程已不存在，从清理入口重新打包并实际打开 `a29ad86`。以上三组合表记录 `5a773be` 的实际结果；新包另完成中文浅色主窗口与设置的视觉检查，原文件名／路径、日期／大小、连续背景、辅助说明对比度均正常。已打开设置从英文切换到系统中文，再选简体中文，标题和正文同步更新；系统语言／系统外观一度恢复并核对，并发仍为 2、不限速。
+
+继续验收中文浅色连接加号时，23:11 的辅助进程发生 `EXC_BAD_ACCESS / SIGSEGV`，未获得可靠弹窗状态；App 仍运行，重置／重连失败。测试暂留简体中文／浅色，仍需恢复原来的系统／系统。当前包完整四组合、连接输入与动效、编辑／预览等窗口继续待验收，不将旧包的三组合当作当前整包通过。
+
 实现依据：[Apple 的 Liquid Glass 指南](https://developer.apple.com/documentation/swiftui/applying-liquid-glass-to-custom-views)、[显式本地化查找与 Locale](https://developer.apple.com/documentation/swift/string/init(localized:options:table:bundle:locale:comment:))、[ByteCountFormatStyle](https://developer.apple.com/documentation/foundation/bytecountformatstyle)。
