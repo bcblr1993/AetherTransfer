@@ -15,6 +15,6 @@
 - [ ] GitHub 仓库规范、CI、首版源码与可安装开发候选。
 - [ ] 官网双语产品页上线，内容与实际版本状态一致。
 
-同步、WebDAV、文本编辑与单文件续传已进入开发候选，范围与限制见 `synchronization.md`、`webdav.md`、`editing.md`、`resumable-transfers.md`。S3 已接入原生连接、前缀浏览和普通文件队列，并通过隔离 HTTPS 服务与本机主要界面流程检查；新增递归目录传输的完整协议和界面验收正在进行，范围见 `s3.md`。完整 S3 工作流及 AWS/R2 实际服务验收仍待完成。后续还包括完整同步规则/报告、完整编辑器兼容与状态恢复、ApexTerm 联动、iPhone。
+同步、WebDAV、文本编辑与单文件续传已进入开发候选，范围与限制见 `synchronization.md`、`webdav.md`、`editing.md`、`resumable-transfers.md`。S3 已接入原生连接、前缀浏览和普通文件队列，并通过隔离 HTTPS 服务与本机主要界面流程检查；递归目录传输已通过 22 项隔离 HTTPS 协议测试及本机上传／下载完整性验收，范围见 `s3.md`。完整 S3 工作流及 AWS/R2 实际服务验收仍待完成。后续还包括完整同步规则/报告、完整编辑器兼容与状态恢复、ApexTerm 联动、iPhone。
 
 正式公共发行需独立验证签名、公证、DMG、SHA-256 与公开下载；开发完成不等于已公开发行。
