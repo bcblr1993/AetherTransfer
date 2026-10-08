@@ -844,3 +844,88 @@ private final class S3SyncProgressRecorder: @unchecked Sendable {
         XCTAssertEqual(try FileManager.default.contentsOfDirectory(atPath: destination.path), ["file"])
     }
 }
+
+extension S3ProtocolTests {
+    func testPastePlanS3EncodedPrefixesHiddenEmptyMarkersAndETagChanges() async throws {
+        let remote = try client(), local = try folder(), anchor = "paste-raw-\(UUID())/"
+        let a = anchor + "中文 +#%/source/", b = anchor + "中文 +#%/target/"
+        defer { try? FileManager.default.removeItem(at: local) }
+        let seed = local.appendingPathComponent("seed"), proof = local.appendingPathComponent("proof")
+        for prefix in [a, b, a + "folder/", a + "folder/empty/", b + "folder/"] { try await remote.createPrefix(prefix) }
+        try Data("old".utf8).write(to: seed)
+        for key in [a + "folder/.hidden", a + "folder/file"] { try await remote.upload(seed, to: key) }
+        try Data().write(to: seed); try await remote.upload(seed, to: a + "folder/zero")
+        try Data("keep".utf8).write(to: seed)
+        for key in [b + "folder/file", b + "folder/extra"] { try await remote.upload(seed, to: key) }
+        let selection = [FilePasteInput(root: .s3(remote, a), name: "folder")]
+        let plan = try await FilePaste.preview(selection, destination: .s3(remote, b), move: true, policy: .overwrite)
+        XCTAssertTrue(plan.canApply); XCTAssertEqual(plan.destination.path, b)
+        XCTAssertEqual(plan.count, 5); XCTAssertEqual(plan.bytes, 6); XCTAssertEqual(plan.overwriteCount, 1)
+        try await FilePaste.validate(plan)
+        let targets = try await remote.list(prefix: b + "folder/")
+        XCTAssertEqual(Set(targets.map(\.key)), [b + "folder/file", b + "folder/extra"])
+        try await remote.download(b + "folder/file", to: proof)
+        XCTAssertEqual(try Data(contentsOf: proof), Data("keep".utf8))
+        let localPlan = try await FilePaste.preview(selection, destination: .local(local))
+        XCTAssertTrue(localPlan.canApply); try await FilePaste.validate(localPlan)
+        XCTAssertFalse(FileManager.default.fileExists(atPath: local.appendingPathComponent("folder").path))
+        try Data("new".utf8).write(to: seed); try await remote.upload(seed, to: a + "folder/.hidden", overwrite: true)
+        do { try await FilePaste.validate(plan); XCTFail("Same-size ETag change must invalidate") }
+        catch FilePasteError.changed { }
+        let second = try await FilePaste.preview(selection, destination: .s3(remote, b), policy: .overwrite)
+        try await remote.remove(a + "folder/empty/")
+        do { try await FilePaste.validate(second); XCTFail("Removed empty-folder marker must invalidate") }
+        catch FilePasteError.changed { }
+        for key in [a + "folder/.hidden", a + "folder/file", a + "folder/zero", b + "folder/file", b + "folder/extra", a + "folder/", b + "folder/", a, b] { try await remote.remove(key) }
+    }
+    func testPastePlanS3OverlapDuplicateVirtualPrefixLossAndHiddenArrival() async throws {
+        let remote = try client(), local = try folder(), a = "paste-source-\(UUID())/", b = "paste-target-\(UUID())/"
+        defer { try? FileManager.default.removeItem(at: local) }
+        let seed = local.appendingPathComponent("seed"); try Data("seed".utf8).write(to: seed)
+        try await remote.createPrefix(a); try await remote.createPrefix(b)
+        try await remote.upload(seed, to: a + "folder/sub/file")
+        let item = FilePasteInput(root: .s3(remote, a), name: "folder")
+        let overlap = try await FilePaste.preview([item], destination: .s3(remote, a + "folder/sub/"))
+        XCTAssertFalse(overlap.canApply); XCTAssertEqual(overlap.items[0].issue, .overlap)
+        let duplicate = try await FilePaste.preview([item], destination: .s3(remote, a), policy: .keepBoth)
+        XCTAssertTrue(duplicate.canApply); XCTAssertEqual(duplicate.items[0].destinationName, "folder (2)")
+        try await FilePaste.validate(duplicate)
+        let plan = try await FilePaste.preview([item], destination: .s3(remote, b))
+        try await remote.upload(seed, to: b + ".arrival")
+        do { try await FilePaste.validate(plan); XCTFail("Hidden target arrival must invalidate") }
+        catch FilePasteError.changed { }
+        try await remote.remove(b + ".arrival")
+        let virtual = try await FilePaste.preview([item], destination: .s3(remote, b))
+        try await remote.remove(a + "folder/sub/file")
+        do { try await FilePaste.validate(virtual); XCTFail("Lost virtual prefix must invalidate") }
+        catch FilePasteError.changed { }
+        try await remote.remove(a); try await remote.remove(b)
+    }
+    func testPastePlanS3MaximumDestinationKeyAndReservedSuffixFailureAreReadOnly() async throws {
+        let remote = try client(), local = try folder(), anchor = "paste-long-\(UUID())/"
+        defer { try? FileManager.default.removeItem(at: local) }
+        let name = String(repeating: "x", count: 240), seed = local.appendingPathComponent("seed")
+        let a = anchor + "source-a/", b = anchor + "source-b/"
+        let prefixSize = 1024 - name.utf8.count, remaining = prefixSize - anchor.utf8.count
+        let pieceSize = (remaining - 8) / 8
+        let prefix = anchor + (0..<8).map { index in
+            String(repeating: "d", count: index == 7 ? remaining - 7 * (pieceSize + 1) - 1 : pieceSize)
+        }.joined(separator: "/") + "/"
+        XCTAssertEqual(prefix.utf8.count + name.utf8.count, 1024)
+        try Data("seed".utf8).write(to: seed)
+        for value in [a, b, prefix] { try await remote.createPrefix(value) }
+        for value in [a, b] { try await remote.upload(seed, to: value + name) }
+        let selections = [FilePasteInput(root: .s3(remote, a), name: name), FilePasteInput(root: .s3(remote, b), name: name)]
+        let allowed = try await FilePaste.preview([selections[0]], destination: .s3(remote, prefix))
+        XCTAssertTrue(allowed.canApply); XCTAssertEqual(allowed.bytes, 4)
+        try await FilePaste.validate(allowed)
+        do { _ = try await FilePaste.preview(selections, destination: .s3(remote, prefix), policy: .keepBoth); XCTFail("Reserved suffix cannot exceed the destination key limit") }
+        catch TransferError.invalidPath { }
+        let objects = try await remote.list(prefix: prefix); XCTAssertTrue(objects.isEmpty)
+        for value in [a, b] {
+            let version = try await remote.fileVersion(value + name); XCTAssertEqual(version.size, 4)
+            try await remote.remove(value + name); try await remote.remove(value)
+        }
+        try await remote.remove(prefix)
+    }
+}

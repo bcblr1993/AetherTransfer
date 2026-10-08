@@ -4,6 +4,15 @@ import AetherTransferCore
 
 enum FileViewMode: Sendable, Hashable { case icons, list, columns }
 
+/// Plain paths only: no connection details, credentials, or file-transfer payload.
+@MainActor enum FilePathCopy {
+    @discardableResult static func write(_ entries: [FileEntry], to pasteboard: NSPasteboard = .general) -> Bool {
+        guard !entries.isEmpty else { return false }
+        pasteboard.clearContents()
+        return pasteboard.setString(entries.map { $0.s3Key ?? $0.path }.joined(separator: "\n"), forType: .string)
+    }
+}
+
 /// Commands observe the active workspace directly, so enabled states follow
 /// selection/loading changes as well as switching tabs.
 struct WorkspaceFileCommands: Commands {
@@ -53,6 +62,7 @@ struct WorkspaceFileCommands: Commands {
         if !entry.isDirectory && !entry.isSymbolicLink { add(L10n.text("编辑文本…"), #selector(editItem(_:))) }
         add(L10n.text("快速查看"), #selector(previewItem(_:)), enabled: !entry.isDirectory && !entry.isSymbolicLink)
         add(L10n.text("文件信息"), #selector(informationItem(_:)))
+        add(L10n.text("复制路径"), #selector(copyPaths), enabled: !selection.isEmpty)
         add(L10n.text("编辑权限…"), #selector(permissionItems), enabled: !workspace.permissionBusy && !selection.isEmpty &&
             !selection.contains(where: \.isSymbolicLink) && (!remote || workspace.connectedProfile?.protocolKind.supportsUnixPermissions == true))
         if !remote { add(L10n.text("上传"), #selector(uploadItems), enabled: workspace.canReceiveUpload) }
@@ -69,6 +79,7 @@ struct WorkspaceFileCommands: Commands {
     @objc private func editItem(_ sender: NSMenuItem) { if let entry = sender.representedObject as? FileEntry { workspace?.edit(entry, remote: remote) } }
     @objc private func previewItem(_ sender: NSMenuItem) { if let entry = sender.representedObject as? FileEntry { workspace?.preview(entry, remote: remote) } }
     @objc private func informationItem(_ sender: NSMenuItem) { workspace?.focusedRemote = remote; workspace?.showInspector = true }
+    @objc private func copyPaths() { FilePathCopy.write(selection) }
     @objc private func permissionItems() { workspace?.editPermissions(remote: remote) }
     @objc private func deleteItem(_ sender: NSMenuItem) { if let entry = sender.representedObject as? FileEntry { workspace?.delete(entry, remote: remote) } }
     @objc private func uploadItems() { workspace?.upload(selection) }

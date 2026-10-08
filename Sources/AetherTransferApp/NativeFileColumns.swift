@@ -88,6 +88,8 @@ struct NativeFileColumns: NSViewRepresentable {
             table.target = self; table.doubleAction = #selector(openDoubleClick)
             table.menuProvider = { [weak self] event in self?.menu(event) }
             table.openSelected = { [weak self] in self?.openSelection() }
+            table.copyEntries = { [weak self] in self?.copySelection() ?? [] }
+            table.hasCopySelection = { [weak self] in self?.canCopySelection == true }
             table.previewSelected = { [weak self] in
                 guard let self, self.view.table.isEnabled, let owner = self.owner else { return }
                 self.activate()
@@ -165,6 +167,16 @@ struct NativeFileColumns: NSViewRepresentable {
         }
         private var selectedIDs: Set<String> {
             Set(view.table.selectedRowIndexes.compactMap { column.files.indices.contains($0) ? column.files[$0].id : nil })
+        }
+        private var canCopySelection: Bool {
+            guard let owner, view.table.isEnabled, !updating,
+                  !(owner.parent.remote ? owner.parent.workspace.loadingRemote || owner.parent.workspace.connecting : owner.parent.workspace.loadingLocal),
+                  let row = view.table.selectedRowIndexes.first else { return false }
+            return column.files.indices.contains(row)
+        }
+        private func copySelection() -> [FileEntry] {
+            guard canCopySelection else { return [] }
+            return view.table.selectedRowIndexes.compactMap { column.files.indices.contains($0) ? column.files[$0] : nil }
         }
         private func activate() {
             guard let owner else { return }

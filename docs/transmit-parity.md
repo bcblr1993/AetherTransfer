@@ -30,6 +30,8 @@
 
 SFTP 已接入显式密码／私钥文件／SSH agent 选择与可选 SSH 配置子集，各方式不隐式回退，保留主机信任与旧收藏兼容。别名解析冻结实际端点并绑定指纹。Transmit 的完整自动认证顺序、完整 SSH config、多密钥／默认密钥、ProxyCommand／跳板机、OTP 和密钥管理继续保持待办；agent 的真实服务器与 GUI 验收须另行完成，见 `ssh-authentication.md`。
 
+三个原生浏览视图已接入复制路径的双语菜单与系统复制命令，当前窗口检查仍待完成。粘贴／移动先增加只读计划与元数据重查，真实复制、移动执行器、文件剪贴板和预览窗口继续待办；不能把计划可用或路径文本复制当作完整文件操作，见 `file-clipboard.md`。
+
 参考：
 - https://help.panic.com/transmit/transmit5/features/
 - https://help.panic.com/transmit/transmit5/protocols/

@@ -32,6 +32,8 @@ struct NativeFileIcons: NSViewRepresentable {
         grid.setDraggingSourceOperationMask(.copy, forLocal: true)
         grid.menuProvider = { [weak coordinator = context.coordinator] event in coordinator?.menu(event) }
         grid.openSelected = { [weak coordinator = context.coordinator] in coordinator?.openSelection() }
+        grid.copyEntries = { [weak coordinator = context.coordinator] in coordinator?.copySelection() ?? [] }
+        grid.hasCopySelection = { [weak coordinator = context.coordinator] in coordinator?.canCopySelection == true }
         grid.openClicked = { [weak coordinator = context.coordinator] index in coordinator?.open(index) }
         grid.previewSelected = { [weak coordinator = context.coordinator] in
             guard let coordinator else { return }
@@ -112,6 +114,16 @@ struct NativeFileIcons: NSViewRepresentable {
             guard let grid, grid.isEnabled, let index = grid.selectionIndexPaths.map(\.item).min(), files.indices.contains(index) else { return }
             open(IndexPath(item: index, section: 0))
         }
+        var canCopySelection: Bool {
+            guard let grid, grid.isEnabled, !updating, revision == parent.revision,
+                  !(parent.remote ? parent.workspace.loadingRemote || parent.workspace.connecting : parent.workspace.loadingLocal),
+                  let row = grid.selectionIndexPaths.first?.item else { return false }
+            return files.indices.contains(row)
+        }
+        func copySelection() -> [FileEntry] {
+            guard canCopySelection, let grid else { return [] }
+            return grid.selectionIndexPaths.map(\.item).sorted().compactMap { files.indices.contains($0) ? files[$0] : nil }
+        }
         func open(_ index: IndexPath) {
             guard grid?.isEnabled == true, files.indices.contains(index.item) else { return }
             parent.workspace.open(files[index.item], remote: parent.remote)
@@ -180,12 +192,14 @@ struct NativeFileIcons: NSViewRepresentable {
     override func viewDidChangeEffectiveAppearance() { super.viewDidChangeEffectiveAppearance(); needsDisplay = true }
 }
 
-@MainActor final class BrowserIconGrid: NSCollectionView {
+@MainActor final class BrowserIconGrid: NSCollectionView, NSUserInterfaceValidations {
     var isEnabled = true
     var menuProvider: ((NSEvent) -> NSMenu?)?
     var openSelected: (() -> Void)?
     var openClicked: ((IndexPath) -> Void)?
     var previewSelected: (() -> Void)?
+    var copyEntries: (() -> [FileEntry])?
+    var hasCopySelection: (() -> Bool)?
     var focused: (() -> Void)?
     var initialFocusRequested: (() -> Bool)?
     private var initialFocusPending = true
@@ -200,6 +214,14 @@ struct NativeFileIcons: NSViewRepresentable {
         if result { initialFocusPending = false; focused?() }; return result
     }
     override func menu(for event: NSEvent) -> NSMenu? { menuProvider?(event) }
+    @objc func copy(_ sender: Any?) {
+        guard isEnabled else { return }
+        FilePathCopy.write(copyEntries?() ?? [])
+    }
+    func validateUserInterfaceItem(_ item: any NSValidatedUserInterfaceItem) -> Bool {
+        if item.action == #selector(copy(_:)) { return isEnabled && hasCopySelection?() == true }
+        return true
+    }
     override func mouseDown(with event: NSEvent) {
         guard isEnabled else { return }
         let clicked = indexPathForItem(at: convert(event.locationInWindow, from: nil))

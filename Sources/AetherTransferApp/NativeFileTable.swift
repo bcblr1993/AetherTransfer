@@ -32,6 +32,8 @@ struct NativeFileTable: NSViewRepresentable {
         table.target = context.coordinator; table.doubleAction = #selector(Coordinator.openSelection)
         table.menuProvider = { [weak coordinator = context.coordinator] event in coordinator?.menu(event) }
         table.openSelected = { [weak coordinator = context.coordinator] in coordinator?.openKeyboardSelection() }
+        table.copyEntries = { [weak coordinator = context.coordinator] in coordinator?.copySelection() ?? [] }
+        table.hasCopySelection = { [weak coordinator = context.coordinator] in coordinator?.canCopySelection == true }
         table.previewSelected = { [weak coordinator = context.coordinator] in
             guard let coordinator else { return }
             coordinator.parent.workspace.previewSelection(remote: coordinator.parent.remote)
@@ -167,6 +169,16 @@ struct NativeFileTable: NSViewRepresentable {
             let row = table.selectedRow
             parent.workspace.open(files[row], remote: parent.remote)
         }
+        var canCopySelection: Bool {
+            guard let table, table.isEnabled, !updating, revision == parent.revision,
+                  !(parent.remote ? parent.workspace.loadingRemote || parent.workspace.connecting : parent.workspace.loadingLocal),
+                  let row = table.selectedRowIndexes.first else { return false }
+            return files.indices.contains(row)
+        }
+        func copySelection() -> [FileEntry] {
+            guard canCopySelection, let table else { return [] }
+            return table.selectedRowIndexes.compactMap { files.indices.contains($0) ? files[$0] : nil }
+        }
         func menu(_ event: NSEvent) -> NSMenu? {
             guard let table, table.isEnabled else { return nil }
             let row = table.row(at: table.convert(event.locationInWindow, from: nil))
@@ -183,6 +195,8 @@ struct NativeFileTable: NSViewRepresentable {
     var menuProvider: ((NSEvent) -> NSMenu?)?
     var openSelected: (() -> Void)?
     var previewSelected: (() -> Void)?
+    var copyEntries: (() -> [FileEntry])?
+    var hasCopySelection: (() -> Bool)?
     var focused: (() -> Void)?
     var initialFocusRequested: (() -> Bool)?
     var moveLeft: (() -> Void)?
@@ -199,6 +213,14 @@ struct NativeFileTable: NSViewRepresentable {
         return result
     }
     override func menu(for event: NSEvent) -> NSMenu? { menuProvider?(event) }
+    @objc func copy(_ sender: Any?) {
+        guard isEnabled else { return }
+        FilePathCopy.write(copyEntries?() ?? [])
+    }
+    override func validateUserInterfaceItem(_ item: any NSValidatedUserInterfaceItem) -> Bool {
+        if item.action == #selector(copy(_:)) { return isEnabled && hasCopySelection?() == true }
+        return super.validateUserInterfaceItem(item)
+    }
     override func keyDown(with event: NSEvent) {
         if event.keyCode == 123 && event.modifierFlags.intersection(.deviceIndependentFlagsMask).isEmpty, let moveLeft { moveLeft() }
         else if event.keyCode == 124 && event.modifierFlags.intersection(.deviceIndependentFlagsMask).isEmpty, let moveRight { moveRight() }

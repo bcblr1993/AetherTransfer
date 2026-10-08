@@ -15,7 +15,7 @@ public enum SyncRoot: Sendable {
     }
     public var isRemote: Bool { if case .local = self { return false }; return true }
     public var isS3: Bool { if case .s3 = self { return true }; return false }
-    private var endpoint: String {
+    var endpoint: String {
         switch self {
         case .local: return "local"
         case .remote(let client, _):
@@ -27,7 +27,7 @@ public enum SyncRoot: Sendable {
         }
     }
     public var id: String { Data(SHA256.hash(data: Data((endpoint + "|" + path).utf8))).base64EncodedString() }
-    fileprivate func canonicalized() async throws -> Self {
+    func canonicalized() async throws -> Self {
         switch self {
         case .local(let url): return .local(try await SyncIO.worker { url.standardizedFileURL.resolvingSymlinksInPath() })
         case .remote, .s3: return self
@@ -80,7 +80,7 @@ public enum SyncRoot: Sendable {
         case .s3: throw SyncError.invalidPlan
         }
     }
-    fileprivate func fullPath(_ relative: String) throws -> String {
+    func fullPath(_ relative: String) throws -> String {
         try SyncPath.validate(relative)
         if isS3 { return try S3Sync.key(prefix: path, relative: relative) }
         return relative.split(separator: "/").reduce(path) { partial, component in partial == "/" ? "/" + component : partial + "/" + component }
