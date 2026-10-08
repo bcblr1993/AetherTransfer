@@ -4,6 +4,7 @@ import AppKit
 @MainActor final class FileBrowserScrollView: NSScrollView {
     weak var workspace: Workspace?
     var remote = false
+    var receiveURLs: (([URL]) -> Bool)?
     var isDropEnabled = true { didSet { if !isDropEnabled { highlight(false) } } }
     private var highlighted = false
 
@@ -34,6 +35,7 @@ import AppKit
         guard draggingUpdated(sender) == .copy, let workspace else { return false }
         let urls = fileURLs(sender)
         workspace.focusedRemote = true
+        if let receiveURLs { return receiveURLs(urls) }
         workspace.uploadURLs(urls)
         return true
     }

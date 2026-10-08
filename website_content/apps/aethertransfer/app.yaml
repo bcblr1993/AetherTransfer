@@ -34,8 +34,8 @@ features:
     - kicker: { zh: 浏览, en: Browse }
       title: { zh: 本地与远程双栏, en: Local and remote, side by side }
       body:
-        zh: 文件列表、路径导航与系统快捷键，结合原生工具栏和 Liquid Glass 操作控件。
-        en: File lists, path navigation and keyboard shortcuts with native toolbars and Liquid Glass controls.
+        zh: 列表与图标浏览、路径导航和系统快捷键。列视图已进入开发候选，鼠标、键盘及拖放仍在验收；三种视图沿用统一的原生控件与 Liquid Glass 操作区。
+        en: List and icon browsing, path navigation and keyboard shortcuts. Column browsing is in the development candidate, with mouse, keyboard and drag-and-drop acceptance still pending. All views share native controls and Liquid Glass actions.
     - kicker: { zh: 传输, en: Transfer }
       title: { zh: 可靠传输与可见进度, en: Reliable transfers and visible progress }
       body:

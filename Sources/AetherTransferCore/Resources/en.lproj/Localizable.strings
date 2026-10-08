@@ -112,6 +112,8 @@
 "列出目标中缺少源文件的项目；删除项仍需手动选中。" = "List destination items missing from the source. Deletions must still be selected explicitly.";
 "列出镜像删除项" = "Show Mirror Deletions";
 "列表视图" = "List View";
+"列视图" = "Column View";
+"目录：%@" = "Folder: %@";
 "删除" = "Delete";
 "删除 %@？" = "Delete %@?";
 "删除 · %@" = "Delete · %@";

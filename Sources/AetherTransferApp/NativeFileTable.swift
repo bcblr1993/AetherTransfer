@@ -124,13 +124,12 @@ struct NativeFileTable: NSViewRepresentable {
             case "size": cell.textField?.stringValue = entry.isDirectory ? "—" : byteStyle.format(entry.size)
             case "modified": cell.textField?.stringValue = entry.modified.map { dateFormatter.string(from: $0) } ?? "—"
             default:
-                cell.textField?.stringValue = entry.name
-                cell.imageView?.image = NSImage(systemSymbolName: symbol(entry), accessibilityDescription: entry.isDirectory ? L10n.text("文件夹") : L10n.text("文件"))
-                cell.imageView?.contentTintColor = entry.isDirectory ? .controlAccentColor : .secondaryLabelColor
+                (cell as? FileNameCell)?.configure(entry)
             }
             return cell
         }
         private func makeCell(_ identifier: NSUserInterfaceItemIdentifier, name: Bool) -> NSTableCellView {
+            if name { return FileNameCell(identifier: identifier) }
             let cell = NSTableCellView(); cell.identifier = identifier
             let text = NSTextField(labelWithString: "")
             text.font = .systemFont(ofSize: NSFont.systemFontSize)
@@ -140,26 +139,8 @@ struct NativeFileTable: NSViewRepresentable {
             cell.addSubview(text); cell.textField = text
             NSLayoutConstraint.activate([text.centerYAnchor.constraint(equalTo: cell.centerYAnchor),
                                          text.trailingAnchor.constraint(equalTo: cell.trailingAnchor, constant: -4)])
-            if name {
-                let image = NSImageView(); image.translatesAutoresizingMaskIntoConstraints = false
-                image.symbolConfiguration = .init(pointSize: 14, weight: .regular)
-                cell.addSubview(image); cell.imageView = image
-                NSLayoutConstraint.activate([image.leadingAnchor.constraint(equalTo: cell.leadingAnchor, constant: 4),
-                                             image.centerYAnchor.constraint(equalTo: cell.centerYAnchor), image.widthAnchor.constraint(equalToConstant: 18),
-                                             image.heightAnchor.constraint(equalToConstant: 18), text.leadingAnchor.constraint(equalTo: image.trailingAnchor, constant: 7)])
-            } else { text.leadingAnchor.constraint(equalTo: cell.leadingAnchor, constant: 4).isActive = true }
+            text.leadingAnchor.constraint(equalTo: cell.leadingAnchor, constant: 4).isActive = true
             return cell
-        }
-        private func symbol(_ entry: FileEntry) -> String {
-            if entry.isDirectory { return "folder.fill" }
-            switch URL(fileURLWithPath: entry.name).pathExtension.lowercased() {
-            case "png", "jpg", "jpeg", "heic", "gif", "webp": return "photo"
-            case "mp4", "mov", "mkv": return "film"
-            case "mp3", "flac", "m4a", "wav": return "music.note"
-            case "zip", "gz", "tar", "7z": return "doc.zipper"
-            case "swift", "js", "ts", "py", "json", "yaml", "yml", "html", "css": return "curlybraces"
-            default: return "doc"
-            }
         }
         func tableViewSelectionDidChange(_ notification: Notification) {
             guard !updating, let table else { return }
@@ -205,6 +186,8 @@ struct NativeFileTable: NSViewRepresentable {
     var previewSelected: (() -> Void)?
     var focused: (() -> Void)?
     var initialFocusRequested: (() -> Bool)?
+    var moveLeft: (() -> Void)?
+    var moveRight: (() -> Void)?
     private var initialFocusPending = true
     func focusIfNeeded() {
         guard initialFocusPending, isEnabled, let window, initialFocusRequested?() == true else { return }
@@ -218,7 +201,9 @@ struct NativeFileTable: NSViewRepresentable {
     }
     override func menu(for event: NSEvent) -> NSMenu? { menuProvider?(event) }
     override func keyDown(with event: NSEvent) {
-        if event.keyCode == 36 && event.modifierFlags.intersection(.deviceIndependentFlagsMask).isEmpty { openSelected?() }
+        if event.keyCode == 123 && event.modifierFlags.intersection(.deviceIndependentFlagsMask).isEmpty, let moveLeft { moveLeft() }
+        else if event.keyCode == 124 && event.modifierFlags.intersection(.deviceIndependentFlagsMask).isEmpty, let moveRight { moveRight() }
+        else if event.keyCode == 36 && event.modifierFlags.intersection(.deviceIndependentFlagsMask).isEmpty { openSelected?() }
         else if event.keyCode == 49 && event.modifierFlags.intersection(.deviceIndependentFlagsMask).isEmpty { previewSelected?() }
         else { super.keyDown(with: event) }
     }

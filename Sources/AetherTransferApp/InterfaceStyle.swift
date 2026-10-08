@@ -10,6 +10,9 @@ enum InterfaceStyle {
     static let fieldLabelWidth: CGFloat = 150
     static let connectionWidth: CGFloat = 600
     static let listRowHeight: CGFloat = 28
+    static let columnWidth: CGFloat = 260
+    static let paneInset: CGFloat = 12
+    static let fileSymbolSize: CGFloat = 14
     static let tabTransition: Double = 0.18
 }
 

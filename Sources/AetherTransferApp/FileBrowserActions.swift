@@ -1,7 +1,39 @@
 import AppKit
+import SwiftUI
 import AetherTransferCore
 
-enum FileViewMode: Hashable { case icons, list }
+enum FileViewMode: Sendable, Hashable { case icons, list, columns }
+
+/// Commands observe the active workspace directly, so enabled states follow
+/// selection/loading changes as well as switching tabs.
+struct WorkspaceFileCommands: Commands {
+    @ObservedObject var workspace: Workspace
+    @ObservedObject var tabs: BrowserTabs
+    @AppStorage(AppLanguage.preferenceKey) private var language = "system"
+    var body: some Commands {
+        let _ = language
+        CommandGroup(after: .newItem) {
+            Button(L10n.text("新建标签页")) { tabs.add() }.keyboardShortcut("t")
+            Button(L10n.text("选择本地文件夹…")) { workspace.chooseLocal() }.keyboardShortcut("o")
+            Button(L10n.text("刷新")) { workspace.refreshLocal(); workspace.refreshRemote() }.keyboardShortcut("r")
+            Button(L10n.text("上传所选文件")) { workspace.uploadSelection() }.keyboardShortcut("u", modifiers: [.command, .shift]).disabled(!workspace.canUploadSelection)
+            Button(L10n.text("下载所选文件")) { workspace.downloadSelection() }.keyboardShortcut("d", modifiers: [.command, .shift]).disabled(!workspace.canDownloadSelection)
+            Button(L10n.text("同步目录…")) { workspace.showSync = true }.keyboardShortcut("s", modifiers: [.command, .shift])
+            Button(L10n.text("编辑所选文本…")) { workspace.editSelection() }.keyboardShortcut("e")
+            Button(L10n.text("快速查看…")) { workspace.previewSelection() }.keyboardShortcut("y")
+            Button(L10n.text("文件信息")) { workspace.showInspector.toggle() }.keyboardShortcut("i")
+            Button(L10n.text("保留的传输…")) { workspace.showRecovery = true }
+        }
+        CommandGroup(after: .sidebar) {
+            Divider()
+            Button(L10n.text("图标视图")) { workspace.setViewMode(.icons) }.keyboardShortcut("1")
+            Button(L10n.text("列表视图")) { workspace.setViewMode(.list) }.keyboardShortcut("2")
+            Button(L10n.text("列视图")) { workspace.setViewMode(.columns) }.keyboardShortcut("3")
+            Divider()
+            Button(L10n.text("显示 / 隐藏隐藏文件")) { workspace.showHidden.toggle() }.keyboardShortcut(".", modifiers: [.command, .shift])
+        }
+    }
+}
 
 /// Both presentations expose the same file actions and transfer selection.
 @MainActor final class FileBrowserActions: NSObject {
@@ -19,8 +51,8 @@ enum FileViewMode: Hashable { case icons, list }
         if !entry.isDirectory && !entry.isSymbolicLink { add(L10n.text("编辑文本…"), #selector(editItem(_:))) }
         add(L10n.text("快速查看"), #selector(previewItem(_:)), enabled: !entry.isDirectory && !entry.isSymbolicLink)
         add(L10n.text("文件信息"), #selector(informationItem(_:)))
-        if !remote { add(L10n.text("上传"), #selector(uploadItems), enabled: workspace.hasRemoteConnection) }
-        if remote && entry.isDirectory { add(L10n.text("下载"), #selector(downloadItems), enabled: workspace.hasRemoteConnection) }
+        if !remote { add(L10n.text("上传"), #selector(uploadItems), enabled: workspace.canReceiveUpload) }
+        if remote && entry.isDirectory { add(L10n.text("下载"), #selector(downloadItems), enabled: workspace.hasRemoteConnection && !workspace.loadingLocal) }
         menu.addItem(.separator())
         add(L10n.text("重命名…"), #selector(renameItem(_:)), enabled: !remote || !workspace.isS3); add(L10n.text("删除…"), #selector(deleteItem(_:)), enabled: !remote || !workspace.isS3 || !entry.isDirectory)
         menu.autoenablesItems = false

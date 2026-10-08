@@ -25,6 +25,7 @@ struct ActivityItem: Identifiable {
 }
 
 @MainActor final class Workspace: ObservableObject {
+    let id = UUID()
     @Published var profiles: [ServerProfile] = []
     @Published var selectedServer: UUID?
     @Published var localPath = FileManager.default.homeDirectoryForCurrentUser.path
@@ -33,6 +34,9 @@ struct ActivityItem: Identifiable {
     @Published var remoteFiles: [FileEntry] = []
     @Published private(set) var localRevision = UUID()
     @Published private(set) var remoteRevision = UUID()
+    private(set) var localListingPath = FileManager.default.homeDirectoryForCurrentUser.path
+    private(set) var remoteListingPath = "/"
+    private(set) var connectionRevision = UUID()
     @Published var localSelection: Set<String> = []
     @Published var remoteSelection: Set<String> = []
     @Published var activities: [ActivityItem] = []
@@ -153,6 +157,8 @@ struct ActivityItem: Identifiable {
         }
     }
     var canReceiveUpload: Bool { hasRemoteConnection && !connecting && !loadingRemote }
+    var canUploadSelection: Bool { canReceiveUpload && !loadingLocal && !localSelection.isEmpty }
+    var canDownloadSelection: Bool { hasRemoteConnection && !connecting && !loadingRemote && !loadingLocal && !remoteSelection.isEmpty }
     func uploadURLs(_ urls: [URL]) {
         guard canReceiveUpload, !urls.isEmpty, urls.allSatisfy(\.isFileURL) else { return }
         if let s3Client { uploadS3URLs(urls, client: s3Client, prefix: remotePath, existing: remoteFiles); return }
@@ -186,14 +192,16 @@ struct ActivityItem: Identifiable {
     func connect(_ profile: ServerProfile, credentials: Credentials) {
         authenticationGeneration = UUID(); hostChallenge = nil
         browseTask?.cancel()
+        connectionRevision = UUID()
         connectedProfile = profile; self.credentials = credentials
         selectedServer = profile.id; remotePath = profile.protocolKind == .s3 ? profile.initialPath : RemotePath.normalize(profile.initialPath)
+        remoteListingPath = remotePath
         remoteFiles = []; remoteRevision = UUID(); connecting = true
         refreshRemote()
     }
     func disconnect() {
         authenticationGeneration = UUID()
-        browseTask?.cancel(); remoteGeneration = UUID(); connectedProfile = nil; remoteFiles = []
+        browseTask?.cancel(); remoteGeneration = UUID(); connectionRevision = UUID(); connectedProfile = nil; remoteFiles = []
         remoteSelection = []; remoteRevision = UUID(); connecting = false; loadingRemote = false; credentials = Credentials()
     }
     func approveHostKey() {
@@ -208,15 +216,17 @@ struct ActivityItem: Identifiable {
     }
     func refreshLocal() {
         localTask?.cancel()
-        let path = localPath, hidden = showHidden, generation = UUID()
+        let path = localPath, generation = UUID()
         localGeneration = generation; loadingLocal = true
         localTask = Task {
             do {
-                let files = try await Task.detached { try LocalFiles.list(URL(fileURLWithPath: path), showHidden: hidden) }.value
+                // All presentations filter the same complete metadata snapshot.
+                // Retained columns can reveal hidden items without another IO pass.
+                let files = try await Task.detached { try LocalFiles.list(URL(fileURLWithPath: path), showHidden: true) }.value
                 guard generation == localGeneration else { return }
-                localFiles = files; localRevision = UUID(); localSelection = []
+                localListingPath = path; localFiles = files; localRevision = UUID(); localSelection = []
             } catch {
-                if generation == localGeneration { localFiles = []; localRevision = UUID(); localSelection = []; self.error = error.localizedDescription }
+                if generation == localGeneration { localListingPath = path; localFiles = []; localRevision = UUID(); localSelection = []; self.error = error.localizedDescription }
             }
             if generation == localGeneration { loadingLocal = false }
         }
@@ -236,19 +246,34 @@ struct ActivityItem: Identifiable {
                     files = await Task.detached { objects.map(\.fileEntry) }.value
                 } else { return }
                 guard generation == remoteGeneration else { return }
-                remoteFiles = files; remoteRevision = UUID(); remoteSelection = []
+                remoteListingPath = path; remoteFiles = files; remoteRevision = UUID(); remoteSelection = []
             } catch let failure as TransferError {
                 guard generation == remoteGeneration else { return }
-                remoteFiles = []; remoteRevision = UUID(); remoteSelection = []
+                remoteListingPath = path; remoteFiles = []; remoteRevision = UUID(); remoteSelection = []
                 if case .hostKeyRequired(let key, let changed) = failure, !changed, let client {
                     hostChallenge = HostChallenge(key: key, profile: client.profile)
                 } else { error = failure.localizedDescription }
             } catch is CancellationError { }
             catch {
-                if generation == remoteGeneration { remoteFiles = []; remoteRevision = UUID(); remoteSelection = []; self.error = error.localizedDescription }
+                if generation == remoteGeneration { remoteListingPath = path; remoteFiles = []; remoteRevision = UUID(); remoteSelection = []; self.error = error.localizedDescription }
             }
             if generation == remoteGeneration { loadingRemote = false; connecting = false }
         }
+    }
+    /// A visited column is an ordinary listing snapshot, refreshed explicitly
+    /// like any file view. Switching columns never blocks on a directory read.
+    func activateColumn(_ snapshot: FileColumnSnapshot, remote: Bool, selection: Set<String>) {
+        guard !remote || (hasRemoteConnection && !connecting) else { return }
+        if remote {
+            browseTask?.cancel(); remoteGeneration = UUID()
+            remotePath = snapshot.path; remoteListingPath = snapshot.path; remoteFiles = snapshot.files
+            remoteSelection = selection; loadingRemote = false; remoteRevision = UUID()
+        } else {
+            localTask?.cancel(); localGeneration = UUID()
+            localPath = snapshot.path; localListingPath = snapshot.path; localFiles = snapshot.files
+            localSelection = selection; loadingLocal = false; localRevision = UUID()
+        }
+        focusedRemote = remote
     }
     func open(_ entry: FileEntry, remote: Bool) {
         if entry.isDirectory {
@@ -286,8 +311,8 @@ struct ActivityItem: Identifiable {
         let panel = NSOpenPanel(); panel.canChooseDirectories = true; panel.canChooseFiles = false
         if panel.runModal() == .OK, let url = panel.url { localPath = url.path; refreshLocal() }
     }
-    func uploadSelection() { upload(localFiles.filter { localSelection.contains($0.id) }) }
-    func downloadSelection() { download(remoteFiles.filter { remoteSelection.contains($0.id) }) }
+    func uploadSelection() { if canUploadSelection { upload(localFiles.filter { localSelection.contains($0.id) }) } }
+    func downloadSelection() { if canDownloadSelection { download(remoteFiles.filter { remoteSelection.contains($0.id) }) } }
     func enqueueSync(_ plan: SyncPlan, left: SyncRoot, right: SyncRoot, selected: Set<String>, resolutions: [String: SyncDirection]) {
         let rate = Int64(max(0, UserDefaults.standard.integer(forKey: "transferRateKiB"))) * 1024
         enqueue(name: L10n.format("%@ 个同步操作", String(describing: selected.count)), direction: "同步", retryable: false, scope: .synchronization) { control, progress in
@@ -302,6 +327,7 @@ struct ActivityItem: Identifiable {
         }
     }
     func upload(_ entries: [FileEntry]) {
+        guard canReceiveUpload else { return }
         if let s3Client { uploadS3(entries, client: s3Client, prefix: remotePath, existing: remoteFiles); return }
         guard let client else { return }
         upload(entries, client: client, destination: remotePath, remoteNames: Set(remoteFiles.map(\.name)))
@@ -328,6 +354,7 @@ struct ActivityItem: Identifiable {
         }
     }
     func download(_ entries: [FileEntry]) {
+        guard hasRemoteConnection, !connecting, !loadingRemote, !loadingLocal else { return }
         if let s3Client { downloadS3(entries, client: s3Client); return }
         guard let client else { return }
         let rateLimit = Int64(max(0, UserDefaults.standard.integer(forKey: "transferRateKiB"))) * 1024

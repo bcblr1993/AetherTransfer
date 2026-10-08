@@ -53,6 +53,26 @@ private final class S3SyncProgressRecorder: @unchecked Sendable {
         try FileManager.default.createDirectory(at: url, withIntermediateDirectories: false)
         return url
     }
+    func testColumnHistoryUsesRealS3PrefixesAndCachedHiddenFiltering() async throws {
+        let remote = try client(), local = try folder(), prefix = "columns-\(UUID())/", child = prefix + "中文 +#%/"
+        defer { try? FileManager.default.removeItem(at: local) }
+        let source = local.appendingPathComponent("source")
+        try Data("column bytes".utf8).write(to: source)
+        try await remote.createPrefix(prefix); try await remote.createPrefix(child)
+        try await remote.upload(source, to: child + "file.txt")
+        try await remote.upload(source, to: child + ".hidden")
+        let parent = FileColumnSnapshot(path: prefix, files: try await remote.list(prefix: prefix).map(\.fileEntry))
+        let directory = try XCTUnwrap(parent.files.first { $0.isDirectory })
+        XCTAssertEqual(Data(directory.path.utf8), Data(child.utf8))
+        var history = FileColumnHistory(); history.accept(parent)
+        let contents = FileColumnSnapshot(path: directory.path, files: try await remote.list(prefix: directory.path).map(\.fileEntry))
+        history.accept(contents)
+        XCTAssertEqual(history.columns.count, 2); XCTAssertEqual(history.branchSelection(at: 0), [directory.id])
+        XCTAssertEqual(Set(contents.files.map(\.s3Key)), [child + "file.txt", child + ".hidden"])
+        XCTAssertEqual(FilePresentation.entries(contents.files, query: "", showHidden: false).map(\.name), ["file.txt"])
+        XCTAssertEqual(FilePresentation.entries(contents.files, query: "", showHidden: true).count, 2)
+        for key in [child + "file.txt", child + ".hidden", child, prefix] { try await remote.remove(key) }
+    }
     func testSyncNestedRoundTripContentComparisonAndS3MirrorDeletionIsBlocked() async throws {
         let remote = try client(), local = try folder(), prefix = "sync-roundtrip-\(UUID())/"
         defer { try? FileManager.default.removeItem(at: local) }

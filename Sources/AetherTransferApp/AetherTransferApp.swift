@@ -16,25 +16,7 @@ import AetherTransferCore
         }
         .defaultSize(width: 1240, height: 800)
         .commands {
-            CommandGroup(after: .newItem) {
-                Button(L10n.text("新建标签页")) { tabs.add() }.keyboardShortcut("t")
-                Button(L10n.text("选择本地文件夹…")) { tabs.current.chooseLocal() }.keyboardShortcut("o")
-                Button(L10n.text("刷新")) { tabs.current.refreshLocal(); tabs.current.refreshRemote() }.keyboardShortcut("r")
-                Button(L10n.text("上传所选文件")) { tabs.current.uploadSelection() }.keyboardShortcut("u", modifiers: [.command, .shift])
-                Button(L10n.text("下载所选文件")) { tabs.current.downloadSelection() }.keyboardShortcut("d", modifiers: [.command, .shift])
-                Button(L10n.text("同步目录…")) { tabs.current.showSync = true }.keyboardShortcut("s", modifiers: [.command, .shift])
-                Button(L10n.text("编辑所选文本…")) { tabs.current.editSelection() }.keyboardShortcut("e")
-                Button(L10n.text("快速查看…")) { tabs.current.previewSelection() }.keyboardShortcut("y")
-                Button(L10n.text("文件信息")) { tabs.current.showInspector.toggle() }.keyboardShortcut("i")
-                Button(L10n.text("保留的传输…")) { tabs.current.showRecovery = true }
-            }
-            CommandGroup(after: .sidebar) {
-                Divider()
-                Button(L10n.text("图标视图")) { tabs.current.setViewMode(.icons) }.keyboardShortcut("1")
-                Button(L10n.text("列表视图")) { tabs.current.setViewMode(.list) }.keyboardShortcut("2")
-                Divider()
-                Button(L10n.text("显示 / 隐藏隐藏文件")) { tabs.current.showHidden.toggle() }.keyboardShortcut(".", modifiers: [.command, .shift])
-            }
+            WorkspaceFileCommands(workspace: tabs.current, tabs: tabs)
             CommandGroup(after: .textEditing) {
                 Button(L10n.text("查找…")) {
                     let sender = NSMenuItem(); sender.tag = NSTextFinder.Action.showFindInterface.rawValue
@@ -180,8 +162,8 @@ struct MainView: View {
             ToolbarItemGroup {
                 Button(L10n.text("连接"), systemImage: "plus") { showConnect = true }
                 Button(L10n.text("刷新"), systemImage: "arrow.clockwise") { workspace.refreshLocal(); workspace.refreshRemote() }
-                Button(L10n.text("上传"), systemImage: "arrow.up") { workspace.uploadSelection() }.disabled(workspace.localSelection.isEmpty || !workspace.hasRemoteConnection)
-                Button(L10n.text("下载"), systemImage: "arrow.down") { workspace.downloadSelection() }.disabled(workspace.remoteSelection.isEmpty)
+                Button(L10n.text("上传"), systemImage: "arrow.up") { workspace.uploadSelection() }.disabled(!workspace.canUploadSelection)
+                Button(L10n.text("下载"), systemImage: "arrow.down") { workspace.downloadSelection() }.disabled(!workspace.canDownloadSelection)
             }
             ToolbarItem { Button(L10n.text("活动"), systemImage: "list.bullet.rectangle") { showActivities.toggle() } }
             ToolbarItem { Button(L10n.text("文件信息"), systemImage: "info.circle") { workspace.showInspector.toggle() } }
@@ -212,7 +194,6 @@ struct MainView: View {
                 }
             }.padding(InterfaceStyle.pageInset).frame(width: InterfaceStyle.connectionWidth)
         }
-        .onChange(of: workspace.showHidden) { workspace.refreshLocal() }
         .onChange(of: tabs.selected) { workspace.reloadProfiles() }
         .onChange(of: workspace.activities.count) { old, new in if new > old { showActivities = true } }
         .onReceive(NotificationCenter.default.publisher(for: .init("AetherTransferEditedFile"))) { _ in
@@ -265,6 +246,8 @@ struct FilePane: View {
     @State private var descending = false
     @State private var presentationRevision = UUID()
     @State private var filtered: [FileEntry] = []
+    @State private var columnHistory = FileColumnHistory()
+    @State private var columns: [FileColumnContent] = []
     @State private var presenting = true
     private struct PresentationRequest: Hashable {
         let revision: UUID
@@ -272,6 +255,9 @@ struct FilePane: View {
         let hidden: Bool
         let field: FileSortField
         let descending: Bool
+        let mode: FileViewMode
+        let workspace: UUID
+        let namespace: UUID
     }
     @State private var presentedRequest: PresentationRequest?
     // A reused native pane is immediately inert while its new workspace's
@@ -279,7 +265,9 @@ struct FilePane: View {
     private var presentationPending: Bool { presenting || presentedRequest != request }
     private var request: PresentationRequest {
         PresentationRequest(revision: remote ? workspace.remoteRevision : workspace.localRevision,
-                            query: query, hidden: workspace.showHidden, field: sortField, descending: descending)
+                            query: query, hidden: workspace.showHidden, field: sortField, descending: descending,
+                            mode: viewMode.wrappedValue, workspace: workspace.id,
+                            namespace: remote ? workspace.connectionRevision : workspace.id)
     }
     private var viewMode: Binding<FileViewMode> {
         remote ? $workspace.remoteViewMode : $workspace.localViewMode
@@ -296,8 +284,9 @@ struct FilePane: View {
                 Picker(L10n.format("%@视图", String(describing: title)), selection: viewMode) {
                     Image(systemName: "square.grid.2x2").accessibilityLabel(L10n.text("图标视图")).tag(FileViewMode.icons)
                     Image(systemName: "list.bullet").accessibilityLabel(L10n.text("列表视图")).tag(FileViewMode.list)
-                }.pickerStyle(.segmented).labelsHidden().frame(width: 78)
-                if viewMode.wrappedValue == .icons {
+                    Image(systemName: "rectangle.split.3x1").accessibilityLabel(L10n.text("列视图")).tag(FileViewMode.columns)
+                }.pickerStyle(.segmented).labelsHidden().frame(width: 112)
+                if viewMode.wrappedValue != .list {
                     Menu(L10n.text("排序"), systemImage: "arrow.up.arrow.down") {
                         Picker(L10n.text("排序依据"), selection: $sortField) {
                             Text(L10n.text("名称")).tag(FileSortField.name); Text(L10n.text("大小")).tag(FileSortField.size); Text(L10n.text("修改日期")).tag(FileSortField.modified)
@@ -309,20 +298,23 @@ struct FilePane: View {
                 Button(L10n.text("上一级"), systemImage: "arrow.up") { workspace.parent(remote: remote) }.labelStyle(.iconOnly)
                 Button(L10n.text("新建文件夹"), systemImage: "folder.badge.plus") { workspace.createFolder(remote: remote) }.labelStyle(.iconOnly)
                 if !remote { Button(L10n.text("选择文件夹"), systemImage: "folder") { workspace.chooseLocal() }.labelStyle(.iconOnly) }
-            }.padding(.horizontal, 12).padding(.vertical, 10).controlSize(.small)
+            }.padding(.horizontal, InterfaceStyle.paneInset).padding(.vertical, 10).controlSize(.small)
             TextField(remote && workspace.isS3 ? L10n.text("前缀（根目录为空，如 photos/）") : L10n.text("路径"), text: $path).textFieldStyle(.roundedBorder).font(.system(.callout, design: .monospaced))
                 .onSubmit { if remote { workspace.refreshRemote() } else { workspace.refreshLocal() } }
-                .padding(.horizontal, 12).padding(.bottom, 10)
+                .padding(.horizontal, InterfaceStyle.paneInset).padding(.bottom, 10)
             Group {
                 if viewMode.wrappedValue == .icons {
                     NativeFileIcons(files: filtered, revision: presentationRevision, selection: $selection, remote: remote, workspace: workspace)
+                } else if viewMode.wrappedValue == .columns {
+                    NativeFileColumns(columns: columns, selection: $selection, remote: remote, workspace: workspace,
+                                      emptyMessage: query.isEmpty ? L10n.text("此目录为空。") : L10n.text("没有匹配的项目。"))
                 } else {
                     NativeFileTable(files: filtered, revision: presentationRevision, selection: $selection,
                                     sortField: $sortField, descending: $descending, remote: remote, workspace: workspace)
                 }
             }
                 .disabled(loading || presentationPending)
-                .overlay { if filtered.isEmpty && !loading && !presentationPending { ContentUnavailableView(L10n.text("没有文件"), systemImage: "folder", description: Text(query.isEmpty ? L10n.text("此目录为空。") : L10n.text("没有匹配的项目。"))) .allowsHitTesting(false) } }
+                .overlay { if viewMode.wrappedValue != .columns && filtered.isEmpty && !loading && !presentationPending { ContentUnavailableView(L10n.text("没有文件"), systemImage: "folder", description: Text(query.isEmpty ? L10n.text("此目录为空。") : L10n.text("没有匹配的项目。"))) .allowsHitTesting(false) } }
 
         }.frame(minWidth: 350, maxWidth: .infinity, maxHeight: .infinity)
         .onChange(of: viewMode.wrappedValue) { _, _ in workspace.focusedRemote = remote }
@@ -330,19 +322,42 @@ struct FilePane: View {
             // Read entries and revision from the same observable source. A child can see a new
             // revision before its parent passes the refreshed value-type files argument.
             let current = request, snapshot = remote ? workspace.remoteFiles : workspace.localFiles
+            let directory = remote ? workspace.remoteListingPath : workspace.localListingPath
+            let previous = presentedRequest, previousColumns = columns
+            let history = previous?.workspace == current.workspace && previous?.namespace == current.namespace ? columnHistory : FileColumnHistory()
             presenting = true
             do {
                 if !current.query.isEmpty { try await Task.sleep(for: .milliseconds(120)) }
-                let result = await Task.detached {
-                    FilePresentation.entries(snapshot, query: current.query, showHidden: current.hidden, field: current.field, descending: current.descending)
-                }.value
+                let preparation = Task.detached {
+                    try Task.checkCancellation()
+                    let filtered = FilePresentation.entries(snapshot, query: current.query, showHidden: current.hidden, field: current.field, descending: current.descending)
+                    var updated = FileColumnHistory(), prepared: [FileColumnContent] = []
+                    if current.mode == .columns {
+                        updated = history
+                        updated.accept(FileColumnSnapshot(path: directory, files: snapshot, revision: current.revision))
+                        let sameOptions = previous?.query == current.query && previous?.hidden == current.hidden
+                            && previous?.field == current.field && previous?.descending == current.descending
+                        for (index, column) in updated.columns.enumerated() {
+                            try Task.checkCancellation()
+                            let old = sameOptions ? previousColumns.first { $0.snapshot.id == column.id && $0.snapshot.revision == column.revision } : nil
+                            let files = index == updated.columns.count - 1 ? filtered : (old?.files ?? FilePresentation.entries(column.files,
+                                query: current.query, showHidden: current.hidden, field: current.field, descending: current.descending))
+                            prepared.append(FileColumnContent(snapshot: column, files: files, revision: old?.revision ?? UUID(),
+                                                              branchSelection: updated.branchSelection(at: index)))
+                        }
+                    }
+                    try Task.checkCancellation()
+                    return (filtered, updated, prepared)
+                }
+                let result = try await withTaskCancellationHandler(operation: { try await preparation.value }, onCancel: { preparation.cancel() })
                 try Task.checkCancellation()
-                filtered = result; presentationRevision = UUID(); presentedRequest = current; presenting = false
-                selection.formIntersection(Set(result.map(\.id)))
+                filtered = result.0; columnHistory = result.1; columns = result.2
+                presentationRevision = UUID(); presentedRequest = current; presenting = false
+                selection.formIntersection(Set(result.0.map(\.id)))
             } catch is CancellationError { } catch { presenting = false }
         }
         .dropDestination(for: URL.self) { urls, _ in
-            guard remote, workspace.canReceiveUpload, !urls.isEmpty, urls.allSatisfy(\.isFileURL) else { return false }
+            guard viewMode.wrappedValue != .columns, remote, workspace.canReceiveUpload, !urls.isEmpty, urls.allSatisfy(\.isFileURL) else { return false }
             workspace.uploadURLs(urls); return true
         }
     }
