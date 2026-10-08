@@ -435,3 +435,4 @@
 "预览缓存的归属或路径发生变化，已停止清理。" = "The preview cache ownership or path has changed. Cleanup was stopped.";
 "预计剩余 %@" = "Time Remaining: %@";
 "首次连接需要核对服务器指纹。" = "Verify the server fingerprint on your first connection.";
+"AetherTransfer 设置" = "AetherTransfer Settings";

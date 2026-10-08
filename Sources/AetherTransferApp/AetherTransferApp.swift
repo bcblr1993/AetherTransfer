@@ -85,6 +85,7 @@ struct TransferSettingsView: View {
                 Text(L10n.text("速度上限对新任务生效。降低并发数时，已开始的任务会继续运行。")).font(.caption).foregroundStyle(.secondary)
             }
         }.formStyle(.grouped).frame(width: 560, height: 470)
+        .background { InterfaceWindowTitle(title: L10n.text("AetherTransfer 设置")).frame(width: 0, height: 0).accessibilityHidden(true) }
         .preferredColorScheme(appearance == "dark" ? .dark : (appearance == "light" ? .light : nil))
         .onChange(of: concurrency) { _, value in tabs.setConcurrency(value) }
     }
@@ -129,9 +130,12 @@ struct MainView: View {
                         Button(L10n.text("导入收藏…")) { workspace.importProfiles() }
                         Button(L10n.text("导出收藏…")) { workspace.exportProfiles() }.disabled(workspace.profiles.isEmpty)
                     } label: {
-                        Label(L10n.text("管理收藏"), systemImage: "ellipsis.circle")
-                            .foregroundStyle(.primary)
-                    }.menuStyle(.borderlessButton)
+                        Label {
+                            Text(L10n.text("管理收藏"))
+                        } icon: {
+                            Image(systemName: "ellipsis.circle").foregroundStyle(.tint)
+                        }
+                    }.menuStyle(.button).buttonStyle(.plain).menuIndicator(.hidden)
                 }
             }
             .navigationSplitViewColumnWidth(min: 180, ideal: 210, max: 280)
@@ -242,7 +246,7 @@ private struct ConnectionWelcomeView: View {
             }
             Button(L10n.text("连接服务器"), systemImage: "plus") { connect() }.buttonStyle(.glassProminent).controlSize(.large)
                 .padding(.top, 4)
-            Text(L10n.text("密码可保存在系统钥匙串")).font(.caption).foregroundStyle(.tertiary)
+            Text(L10n.text("密码可保存在系统钥匙串")).font(.caption).foregroundStyle(.secondary)
         }.padding(32)
     }
 }

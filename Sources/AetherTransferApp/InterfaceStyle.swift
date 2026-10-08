@@ -1,4 +1,5 @@
 import SwiftUI
+import AppKit
 import AetherTransferCore
 
 /// Shared measurements for chrome and forms. Native lists keep reusable rows.
@@ -46,5 +47,28 @@ struct AppPresentation: ViewModifier {
         content
             .environment(\.locale, (AppLanguage(rawValue: language) ?? .system).locale)
             .preferredColorScheme(appearance == "dark" ? .dark : (appearance == "light" ? .light : nil))
+    }
+}
+
+/// Settings uses an AppKit window title; changing only SwiftUI's Locale does
+/// not update the title supplied by the system Settings scene.
+struct InterfaceWindowTitle: NSViewRepresentable {
+    let title: String
+    func makeNSView(context: Context) -> TitleView {
+        let view = TitleView(frame: .zero)
+        view.title = title
+        view.setAccessibilityElement(false)
+        return view
+    }
+    func updateNSView(_ view: TitleView, context: Context) {
+        view.title = title
+        view.updateTitle()
+    }
+    final class TitleView: NSView {
+        var title = ""
+        override func viewDidMoveToWindow() { super.viewDidMoveToWindow(); updateTitle() }
+        func updateTitle() {
+            if let window, window.title != title { window.title = title }
+        }
     }
 }
