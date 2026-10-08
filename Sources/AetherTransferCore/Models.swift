@@ -24,8 +24,8 @@ public enum TransferProtocol: String, Codable, CaseIterable, Sendable {
     }
     public var title: String {
         switch self {
-        case .ftps: "FTPS · 隐式 TLS"
-        case .ftpes: "FTP · 显式 TLS"
+        case .ftps: L10n.text("FTPS · 隐式 TLS")
+        case .ftpes: L10n.text("FTP · 显式 TLS")
         case .webdav: "WebDAV · HTTP"
         case .webdavs: "WebDAV · HTTPS"
         default: rawValue.uppercased()
@@ -108,13 +108,13 @@ public enum TransferError: Error, LocalizedError, Sendable {
     case hostKeyRequired(key: String, changed: Bool), keychain(Int32)
     public var errorDescription: String? {
         switch self {
-        case .invalidConnection: "请检查服务器地址、端口与认证资料；S3 还需有效的存储桶和区域。"
-        case .invalidPath: "文件名或路径不合法。"
-        case .invalidListing(let line): "服务器目录格式暂不支持：\(line)"
+        case .invalidConnection: L10n.text("请检查服务器地址、端口与认证资料；S3 还需有效的存储桶和区域。")
+        case .invalidPath: L10n.text("文件名或路径不合法。")
+        case .invalidListing(let line): L10n.format("服务器目录格式暂不支持：%@", String(describing: line))
         case .remote(let message): message
-        case .conflict(let name): "目标已经存在：\(name)"
-        case .hostKeyRequired(_, let changed): changed ? "服务器主机密钥已变化，连接被拒绝。" : "首次连接需要核对服务器指纹。"
-        case .keychain(let status): "钥匙串操作失败（\(status)）。"
+        case .conflict(let name): L10n.format("目标已经存在：%@", String(describing: name))
+        case .hostKeyRequired(_, let changed): changed ? L10n.text("服务器主机密钥已变化，连接被拒绝。") : L10n.text("首次连接需要核对服务器指纹。")
+        case .keychain(let status): L10n.format("钥匙串操作失败（%@）。", String(describing: status))
         }
     }
 }

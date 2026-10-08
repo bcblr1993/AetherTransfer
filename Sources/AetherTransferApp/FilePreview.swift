@@ -15,7 +15,7 @@ import AetherTransferCore
             do {
                 let report = try await FilePreview.reclaimAbandoned()
                 if report.failed > 0 || report.reachedLimit {
-                    reportCacheFailure("\(report.failed) 个已确认归属的缓存未能清理。\(report.reachedLimit ? "本轮扫描已到上限，余下项目将在下次启动重试。" : "下次启动将再次尝试。")")
+                    reportCacheFailure(L10n.format("%@ 个已确认归属的缓存未能清理。%@", String(describing: report.failed), String(describing: report.reachedLimit ? L10n.text("本轮扫描已到上限，余下项目将在下次启动重试。") : L10n.text("下次启动将再次尝试。"))))
                 }
             } catch is CancellationError { }
             catch { reportCacheFailure(error.localizedDescription) }
@@ -23,8 +23,8 @@ import AetherTransferCore
     }
     private func reportCacheFailure(_ message: String) {
         guard !quitting else { return }
-        let alert = NSAlert(); alert.messageText = "临时预览清理未完成"
-        alert.informativeText = message; alert.addButton(withTitle: "确定"); alert.runModal()
+        let alert = NSAlert(); alert.messageText = L10n.text("临时预览清理未完成")
+        alert.informativeText = message; alert.addButton(withTitle: L10n.text("确定")); alert.runModal()
     }
     var needsShutdown: Bool { controller != nil || reclamation != nil }
     func open(_ entry: FileEntry, source: FilePreviewSource) {
@@ -59,15 +59,15 @@ import AetherTransferCore
         self.didClose = didClose
         let window = FilePreviewNativeWindow(contentRect: NSRect(x: 0, y: 0, width: 780, height: 620),
                               styleMask: [.titled, .closable, .miniaturizable, .resizable], backing: .buffered, defer: false)
-        window.title = "快速查看"; window.minSize = NSSize(width: 500, height: 380)
+        window.title = L10n.text("快速查看"); window.minSize = NSSize(width: 500, height: 380)
         window.isReleasedWhenClosed = false
         super.init(window: window)
         window.delegate = self; window.center()
-        window.contentViewController = NSHostingController(rootView: FilePreviewView(model: model))
+        window.contentViewController = NSHostingController(rootView: FilePreviewView(model: model).modifier(AppPresentation()))
     }
     required init?(coder: NSCoder) { fatalError("Not supported") }
     func load(_ entry: FileEntry, source: FilePreviewSource) {
-        window?.title = "快速查看 · \(entry.name)"; model.load(entry, source: source)
+        window?.title = L10n.format("快速查看 · %@", String(describing: entry.name)); model.load(entry, source: source)
     }
     func windowWillClose(_ notification: Notification) {
         closing = true
@@ -77,8 +77,8 @@ import AetherTransferCore
     func reportCleanupFailure() {
         guard !cleanupFailureReported, let message = model.cleanupError else { return }
         cleanupFailureReported = true
-        let alert = NSAlert(); alert.messageText = "临时预览清理未完成"
-        alert.informativeText = message; alert.addButton(withTitle: "确定"); alert.runModal()
+        let alert = NSAlert(); alert.messageText = L10n.text("临时预览清理未完成")
+        alert.informativeText = message; alert.addButton(withTitle: L10n.text("确定")); alert.runModal()
     }
 }
 
@@ -102,7 +102,7 @@ import AetherTransferCore
         let previous = operation, token = UUID()
         previous?.cancel(); generation = token
         self.entry = entry; self.source = source
-        name = entry.name; url = nil; progress = nil; error = nil; loading = true; notice = "正在准备预览…"
+        name = entry.name; url = nil; progress = nil; error = nil; loading = true; notice = L10n.text("正在准备预览…")
         operation = Task { [self] in
             await previous?.value
             var unpublished: FilePreview?
@@ -119,15 +119,15 @@ import AetherTransferCore
                 try Task.checkCancellation()
                 guard token == generation, !closed else { throw CancellationError() }
                 preview = result; unpublished = nil; url = result.url
-                notice = "\(ByteCountFormatter.string(fromByteCount: result.byteCount, countStyle: .file)) · Quick Look"
+                notice = "\(DisplayFormat.bytes(result.byteCount)) · Quick Look"
             } catch is CancellationError {
-                if token == generation { notice = "预览已取消" }
+                if token == generation { notice = L10n.text("预览已取消") }
             } catch {
-                if token == generation { self.error = error.localizedDescription; notice = "预览未完成" }
+                if token == generation { self.error = error.localizedDescription; notice = L10n.text("预览未完成") }
             }
             if let unpublished {
                 do { try await unpublished.close() }
-                catch { if token == generation { self.error = "临时预览清理失败：\(error.localizedDescription)" } }
+                catch { if token == generation { self.error = L10n.format("临时预览清理失败：%@", String(describing: error.localizedDescription)) } }
             }
             if token == generation { loading = false; progress = nil }
         }
@@ -151,8 +151,10 @@ import AetherTransferCore
 }
 
 private struct FilePreviewView: View {
+    @Environment(\.locale) private var interfaceLocale
     @ObservedObject var model: FilePreviewModel
     var body: some View {
+        let _ = interfaceLocale
         VStack(spacing: 0) {
             if let url = model.url { NativeQuickLook(url: url).id(url) }
             else {
@@ -163,17 +165,17 @@ private struct FilePreviewView: View {
                         if let progress = model.progress, progress.hasKnownTotal {
                             ProgressView(value: progress.fraction).frame(width: 230)
                         } else { ProgressView().controlSize(.small) }
-                        Text(model.progress?.phase ?? "正在读取文件…").font(.callout).foregroundStyle(.secondary)
-                        Button("取消预览") { model.cancel() }.buttonStyle(.glass)
+                        Text(model.progress?.phase ?? L10n.text("正在读取文件…")).font(.callout).foregroundStyle(.secondary)
+                        Button(L10n.text("取消预览")) { model.cancel() }.buttonStyle(.glass)
                     } else {
                         Text(model.error ?? model.notice).foregroundStyle(model.error == nil ? Color.secondary : Color.red)
                             .multilineTextAlignment(.center).frame(maxWidth: 420)
-                        Button("重新读取") { model.retry() }.buttonStyle(.glassProminent)
+                        Button(L10n.text("重新读取")) { model.retry() }.buttonStyle(.glassProminent)
                     }
                 }.padding(30).frame(maxWidth: .infinity, maxHeight: .infinity)
             }
             Divider()
-            HStack { Text(model.notice).lineLimit(1); Spacer(); Text("快速查看") }
+            HStack { Text(model.notice).lineLimit(1); Spacer(); Text(L10n.text("快速查看")) }
                 .font(.caption).foregroundStyle(.secondary).padding(.horizontal, 16).padding(.vertical, 10)
         }
         .onExitCommand { NSApp.keyWindow?.performClose(nil) }

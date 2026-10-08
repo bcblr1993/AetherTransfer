@@ -9,9 +9,9 @@ extension ProtocolIntegrationTests {
             let wrong = RemoteClient(profile: remote.profile, credentials: Credentials(password: "incorrect"),
                                      certificateAuthority: remote.certificateAuthority)
             do { _ = try await wrong.list("/"); XCTFail("Incorrect credentials must fail") }
-            catch TransferError.remote(let message) { XCTAssertTrue(message.contains("认证失败")) }
+            catch TransferError.remote(let message) { XCTAssertEqual(message, L10n.text("WebDAV 认证失败，请检查用户名和密码。")) }
             do { _ = try await remote.list("/__aether_fixture_redirect__"); XCTFail("Redirect must be rejected, including HTTPS to HTTP") }
-            catch TransferError.remote(let message) { XCTAssertTrue(message.contains("重定向"), message) }
+            catch TransferError.remote(let message) { XCTAssertEqual(message, L10n.text("服务器重定向了请求。请直接填写最终 WebDAV 地址。")) }
             do { try await remote.remove("/__aether_fixture_partial__", directory: false); XCTFail("207 mutation errors cannot become success") }
             catch TransferError.remote(let message) { XCTAssertTrue(message.contains("207")) }
             let destination = FileManager.default.temporaryDirectory.appendingPathComponent("aethertransfer-dav-failure-\(UUID().uuidString)")

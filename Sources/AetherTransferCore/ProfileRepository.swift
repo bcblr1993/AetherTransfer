@@ -16,7 +16,7 @@ public actor ProfileRepository {
         }
         let stagedID = UUID(); profile.credentialID = stagedID
         let retired = Set((previous?.retiredCredentialIDs ?? []) + (previous.map { [$0.credentialID ?? $0.id] } ?? []))
-        guard retired.count <= 1000 else { throw TransferError.remote("旧凭据清理积压过多，请先处理钥匙串错误。") }
+        guard retired.count <= 1000 else { throw TransferError.remote(L10n.text("旧凭据清理积压过多，请先处理钥匙串错误。")) }
         profile.retiredCredentialIDs = Array(retired)
         if let index = profiles.firstIndex(where: { $0.id == profile.id }) { profiles[index] = profile }
         else { profiles.append(profile) }
@@ -33,7 +33,7 @@ public actor ProfileRepository {
         profile.retiredCredentialIDs = remaining.isEmpty ? nil : remaining
         if let index = profiles.firstIndex(where: { $0.id == profile.id }) { profiles[index] = profile }
         try store.save(profiles)
-        guard remaining.isEmpty else { throw TransferError.remote("收藏已保存，旧凭据清理尚未完成；再次保存会重试清理。") }
+        guard remaining.isEmpty else { throw TransferError.remote(L10n.text("收藏已保存，旧凭据清理尚未完成；再次保存会重试清理。")) }
         return (profile, profiles)
     }
     public func remove(_ profile: ServerProfile) throws -> [ServerProfile] {

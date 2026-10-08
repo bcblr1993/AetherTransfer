@@ -13,10 +13,10 @@ struct NativeSyncTable: NSViewRepresentable {
     func makeCoordinator() -> Coordinator { Coordinator(self) }
     func makeNSView(context: Context) -> NSScrollView {
         let scroll = NSScrollView(); scroll.hasVerticalScroller = true; scroll.autohidesScrollers = true
-        let table = NSTableView(); table.style = .inset; table.rowHeight = 28; table.usesAutomaticRowHeights = false
+        let table = NSTableView(); table.style = .inset; table.rowHeight = InterfaceStyle.listRowHeight; table.usesAutomaticRowHeights = false
         table.usesAlternatingRowBackgroundColors = true; table.columnAutoresizingStyle = .lastColumnOnlyAutoresizingStyle
         table.allowsEmptySelection = true
-        for (id, title, width) in [("check", "执行", 42.0), ("path", "相对路径", 370.0), ("action", "操作", 190.0), ("sizes", "左侧 / 右侧大小", 200.0)] {
+        for (id, title, width) in [("check", L10n.text("执行"), 42.0), ("path", L10n.text("相对路径"), 370.0), ("action", L10n.text("操作"), 190.0), ("sizes", L10n.text("左侧 / 右侧大小"), 200.0)] {
             let column = NSTableColumn(identifier: NSUserInterfaceItemIdentifier(id))
             column.title = title; column.width = width; column.minWidth = id == "check" ? 42 : 100
             if id == "check" { column.maxWidth = 42 }
@@ -30,6 +30,13 @@ struct NativeSyncTable: NSViewRepresentable {
         let coordinator = context.coordinator; coordinator.parent = self
         guard let table = coordinator.table else { return }
         table.isEnabled = context.environment.isEnabled
+        if coordinator.locale != context.environment.locale {
+            coordinator.locale = context.environment.locale
+            coordinator.bytes.locale = context.environment.locale
+            for (key, title) in [("check", "执行"), ("path", "相对路径"), ("action", "操作"), ("sizes", "左侧 / 右侧大小")] {
+                table.tableColumn(withIdentifier: NSUserInterfaceItemIdentifier(key))?.title = L10n.text(title)
+            }
+        }
         if coordinator.revision != revision {
             coordinator.items = items; coordinator.revision = revision
             coordinator.itemsByID = Dictionary(uniqueKeysWithValues: items.map { ($0.id, $0) })
@@ -48,8 +55,9 @@ struct NativeSyncTable: NSViewRepresentable {
         var revision: UUID?
         var items: [SyncItem] = []
         var itemsByID: [String: SyncItem] = [:]
-        let bytes = ByteCountFormatter()
-        init(_ parent: NativeSyncTable) { self.parent = parent; super.init(); bytes.countStyle = .file }
+        var locale: Locale?
+        var bytes = ByteCountFormatStyle(style: .file, spellsOutZero: false)
+        init(_ parent: NativeSyncTable) { self.parent = parent; super.init() }
         func numberOfRows(in tableView: NSTableView) -> Int { items.count }
         func tableView(_ tableView: NSTableView, typeSelectStringFor tableColumn: NSTableColumn?, row: Int) -> String? {
             items.indices.contains(row) ? items[row].path : nil
@@ -63,7 +71,7 @@ struct NativeSyncTable: NSViewRepresentable {
                 cell.button.state = parent.selected.contains(item.id) ? .on : .off
                 cell.button.isEnabled = item.executable && tableView.isEnabled
                 cell.button.target = self; cell.button.action = #selector(checked(_:))
-                cell.button.setAccessibilityLabel("同步 \(item.path)")
+                cell.button.setAccessibilityLabel(L10n.format("同步 %@", String(describing: item.path)))
                 return cell
             }
             if column.identifier.rawValue == "action" {
@@ -73,8 +81,11 @@ struct NativeSyncTable: NSViewRepresentable {
                     cell.popup.identifier = NSUserInterfaceItemIdentifier(item.id)
                     cell.popup.target = self; cell.popup.action = #selector(choseDirection(_:))
                     cell.popup.isEnabled = tableView.isEnabled
+                    for (index, key) in ["选择方向…", "左侧 → 右侧", "右侧 → 左侧"].enumerated() {
+                        cell.popup.item(at: index)?.title = L10n.text(key)
+                    }
                     cell.popup.selectItem(at: parent.resolutions[item.id].map { $0 == .leftToRight ? 1 : 2 } ?? 0)
-                    cell.popup.setAccessibilityLabel("传输方向 \(item.path)")
+                    cell.popup.setAccessibilityLabel(L10n.format("传输方向 %@", String(describing: item.path)))
                     cell.toolTip = item.explanation
                     return cell
                 }
@@ -94,16 +105,16 @@ struct NativeSyncTable: NSViewRepresentable {
             switch item.operation {
             case .copy(let direction):
                 let exists = direction.destination == .left ? item.left != nil : item.right != nil
-                return "\(exists ? "覆盖" : "复制") · \(direction == .leftToRight ? "向右 →" : "← 向左")"
-            case .createDirectory(let side): return "新建目录 · \(side == .left ? "左侧" : "右侧")"
-            case .delete(let side): return "删除 · \(side == .left ? "左侧" : "右侧")"
-            case .conflict: return "选择方向"
-            case .blocked: return "需要处理"
+                return "\(exists ? L10n.text("覆盖") : L10n.text("复制")) · \(direction == .leftToRight ? L10n.text("向右 →") : L10n.text("← 向左"))"
+            case .createDirectory(let side): return L10n.format("新建目录 · %@", String(describing: side == .left ? L10n.text("左侧") : L10n.text("右侧")))
+            case .delete(let side): return L10n.format("删除 · %@", String(describing: side == .left ? L10n.text("左侧") : L10n.text("右侧")))
+            case .conflict: return L10n.text("选择方向")
+            case .blocked: return L10n.text("需要处理")
             }
         }
         private func size(_ record: SyncRecord?) -> String {
             guard let record else { return "—" }
-            return record.kind == .directory ? "文件夹" : bytes.string(fromByteCount: record.size)
+            return record.kind == .directory ? L10n.text("文件夹") : bytes.format(record.size)
         }
         private func textCell(_ id: NSUserInterfaceItemIdentifier) -> NSTableCellView {
             let cell = NSTableCellView(); cell.identifier = id
@@ -137,7 +148,7 @@ struct NativeSyncTable: NSViewRepresentable {
         let popup = NSPopUpButton(frame: .zero, pullsDown: false)
         init(identifier: NSUserInterfaceItemIdentifier) {
             super.init(frame: .zero); self.identifier = identifier
-            popup.addItems(withTitles: ["选择方向…", "左侧 → 右侧", "右侧 → 左侧"])
+            popup.addItems(withTitles: [L10n.text("选择方向…"), L10n.text("左侧 → 右侧"), L10n.text("右侧 → 左侧")])
             popup.controlSize = .small; popup.translatesAutoresizingMaskIntoConstraints = false; addSubview(popup)
             NSLayoutConstraint.activate([popup.leadingAnchor.constraint(equalTo: leadingAnchor),
                                          popup.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -4),

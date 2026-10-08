@@ -27,12 +27,12 @@ extension RemoteClient {
         let manifest = try await TreeManifest.local(local, control: control, progress: progress)
         var counter = TreeProgress(total: manifest.bytes, totalItems: manifest.items.count)
         var directories: [String: String] = [:], skippedDirectories = Set<String>()
-        progress(counter.event(phase: "目录扫描完成"))
+        progress(counter.event(phase: L10n.text("目录扫描完成")))
         for item in manifest.items {
             try await TreeIO.boundary(control)
             if !item.relative.isEmpty && skippedDirectories.contains(item.parent) {
                 if item.entry.isDirectory { skippedDirectories.insert(item.relative) }
-                counter.finish(item, skipped: true); progress(counter.event(phase: "已跳过 · \(item.entry.name)")); continue
+                counter.finish(item, skipped: true); progress(counter.event(phase: L10n.format("已跳过 · %@", String(describing: item.entry.name)))); continue
             }
             let source = URL(fileURLWithPath: item.entry.path)
             let current = try await TreeIO.run { try TreeIO.localEntry(source) }
@@ -46,24 +46,24 @@ extension RemoteClient {
                     guard existing.isDirectory, !existing.isSymbolicLink else { throw TransferError.conflict(existing.name) }
                     if policy == .skip {
                         skippedDirectories.insert(item.relative); counter.finish(item, skipped: true)
-                        progress(counter.event(phase: "已跳过 · \(item.entry.name)")); continue
+                        progress(counter.event(phase: L10n.format("已跳过 · %@", String(describing: item.entry.name)))); continue
                     }
                     if policy == .reject { throw TransferError.conflict(existing.name) }
                     if policy == .keepBoth { target = try await availableRemoteName(target); try await mkdir(target) }
                 } else { try await mkdir(target) }
                 directories[item.relative] = target; counter.finish(item)
-                progress(counter.event(phase: "已处理目录 · \(item.entry.name)"))
+                progress(counter.event(phase: L10n.format("已处理目录 · %@", String(describing: item.entry.name))))
             } else {
                 if let transfer = try await resumableUpload(source, to: target, policy: policy, store: store) {
                     let reporter = TreeFileProgress(base: counter, size: item.entry.size, callback: progress)
                     try await runTreeFile(transfer, size: item.entry.size) { reporter.receive($0) }
-                    counter.finish(item); progress(counter.event(phase: "已提交 · \(item.entry.name)"))
+                    counter.finish(item); progress(counter.event(phase: L10n.format("已提交 · %@", String(describing: item.entry.name))))
                 } else {
-                    counter.finish(item, skipped: true); progress(counter.event(phase: "已跳过 · \(item.entry.name)"))
+                    counter.finish(item, skipped: true); progress(counter.event(phase: L10n.format("已跳过 · %@", String(describing: item.entry.name))))
                 }
             }
         }
-        progress(counter.event(phase: "目录处理完成"))
+        progress(counter.event(phase: L10n.text("目录处理完成")))
     }
 
     public func downloadTree(_ entry: FileEntry, to destination: URL, policy: ConflictPolicy = .reject,
@@ -92,12 +92,12 @@ extension RemoteClient {
         let manifest = try await TreeManifest.remote(entry, client: self, progress: progress)
         var counter = TreeProgress(total: manifest.bytes, totalItems: manifest.items.count)
         var directories: [String: URL] = [:], skippedDirectories = Set<String>()
-        progress(counter.event(phase: "目录扫描完成"))
+        progress(counter.event(phase: L10n.text("目录扫描完成")))
         for item in manifest.items {
             try await TreeIO.boundary(control)
             if !item.relative.isEmpty && skippedDirectories.contains(item.parent) {
                 if item.entry.isDirectory { skippedDirectories.insert(item.relative) }
-                counter.finish(item, skipped: true); progress(counter.event(phase: "已跳过 · \(item.entry.name)")); continue
+                counter.finish(item, skipped: true); progress(counter.event(phase: L10n.format("已跳过 · %@", String(describing: item.entry.name)))); continue
             }
             var target = item.relative.isEmpty ? destination : directories[item.parent]!.appendingPathComponent(item.entry.name)
             if item.entry.isDirectory {
@@ -121,19 +121,19 @@ extension RemoteClient {
                 if directoryResult.1 { skippedDirectories.insert(item.relative) }
                 else { directories[item.relative] = target }
                 counter.finish(item, skipped: directoryResult.1)
-                progress(counter.event(phase: directoryResult.1 ? "已跳过 · \(item.entry.name)" : "已处理目录 · \(item.entry.name)"))
+                progress(counter.event(phase: directoryResult.1 ? L10n.format("已跳过 · %@", String(describing: item.entry.name)) : L10n.format("已处理目录 · %@", String(describing: item.entry.name))))
             } else {
                 guard try await fileVersion(item.entry.path).size == item.entry.size else { throw ResumeTransferError.sourceChanged }
                 if let transfer = try await resumableDownload(item.entry, to: target, policy: policy, store: store) {
                     let reporter = TreeFileProgress(base: counter, size: item.entry.size, callback: progress)
                     try await runTreeFile(transfer, size: item.entry.size) { reporter.receive($0) }
-                    counter.finish(item); progress(counter.event(phase: "已提交 · \(item.entry.name)"))
+                    counter.finish(item); progress(counter.event(phase: L10n.format("已提交 · %@", String(describing: item.entry.name))))
                 } else {
-                    counter.finish(item, skipped: true); progress(counter.event(phase: "已跳过 · \(item.entry.name)"))
+                    counter.finish(item, skipped: true); progress(counter.event(phase: L10n.format("已跳过 · %@", String(describing: item.entry.name))))
                 }
             }
         }
-        progress(counter.event(phase: "目录处理完成"))
+        progress(counter.event(phase: L10n.text("目录处理完成")))
     }
 
     private func runTreeFile(_ transfer: ResumableTransfer, size: Int64,
@@ -143,12 +143,12 @@ extension RemoteClient {
             let original = error
             let quiet = RemoteClient(profile: profile, credentials: credentials, certificateAuthority: certificateAuthority)
             do { try await Task.detached { try await transfer.discard(client: quiet) }.value }
-            catch { throw TransferError.remote("文件操作未完成，部分文件清理失败；可在保留的传输中重试清理。\(original.localizedDescription)") }
+            catch { throw TransferError.remote(L10n.format("文件操作未完成，部分文件清理失败；可在保留的传输中重试清理。%@", String(describing: original.localizedDescription))) }
             throw original
         }
     }
     private func skippedTree() -> TransferProgress {
-        TransferProgress(completed: 0, total: 0, phase: "已跳过目录", scope: .directory,
+        TransferProgress(completed: 0, total: 0, phase: L10n.text("已跳过目录"), scope: .directory,
                          completedItems: 1, totalItems: 1, skippedItems: 1)
     }
     func availableRemoteName(_ path: String) async throws -> String {

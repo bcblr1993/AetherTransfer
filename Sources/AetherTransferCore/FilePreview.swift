@@ -5,9 +5,9 @@ public enum FilePreviewError: Error, LocalizedError, Sendable {
     case unsupportedFile, tooLarge, changed
     public var errorDescription: String? {
         switch self {
-        case .unsupportedFile: "只能预览普通文件；目录和符号链接可在文件信息中查看。"
-        case .tooLarge: "远程预览最多下载 128 MiB；更大的文件请先下载，再从本地预览。"
-        case .changed: "文件在准备预览时发生变化，请刷新后重试。"
+        case .unsupportedFile: L10n.text("只能预览普通文件；目录和符号链接可在文件信息中查看。")
+        case .tooLarge: L10n.text("远程预览最多下载 128 MiB；更大的文件请先下载，再从本地预览。")
+        case .changed: L10n.text("文件在准备预览时发生变化，请刷新后重试。")
         }
     }
 }

@@ -6,13 +6,13 @@ public enum ResumeTransferError: Error, LocalizedError, Sendable {
     case sourceChanged, targetChanged, invalidCheckpoint, busy, suspended, unsupportedVersion, uploadRestartRequired
     public var errorDescription: String? {
         switch self {
-        case .sourceChanged: "源文件或已传部分内容已变化，拒绝续传；请核对后从头传输。"
-        case .targetChanged: "目标文件已变化，未覆盖；请重新核对冲突选项。"
-        case .invalidCheckpoint: "传输检查点不完整或不合法，未使用其中的部分文件。"
-        case .busy: "此传输正在处理，请稍后再试。"
-        case .suspended: "进度已保留，可以继续传输。"
-        case .unsupportedVersion: "服务器没有返回可核对的大小与版本，无法安全续传。"
-        case .uploadRestartRequired: "普通 WebDAV PUT 不支持按偏移续传；请明确选择从头重新上传。"
+        case .sourceChanged: L10n.text("源文件或已传部分内容已变化，拒绝续传；请核对后从头传输。")
+        case .targetChanged: L10n.text("目标文件已变化，未覆盖；请重新核对冲突选项。")
+        case .invalidCheckpoint: L10n.text("传输检查点不完整或不合法，未使用其中的部分文件。")
+        case .busy: L10n.text("此传输正在处理，请稍后再试。")
+        case .suspended: L10n.text("进度已保留，可以继续传输。")
+        case .unsupportedVersion: L10n.text("服务器没有返回可核对的大小与版本，无法安全续传。")
+        case .uploadRestartRequired: L10n.text("普通 WebDAV PUT 不支持按偏移续传；请明确选择从头重新上传。")
         }
     }
 }
@@ -248,19 +248,19 @@ public actor ResumableTransfer {
             guard savedPrefix == expected else { throw ResumeTransferError.sourceChanged }
         }
         if partial.size > 0 {
-            progress(TransferProgress(completed: partial.size, total: source.size, phase: "核对已下载部分"))
+            progress(TransferProgress(completed: partial.size, total: source.size, phase: L10n.text("核对已下载部分")))
             guard try await client.contentDigest(record.remotePath, version: source, prefixBytes: partial.size) == partial.digest else { throw ResumeTransferError.sourceChanged }
         }
         try checkBoundary(client)
         if partial.size < source.size {
             try await client.downloadPartial(record.remotePath, to: record.partial, offset: partial.size, version: source, progress: progress)
         }
-        progress(TransferProgress(completed: source.size, total: source.size, phase: "校验并提交"))
+        progress(TransferProgress(completed: source.size, total: source.size, phase: L10n.text("校验并提交")))
         let complete = try await ResumeIO.fingerprint(record.partial)
         guard complete.size == source.size, try await client.fileVersion(record.remotePath) == source else { throw ResumeTransferError.sourceChanged }
         if source.etag == nil {
             // FTP/SFTP timestamps can have only second precision. Verify the complete content too.
-            progress(TransferProgress(completed: source.size, total: source.size, phase: "核对完整源文件"))
+            progress(TransferProgress(completed: source.size, total: source.size, phase: L10n.text("核对完整源文件")))
             guard try await client.contentDigest(record.remotePath, version: source) == complete.digest,
                   try await client.fileVersion(record.remotePath) == source else { throw ResumeTransferError.sourceChanged }
         }
@@ -290,7 +290,7 @@ public actor ResumableTransfer {
                     guard restart else { throw ResumeTransferError.uploadRestartRequired }
                     try await client.remove(record.staging, directory: false); offset = 0
                 } else {
-                    progress(TransferProgress(completed: offset, total: original.size, phase: "核对已上传部分"))
+                    progress(TransferProgress(completed: offset, total: original.size, phase: L10n.text("核对已上传部分")))
                     let stagedVersion = try await client.fileVersion(record.staging)
                     let digest = try await ResumeIO.digest(source, prefixBytes: offset)
                     guard try await client.contentDigest(record.staging, version: stagedVersion) == digest else { throw ResumeTransferError.sourceChanged }
@@ -301,7 +301,7 @@ public actor ResumableTransfer {
         if offset < original.size || staged == nil {
             try await client.uploadPartial(source, to: record.staging, offset: offset, progress: progress)
         }
-        progress(TransferProgress(completed: original.size, total: original.size, phase: "校验并提交"))
+        progress(TransferProgress(completed: original.size, total: original.size, phase: L10n.text("校验并提交")))
         guard try await ResumeIO.fingerprint(source) == original else { throw ResumeTransferError.sourceChanged }
         let version = try await client.fileVersion(record.staging)
         guard version.size == original.size, try await client.contentDigest(record.staging, version: version) == original.digest else { throw ResumeTransferError.sourceChanged }

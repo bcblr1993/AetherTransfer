@@ -6,12 +6,12 @@ public enum FileEditError: Error, LocalizedError, Sendable {
     case unsupportedText, tooLarge, changed, busy, closed, unstableDraft
     public var errorDescription: String? {
         switch self {
-        case .unsupportedText: "只支持 UTF-8 文本文件；二进制文件、目录和符号链接不能在此编辑。"
-        case .tooLarge: "文本编辑最多支持 5 MiB，请使用下载工作流处理更大的文件。"
-        case .changed: "原文件内容已变化，未回传覆盖。本机草稿已保留，请导出草稿或重新载入后合并。"
-        case .busy: "此文件仍在读取或保存，请稍后重试。"
-        case .closed: "编辑会话已关闭。"
-        case .unstableDraft: "编辑器仍在写入文件，请完成保存后重试。"
+        case .unsupportedText: L10n.text("只支持 UTF-8 文本文件；二进制文件、目录和符号链接不能在此编辑。")
+        case .tooLarge: L10n.text("文本编辑最多支持 5 MiB，请使用下载工作流处理更大的文件。")
+        case .changed: L10n.text("原文件内容已变化，未回传覆盖。本机草稿已保留，请导出草稿或重新载入后合并。")
+        case .busy: L10n.text("此文件仍在读取或保存，请稍后重试。")
+        case .closed: L10n.text("编辑会话已关闭。")
+        case .unstableDraft: L10n.text("编辑器仍在写入文件，请完成保存后重试。")
         }
     }
 }

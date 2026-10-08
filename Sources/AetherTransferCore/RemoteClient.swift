@@ -131,7 +131,7 @@ public struct RemoteClient: Sendable {
                 (profile.trustedHostKey ?? "").withCString { fingerprint in at_create(url, user, password, key, passphrase, fingerprint) }
             }}
         }}}
-        guard let request else { throw TransferError.remote("无法创建传输连接。") }
+        guard let request else { throw TransferError.remote(L10n.text("无法创建传输连接。")) }
         let digest = mode == 5 ? NativeDigest() : nil
         let box = RequestBox(pointer: request, callback: progress, digest: digest)
         if let digest {
@@ -143,7 +143,7 @@ public struct RemoteClient: Sendable {
         let tlsCode = (certificateAuthority?.path ?? "").withCString {
             at_tls(request, profile.protocolKind == .ftpes || profile.protocolKind == .ftps ? 1 : 0, $0)
         }
-        guard tlsCode == 0 else { throw TransferError.remote("无法配置 TLS 证书验证。") }
+        guard tlsCode == 0 else { throw TransferError.remote(L10n.text("无法配置 TLS 证书验证。")) }
         let method = httpMethod ?? (mode == 0 ? "PROPFIND" : (mode == 2 ? "PUT" : (mode == 6 ? "HEAD" : "GET")))
         if profile.protocolKind.isWebDAV {
             var headers = httpHeaders + ["Expect:"]
@@ -156,7 +156,7 @@ public struct RemoteClient: Sendable {
                 if let body { return body.withCString { at_http(request, method, headers, $0) } }
                 return at_http(request, method, headers, nil)
             }}
-            guard configuration == 0 else { throw TransferError.remote("无法配置 WebDAV 请求。") }
+            guard configuration == 0 else { throw TransferError.remote(L10n.text("无法配置 WebDAV 请求。")) }
         }
         at_rate_limit(request, rateLimit)
         at_download_limit(request, maximumDownloadBytes)
@@ -182,13 +182,13 @@ public struct RemoteClient: Sendable {
                     if status >= 300 {
                         let message: String
                         switch status {
-                        case 301...399: message = "服务器重定向了请求。请直接填写最终 WebDAV 地址。"
-                        case 401: message = "WebDAV 认证失败，请检查用户名和密码。"
-                        case 403: message = "WebDAV 服务器拒绝了操作。"
-                        case 404: message = "WebDAV 文件或目录不存在。"
-                        case 409: message = "WebDAV 目标目录不存在或操作发生冲突。"
-                        case 423: message = "WebDAV 文件被锁定，暂时无法修改。"
-                        default: message = "WebDAV 请求失败（HTTP \(status)）。"
+                        case 301...399: message = L10n.text("服务器重定向了请求。请直接填写最终 WebDAV 地址。")
+                        case 401: message = L10n.text("WebDAV 认证失败，请检查用户名和密码。")
+                        case 403: message = L10n.text("WebDAV 服务器拒绝了操作。")
+                        case 404: message = L10n.text("WebDAV 文件或目录不存在。")
+                        case 409: message = L10n.text("WebDAV 目标目录不存在或操作发生冲突。")
+                        case 423: message = L10n.text("WebDAV 文件被锁定，暂时无法修改。")
+                        default: message = L10n.format("WebDAV 请求失败（HTTP %@）。", String(describing: status))
                         }
                         throw TransferError.remote(message)
                     }
@@ -203,7 +203,7 @@ public struct RemoteClient: Sendable {
                         default: []
                         }
                         guard accepted.contains(status) else {
-                            throw TransferError.remote("WebDAV 返回了不支持的结果（HTTP \(status)）；请刷新目录核对服务器状态。")
+                            throw TransferError.remote(L10n.format("WebDAV 返回了不支持的结果（HTTP %@）；请刷新目录核对服务器状态。", String(describing: status)))
                         }
                     }
                 }
@@ -320,7 +320,7 @@ public struct RemoteClient: Sendable {
         if profile.protocolKind.isWebDAV {
             guard RemotePath.normalize(path) != "/" else { throw TransferError.invalidPath }
             if directory, !(try await list(path)).isEmpty {
-                throw TransferError.remote("文件夹仍有内容，请先逐项确认删除。")
+                throw TransferError.remote(L10n.text("文件夹仍有内容，请先逐项确认删除。"))
             }
             _ = try await perform(path: path, directory: directory, mode: 4, httpMethod: "DELETE")
             return

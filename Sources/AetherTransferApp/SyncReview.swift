@@ -39,7 +39,7 @@ struct SyncLocation: Identifiable {
             return direction.destination == .left ? item.left != nil : item.right != nil
         }.count
     }
-    var summary: String { "已选 \(selected.count) 项 · 覆盖 \(overwrites) 个文件 · 删除 \(deletions) 项" }
+    var summary: String { L10n.format("已选 %@ 项 · 覆盖 %@ 个文件 · 删除 %@ 项", String(describing: selected.count), String(describing: overwrites), String(describing: deletions)) }
     func invalidate() {
         generation = UUID(); task?.cancel(); task = nil; busy = false
         plan = nil; selected = []; resolutions = [:]; itemsByID = [:]
@@ -63,9 +63,9 @@ struct SyncLocation: Identifiable {
     }
     func chooseFolder(side: SyncSide) {
         let panel = NSOpenPanel(); panel.canChooseDirectories = true; panel.canChooseFiles = false
-        panel.prompt = "选择同步目录"
+        panel.prompt = L10n.text("选择同步目录")
         guard panel.runModal() == .OK, let url = panel.url else { return }
-        let location = SyncLocation(id: UUID().uuidString, title: "本地 · \(url.lastPathComponent)", root: .local(url))
+        let location = SyncLocation(id: UUID().uuidString, title: L10n.format("本地 · %@", String(describing: url.lastPathComponent)), root: .local(url))
         locations.append(location)
         if side == .left { leftID = location.id } else { rightID = location.id }
         invalidate()
@@ -112,6 +112,7 @@ private enum SyncPathForReview {
 }
 
 struct SyncReviewView: View {
+    @Environment(\.locale) private var interfaceLocale
     @ObservedObject var workspace: Workspace
     @StateObject private var model: SyncReviewModel
     @State private var confirm = false
@@ -122,7 +123,7 @@ struct SyncReviewView: View {
         var locations: [SyncLocation] = []
         for tab in tabs.tabs {
             let label = URL(fileURLWithPath: tab.workspace.localPath).lastPathComponent
-            locations.append(SyncLocation(id: "\(tab.id)/local", title: "本地 · \(label)", root: .local(URL(fileURLWithPath: tab.workspace.localPath))))
+            locations.append(SyncLocation(id: "\(tab.id)/local", title: L10n.format("本地 · %@", String(describing: label)), root: .local(URL(fileURLWithPath: tab.workspace.localPath))))
             if let client = tab.workspace.client {
                 locations.append(SyncLocation(id: "\(tab.id)/remote", title: "\(client.profile.name.isEmpty ? client.profile.host : client.profile.name) · \(tab.workspace.remotePath)",
                                               root: .remote(client, tab.workspace.remotePath)))
@@ -132,12 +133,10 @@ struct SyncReviewView: View {
                                                          rightID: workspace.client == nil ? "" : "\(tabs.selected)/remote"))
     }
     var body: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            HStack {
-                Label("同步目录", systemImage: "arrow.triangle.2.circlepath").font(.title2.weight(.semibold))
-                Spacer()
-                Text("先预览，再执行所选操作").font(.callout).foregroundStyle(.secondary)
-            }
+        let _ = interfaceLocale
+        VStack(alignment: .leading, spacing: InterfaceStyle.sectionGap) {
+            SheetHeader(title: L10n.text("同步目录"), subtitle: L10n.text("先预览，再执行所选操作"),
+                        symbol: "arrow.triangle.2.circlepath", inset: 0)
             HStack(spacing: 20) {
                 location(.left)
                 Image(systemName: model.options.mode == .bidirectional ? "arrow.left.arrow.right" : (model.options.mode == .leftToRight ? "arrow.right" : "arrow.left"))
@@ -145,57 +144,57 @@ struct SyncReviewView: View {
                 location(.right)
             }
             HStack(spacing: 20) {
-                Picker("方向", selection: $model.options.mode) {
-                    Text("向右").tag(SyncMode.leftToRight)
-                    Text("向左").tag(SyncMode.rightToLeft)
-                    Text("双向").tag(SyncMode.bidirectional)
-                }.pickerStyle(.segmented).frame(width: 260)
-                Picker("比较", selection: $model.options.comparison) {
-                    Text("修改日期").tag(SyncComparison.modificationDate)
-                    Text("文件大小").tag(SyncComparison.fileSize)
-                    Text("文件内容").tag(SyncComparison.contents)
-                }.frame(width: 240)
+                Picker(L10n.text("方向"), selection: $model.options.mode) {
+                    Text(L10n.text("向右")).tag(SyncMode.leftToRight)
+                    Text(L10n.text("向左")).tag(SyncMode.rightToLeft)
+                    Text(L10n.text("双向")).tag(SyncMode.bidirectional)
+                }.pickerStyle(.segmented).frame(width: 270)
+                Picker(L10n.text("比较"), selection: $model.options.comparison) {
+                    Text(L10n.text("修改日期")).tag(SyncComparison.modificationDate)
+                    Text(L10n.text("文件大小")).tag(SyncComparison.fileSize)
+                    Text(L10n.text("文件内容")).tag(SyncComparison.contents)
+                }.frame(width: 260)
                 Spacer()
-                Toggle("列出镜像删除项", isOn: $model.options.mirror)
+                Toggle(L10n.text("列出镜像删除项"), isOn: $model.options.mirror)
                     .disabled(model.options.mode == .bidirectional)
-                    .help("列出目标中缺少源文件的项目；删除项仍需手动选中。")
+                    .help(L10n.text("列出目标中缺少源文件的项目；删除项仍需手动选中。"))
             }
-            DisclosureGroup("更多选项", isExpanded: $advanced) {
+            DisclosureGroup(L10n.text("更多选项"), isExpanded: $advanced) {
                 HStack(alignment: .top, spacing: 24) {
                     VStack(alignment: .leading, spacing: 8) {
-                        Toggle("包含隐藏文件", isOn: $model.options.includeHidden)
+                        Toggle(L10n.text("包含隐藏文件"), isOn: $model.options.includeHidden)
                         if model.options.comparison == .modificationDate {
                             if model.left?.root.isRemote == true { timeOffset(side: .left) }
                             if model.right?.root.isRemote == true { timeOffset(side: .right) }
                         }
                     }.frame(width: 285, alignment: .leading)
                     VStack(alignment: .leading, spacing: 4) {
-                        Text("排除路径").font(.caption).foregroundStyle(.secondary)
+                        Text(L10n.text("排除路径")).font(.caption).foregroundStyle(.secondary)
                         TextEditor(text: $model.exclusions).font(.system(.caption, design: .monospaced))
                             .frame(height: 48).overlay(RoundedRectangle(cornerRadius: 4).stroke(.quaternary))
-                        Text("每行一个相对路径或文件名，不使用通配符。").font(.caption).foregroundStyle(.secondary)
+                        Text(L10n.text("每行一个相对路径或文件名，不使用通配符。")).font(.caption).foregroundStyle(.secondary)
                     }
                 }.padding(.top, 8)
             }
             Text(model.options.comparison == .contents
-                 ? "内容比较会读取所有文件；远程文件逐个临时下载，完成即清理。"
-                 : "日期按分钟精度比较；相同大小或日期不能保证内容相同，可改用文件内容比较。")
+                 ? L10n.text("内容比较会读取所有文件；远程文件逐个临时下载，完成即清理。")
+                 : L10n.text("日期按分钟精度比较；相同大小或日期不能保证内容相同，可改用文件内容比较。"))
                 .font(.caption).foregroundStyle(.secondary)
             Divider()
             preview
             Divider()
             HStack {
-                Button("取消") { model.invalidate(); dismiss() }.keyboardShortcut(.cancelAction)
+                Button(L10n.text("取消")) { model.invalidate(); dismiss() }.keyboardShortcut(.cancelAction)
                 if let plan = model.plan {
-                    Button("全选可执行项") { model.selectAll() }.buttonStyle(.borderless).disabled(plan.items.isEmpty)
-                    Button("全不选") { model.selectNone() }.buttonStyle(.borderless).disabled(model.selected.isEmpty)
+                    Button(L10n.text("全选可执行项")) { model.selectAll() }.buttonStyle(.borderless).disabled(plan.items.isEmpty)
+                    Button(L10n.text("全不选")) { model.selectNone() }.buttonStyle(.borderless).disabled(model.selected.isEmpty)
                 }
                 Spacer()
-                Button(model.busy ? "停止预览" : "生成预览") { if model.busy { model.invalidate() } else { model.preview() } }
+                Button(model.busy ? L10n.text("停止预览") : L10n.text("生成预览")) { if model.busy { model.invalidate() } else { model.preview() } }
                     .buttonStyle(.glass).disabled(model.left == nil || model.right == nil)
-                Button("执行所选同步") { confirm = true }.buttonStyle(.glassProminent).disabled(!model.canExecute)
+                Button(L10n.text("执行所选同步")) { confirm = true }.buttonStyle(.glassProminent).disabled(!model.canExecute)
             }
-        }.padding(24).frame(width: 980, height: 650)
+        }.padding(InterfaceStyle.pageInset).frame(width: 1020, height: 680)
         .onChange(of: model.leftID) { model.invalidate() }
         .onChange(of: model.rightID) { model.invalidate() }
         .onChange(of: model.options) {
@@ -204,46 +203,46 @@ struct SyncReviewView: View {
         }
         .onChange(of: model.exclusions) { model.invalidate() }
         .onDisappear { model.invalidate() }
-        .alert("无法生成同步预览", isPresented: Binding(get: { model.error != nil }, set: { if !$0 { model.error = nil } })) {
-            Button("确定") { model.error = nil }
+        .alert(L10n.text("无法生成同步预览"), isPresented: Binding(get: { model.error != nil }, set: { if !$0 { model.error = nil } })) {
+            Button(L10n.text("确定")) { model.error = nil }
         } message: { Text(model.error ?? "") }
-        .alert("执行所选同步操作？", isPresented: $confirm) {
-            Button("取消", role: .cancel) { }
-            Button("执行同步", role: model.deletions > 0 ? .destructive : nil) {
+        .alert(L10n.text("执行所选同步操作？"), isPresented: $confirm) {
+            Button(L10n.text("取消"), role: .cancel) { }
+            Button(L10n.text("执行同步"), role: model.deletions > 0 ? .destructive : nil) {
                 guard let plan = model.plan, let left = model.left, let right = model.right else { return }
                 workspace.enqueueSync(plan, left: left.root, right: right.root, selected: model.selected, resolutions: model.resolutions)
                 dismiss()
             }
         } message: {
-            Text(model.summary + "\n将按预览覆盖所选文件。本地删除移到废纸篓；服务器删除无法撤销。执行过程中出错会停止，已完成的项目会保留。")
+            Text(model.summary + L10n.text("\n将按预览覆盖所选文件。本地删除移到废纸篓；服务器删除无法撤销。执行过程中出错会停止，已完成的项目会保留。"))
         }
     }
     @ViewBuilder private var preview: some View {
         if model.busy {
             VStack(spacing: 12) {
                 ProgressView().controlSize(.large)
-                Text("正在比较目录…").font(.headline)
-                Text("预览不会修改任一目录。").font(.callout).foregroundStyle(.secondary)
+                Text(L10n.text("正在比较目录…")).font(.headline)
+                Text(L10n.text("预览不会修改任一目录。")).font(.callout).foregroundStyle(.secondary)
             }.frame(maxWidth: .infinity, maxHeight: .infinity)
         } else if let plan = model.plan {
             VStack(alignment: .leading, spacing: 8) {
                 HStack {
                     Text(model.summary).font(.callout.weight(.medium))
                     Spacer()
-                    Text("无差异 \(plan.unchanged) 项 · 需处理 \(plan.items.filter { $0.operation == .blocked || ($0.operation == .conflict && model.resolutions[$0.id] == nil) }.count) 项")
+                    Text(L10n.format("无差异 %@ 项 · 需处理 %@ 项", String(describing: plan.unchanged), String(describing: plan.items.filter { $0.operation == .blocked || ($0.operation == .conflict && model.resolutions[$0.id] == nil) }.count)))
                         .font(.caption).foregroundStyle(.secondary)
                 }
                 if plan.items.isEmpty {
-                    ContentUnavailableView("两侧符合比较规则", systemImage: "checkmark.circle", description: Text("当前没有需要执行的同步操作。"))
+                    ContentUnavailableView(L10n.text("两侧符合比较规则"), systemImage: "checkmark.circle", description: Text(L10n.text("当前没有需要执行的同步操作。")))
                 } else {
                     NativeSyncTable(items: plan.items, revision: plan.id, selected: model.selected, resolutions: model.resolutions,
                                     select: model.setSelected, resolve: model.setDirection)
                 }
-                if model.unresolved > 0 { Text("请为已选的 \(model.unresolved) 项同名差异选择方向。").font(.caption).foregroundStyle(.orange) }
+                if model.unresolved > 0 { Text(L10n.format("请为已选的 %@ 项同名差异选择方向。", String(describing: model.unresolved))).font(.caption).foregroundStyle(.orange) }
             }.frame(maxWidth: .infinity, maxHeight: .infinity)
         } else {
-            ContentUnavailableView("预览目录差异", systemImage: "arrow.triangle.2.circlepath",
-                                   description: Text("选择左右目录和比较规则，然后生成预览。可从其他标签页选择远程目录。"))
+            ContentUnavailableView(L10n.text("预览目录差异"), systemImage: "arrow.triangle.2.circlepath",
+                                   description: Text(L10n.text("选择左右目录和比较规则，然后生成预览。可从其他标签页选择远程目录。")))
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
         }
     }
@@ -252,13 +251,13 @@ struct SyncReviewView: View {
         let value = side == .left ? model.left : model.right
         return VStack(alignment: .leading, spacing: 6) {
             HStack {
-                Picker(side == .left ? "左侧" : "右侧", selection: selection) {
-                    Text("选择目录…").tag("")
+                Picker(side == .left ? L10n.text("左侧") : L10n.text("右侧"), selection: selection) {
+                    Text(L10n.text("选择目录…")).tag("")
                     ForEach(model.locations) { Text($0.title).tag($0.id) }
                 }
-                Button("选择本地目录", systemImage: "folder") { model.chooseFolder(side: side) }.labelStyle(.iconOnly)
+                Button(L10n.text("选择本地目录"), systemImage: "folder") { model.chooseFolder(side: side) }.labelStyle(.iconOnly)
             }
-            Text(value?.root.path ?? "可以选择本地目录或已连接的远程目录")
+            Text(value?.root.path ?? L10n.text("可以选择本地目录或已连接的远程目录"))
                 .font(.system(.caption, design: .monospaced)).foregroundStyle(.secondary).lineLimit(1)
                 .truncationMode(.middle).textSelection(.enabled)
         }.frame(maxWidth: .infinity)
@@ -266,7 +265,7 @@ struct SyncReviewView: View {
     private func timeOffset(side: SyncSide) -> some View {
         let binding = Binding<Int>(get: { Int((side == .left ? model.options.leftTimeOffset : model.options.rightTimeOffset) / 60) },
                                    set: { value in if side == .left { model.options.leftTimeOffset = Double(value * 60) } else { model.options.rightTimeOffset = Double(value * 60) } })
-        return Stepper("\(side == .left ? "左侧" : "右侧")时间校正：\(binding.wrappedValue) 分钟", value: binding, in: -1440...1440)
+        return Stepper(L10n.format("%@时间校正：%@ 分钟", String(describing: side == .left ? L10n.text("左侧") : L10n.text("右侧")), String(describing: binding.wrappedValue)), value: binding, in: -1440...1440)
             .font(.caption)
     }
 }

@@ -13,8 +13,8 @@ enum PreviewCacheError: Error, LocalizedError {
     case unsafe, limit
     var errorDescription: String? {
         switch self {
-        case .unsafe: "预览缓存的归属或路径发生变化，已停止清理。"
-        case .limit: "预览缓存清理超过单轮上限，请检查缓存目录后重试。"
+        case .unsafe: L10n.text("预览缓存的归属或路径发生变化，已停止清理。")
+        case .limit: L10n.text("预览缓存清理超过单轮上限，请检查缓存目录后重试。")
         }
     }
 }

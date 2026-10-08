@@ -15,7 +15,7 @@ import AetherTransferCore
         }
         if let existing = windows[key] { existing.showWindow(nil); existing.window?.makeKeyAndOrderFront(nil); return }
         guard windows.count < 12 else {
-            let alert = NSAlert(); alert.messageText = "请先关闭部分编辑窗口"; alert.informativeText = "最多同时打开 12 个文本文件。"; alert.runModal(); return
+            let alert = NSAlert(); alert.messageText = L10n.text("请先关闭部分编辑窗口"); alert.informativeText = L10n.text("最多同时打开 12 个文本文件。"); alert.runModal(); return
         }
         let controller = FileEditorWindow(name: entry.name, source: source) { [weak self] in self?.windows[key] = nil }
         windows[key] = controller; controller.showWindow(nil); controller.window?.makeKeyAndOrderFront(nil)
@@ -36,9 +36,9 @@ import AetherTransferCore
         if tabs?.tabs.contains(where: { tab in
             tab.workspace.activities.contains { ["等待中", "传输中", "已暂停", "保留中", "清理中"].contains($0.state) }
         }) == true {
-            let alert = NSAlert(); alert.messageText = "仍有文件操作正在进行"
-            alert.informativeText = "请先在活动列表保留单个文件的进度，或取消任务，再退出。目录传输和同步目前需要先完成或取消。"
-            alert.addButton(withTitle: "返回传输")
+            let alert = NSAlert(); alert.messageText = L10n.text("仍有文件操作正在进行")
+            alert.informativeText = L10n.text("请先在活动列表保留单个文件的进度，或取消任务，再退出。目录传输和同步目前需要先完成或取消。")
+            alert.addButton(withTitle: L10n.text("返回传输"))
             alert.runModal(); return .terminateCancel
         }
         guard editors?.approveQuit() != false else { return .terminateCancel }
@@ -62,23 +62,23 @@ import AetherTransferCore
         window.title = name; window.minSize = NSSize(width: 640, height: 440)
         window.isReleasedWhenClosed = false
         super.init(window: window)
-        window.delegate = self; window.contentViewController = NSHostingController(rootView: FileEditorView(model: model))
+        window.delegate = self; window.contentViewController = NSHostingController(rootView: FileEditorView(model: model).modifier(AppPresentation()))
         window.center(); model.load()
     }
     required init?(coder: NSCoder) { fatalError("Not supported") }
     func approveClose() -> Bool {
         if closing { return true }
         if model.loading || model.saving {
-            let alert = NSAlert(); alert.messageText = "文件操作仍在进行"
-            alert.informativeText = "请完成保存，或取消当前操作后再关闭。"
-            alert.addButton(withTitle: "返回编辑器"); alert.addButton(withTitle: "取消当前操作")
+            let alert = NSAlert(); alert.messageText = L10n.text("文件操作仍在进行")
+            alert.informativeText = L10n.text("请完成保存，或取消当前操作后再关闭。")
+            alert.addButton(withTitle: L10n.text("返回编辑器")); alert.addButton(withTitle: L10n.text("取消当前操作"))
             if alert.runModal() == .alertSecondButtonReturn { model.cancelOperation() }
             return false
         }
         if model.isDirty || model.external {
-            let alert = NSAlert(); alert.messageText = "结束“\(model.name)”的编辑？"
-            alert.informativeText = model.external ? "结束后外部编辑器的保存不会再回传；此会话的本机草稿将清理。可先导出草稿。" : "仍有未保存的更改。可先导出草稿，或放弃更改。"
-            alert.addButton(withTitle: "继续编辑"); alert.addButton(withTitle: "导出草稿…"); alert.addButton(withTitle: "结束并放弃草稿")
+            let alert = NSAlert(); alert.messageText = L10n.format("结束“%@”的编辑？", String(describing: model.name))
+            alert.informativeText = model.external ? L10n.text("结束后外部编辑器的保存不会再回传；此会话的本机草稿将清理。可先导出草稿。") : L10n.text("仍有未保存的更改。可先导出草稿，或放弃更改。")
+            alert.addButton(withTitle: L10n.text("继续编辑")); alert.addButton(withTitle: L10n.text("导出草稿…")); alert.addButton(withTitle: L10n.text("结束并放弃草稿"))
             switch alert.runModal() {
             case .alertSecondButtonReturn: model.exportDraft(); return false
             case .alertThirdButtonReturn: return true
@@ -102,7 +102,7 @@ import AetherTransferCore
     @Published var loading = true
     @Published var saving = false
     @Published var external = false
-    @Published var notice = "正在读取文件…"
+    @Published var notice = L10n.text("正在读取文件…")
     @Published var error: String?
     @Published private var savedText = ""
     @Published private var externalDirty = false
@@ -118,14 +118,14 @@ import AetherTransferCore
     var ready: Bool { session != nil && !loading && !saving && !closed }
     var location: String {
         switch source {
-        case .local(let url): "本地 · \(url.path)"
+        case .local(let url): L10n.format("本地 · %@", String(describing: url.path))
         case .remote(let client, let path): "\(client.profile.protocolKind.title) · \(path)"
         }
     }
     init(name: String, source: FileEditSource) { self.name = name; self.source = source }
     func load() {
         guard !closed, session == nil, !saving else { return }
-        loading = true; error = nil; notice = "正在读取文件…"
+        loading = true; error = nil; notice = L10n.text("正在读取文件…")
         operation = Task {
             do {
                 let opened = try await FileEditSession.open(source)
@@ -135,14 +135,14 @@ import AetherTransferCore
                     guard !closed else { throw CancellationError() }
                     // Publish a ready session only after its initial text is available.
                     session = opened
-                    text = snapshot.text; savedText = snapshot.text; notice = "已载入 · UTF-8\(snapshot.hasUTF8BOM ? " BOM" : "")"
+                    text = snapshot.text; savedText = snapshot.text; notice = L10n.format("已载入 · UTF-8%@", String(describing: snapshot.hasUTF8BOM ? " BOM" : ""))
                 } catch {
                     // Closing on the cancelled reader would also cancel its cleanup worker.
                     await Task.detached { try? await opened.close() }.value
                     throw error
                 }
-            } catch is CancellationError { notice = "读取已取消" }
-            catch { self.error = error.localizedDescription; notice = "无法打开文件" }
+            } catch is CancellationError { notice = L10n.text("读取已取消") }
+            catch { self.error = error.localizedDescription; notice = L10n.text("无法打开文件") }
             loading = false
         }
     }
@@ -160,16 +160,16 @@ import AetherTransferCore
     func save() {
         guard ready, let session else { return }
         let pendingDraft = draftTask
-        pendingDraft?.cancel(); saving = true; error = nil; notice = "正在核对并保存…"
+        pendingDraft?.cancel(); saving = true; error = nil; notice = L10n.text("正在核对并保存…")
         let contents = external ? nil : text
         operation = Task {
             await pendingDraft?.value
             do {
                 let snapshot = try await session.save(text: contents)
                 text = snapshot.text; savedText = snapshot.text; externalDirty = false; automaticBlocked = false
-                notice = external ? "已回传 · 外部保存后继续自动回传" : "已保存"
-            } catch is CancellationError { notice = external ? "自动回传已暂停 · 草稿保留" : "保存已取消 · 草稿保留"; automaticBlocked = external }
-            catch { self.error = error.localizedDescription; notice = external ? "自动回传已暂停 · 草稿保留" : "保存未完成 · 草稿保留"; automaticBlocked = external }
+                notice = external ? L10n.text("已回传 · 外部保存后继续自动回传") : L10n.text("已保存")
+            } catch is CancellationError { notice = external ? L10n.text("自动回传已暂停 · 草稿保留") : L10n.text("保存已取消 · 草稿保留"); automaticBlocked = external }
+            catch { self.error = error.localizedDescription; notice = external ? L10n.text("自动回传已暂停 · 草稿保留") : L10n.text("保存未完成 · 草稿保留"); automaticBlocked = external }
             saving = false
             NotificationCenter.default.post(name: .init("AetherTransferEditedFile"), object: nil)
             if pendingExternal { pendingExternal = false; externalChanged() }
@@ -178,8 +178,8 @@ import AetherTransferCore
     func reload() {
         guard ready, !external, let session else { return }
         if isDirty {
-            let alert = NSAlert(); alert.messageText = "重新载入原文件？"; alert.informativeText = "将放弃此窗口未保存的更改。可以先导出草稿。"
-            alert.addButton(withTitle: "取消"); alert.addButton(withTitle: "重新载入")
+            let alert = NSAlert(); alert.messageText = L10n.text("重新载入原文件？"); alert.informativeText = L10n.text("将放弃此窗口未保存的更改。可以先导出草稿。")
+            alert.addButton(withTitle: L10n.text("取消")); alert.addButton(withTitle: L10n.text("重新载入"))
             guard alert.runModal() == .alertSecondButtonReturn else { return }
         }
         let pendingDraft = draftTask
@@ -188,14 +188,14 @@ import AetherTransferCore
             await pendingDraft?.value
             do {
                 let snapshot = try await session.reload(); text = snapshot.text; savedText = snapshot.text
-                externalDirty = false; automaticBlocked = false; notice = "已重新载入"
+                externalDirty = false; automaticBlocked = false; notice = L10n.text("已重新载入")
             } catch { self.error = error.localizedDescription }
             loading = false
         }
     }
     func openExternal() {
         guard ready, !external, let session else { return }
-        let panel = NSOpenPanel(); panel.title = "选择外部编辑器"
+        let panel = NSOpenPanel(); panel.title = L10n.text("选择外部编辑器")
         panel.allowedContentTypes = [.applicationBundle]; panel.canChooseDirectories = false
         panel.directoryURL = URL(fileURLWithPath: "/Applications")
         guard panel.runModal() == .OK, let appURL = panel.url else { return }
@@ -212,7 +212,7 @@ import AetherTransferCore
                 }.value
                 external = true
                 _ = try await NSWorkspace.shared.open([url], withApplicationAt: appURL, configuration: NSWorkspace.OpenConfiguration())
-                notice = "外部编辑器保存后自动回传"
+                notice = L10n.text("外部编辑器保存后自动回传")
             } catch { watcher?.stop(); watcher = nil; external = false; self.error = error.localizedDescription }
             saving = false
             if pendingExternal { pendingExternal = false; externalChanged() }
@@ -230,13 +230,13 @@ import AetherTransferCore
                 let snapshot = try await session.snapshot(); text = snapshot.text
                 if !automaticBlocked { save() }
             } catch is CancellationError { }
-            catch { self.error = error.localizedDescription; automaticBlocked = true; notice = "自动回传暂停 · 草稿保留" }
+            catch { self.error = error.localizedDescription; automaticBlocked = true; notice = L10n.text("自动回传暂停 · 草稿保留") }
         }
     }
     func stopExternal() {
         guard ready else { return }
         watcher?.stop(); watcher = nil; draftTask?.cancel(); external = false; pendingExternal = false
-        notice = "自动回传已停止"
+        notice = L10n.text("自动回传已停止")
         guard let session else { return }
         loading = true
         operation = Task {
@@ -247,12 +247,12 @@ import AetherTransferCore
     }
     func exportDraft() {
         guard ready, let session else { return }
-        let panel = NSSavePanel(); panel.title = "导出本机草稿"; panel.nameFieldStringValue = name
+        let panel = NSSavePanel(); panel.title = L10n.text("导出本机草稿"); panel.nameFieldStringValue = name
         guard panel.runModal() == .OK, let destination = panel.url else { return }
         let contents = external ? nil : text
         saving = true; error = nil
         operation = Task {
-            do { try await session.exportDraft(to: destination, text: contents); notice = "草稿已导出" }
+            do { try await session.exportDraft(to: destination, text: contents); notice = L10n.text("草稿已导出") }
             catch { self.error = error.localizedDescription }
             saving = false
         }
@@ -273,26 +273,28 @@ import AetherTransferCore
 }
 
 private struct FileEditorView: View {
+    @Environment(\.locale) private var interfaceLocale
     @ObservedObject var model: FileEditorModel
     @AppStorage("appearance") private var appearance = "system"
     var body: some View {
+        let _ = interfaceLocale
         VStack(spacing: 0) {
             HStack(spacing: 12) {
                 Label(model.name, systemImage: "doc.text").font(.headline).lineLimit(1)
-                if model.isDirty { Circle().fill(.orange).frame(width: 6, height: 6).accessibilityLabel("有未保存更改") }
+                if model.isDirty { Circle().fill(.orange).frame(width: 6, height: 6).accessibilityLabel(L10n.text("有未保存更改")) }
                 Spacer()
                 if model.external {
-                    Button("停止自动回传", systemImage: "stop.circle") { model.stopExternal() }.disabled(!model.ready)
+                    Button(L10n.text("停止自动回传"), systemImage: "stop.circle") { model.stopExternal() }.disabled(!model.ready)
                 } else {
-                    Button("外部编辑器…", systemImage: "square.and.pencil") { model.openExternal() }.disabled(!model.ready)
+                    Button(L10n.text("外部编辑器…"), systemImage: "square.and.pencil") { model.openExternal() }.disabled(!model.ready)
                 }
                 Menu {
-                    Button("重新载入") { model.reload() }.disabled(!model.ready || model.external)
-                    Button("导出草稿…") { model.exportDraft() }.disabled(!model.ready)
-                    Button("在 Finder 中显示草稿") { model.revealDraft() }
+                    Button(L10n.text("重新载入")) { model.reload() }.disabled(!model.ready || model.external)
+                    Button(L10n.text("导出草稿…")) { model.exportDraft() }.disabled(!model.ready)
+                    Button(L10n.text("在 Finder 中显示草稿")) { model.revealDraft() }
                 } label: { Image(systemName: "ellipsis") }.menuStyle(.borderlessButton).frame(width: 22)
-                    .accessibilityLabel("编辑选项")
-                Button(model.external ? "回传" : "保存", systemImage: "arrow.up.doc") { model.save() }
+                    .accessibilityLabel(L10n.text("编辑选项"))
+                Button(model.external ? L10n.text("回传") : L10n.text("保存"), systemImage: "arrow.up.doc") { model.save() }
                     .buttonStyle(.glassProminent).keyboardShortcut("s").disabled(!model.ready || !model.isDirty)
             }.padding(.horizontal, 18).padding(.vertical, 12)
             Text(model.location).font(.system(.caption, design: .monospaced)).foregroundStyle(.secondary)
@@ -300,7 +302,7 @@ private struct FileEditorView: View {
                 .padding(.horizontal, 18).padding(.bottom, 12)
             Divider()
             NativeTextEditor(text: Binding(get: { model.text }, set: { model.changeText($0) }), editable: model.ready && !model.external)
-                .overlay { if model.loading { ProgressView("正在读取文本…").padding(20).background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12)) } }
+                .overlay { if model.loading { ProgressView(L10n.text("正在读取文本…")).padding(20).background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12)) } }
             if let error = model.error {
                 Divider()
                 Label(error, systemImage: "exclamationmark.triangle").font(.callout).foregroundStyle(.orange)
@@ -310,9 +312,9 @@ private struct FileEditorView: View {
             HStack(spacing: 10) {
                 if model.saving { ProgressView().controlSize(.small) }
                 Text(model.notice).lineLimit(1)
-                if model.saving || model.loading { Button("取消") { model.cancelOperation() }.buttonStyle(.borderless) }
-                else if !model.ready { Button("重新读取") { model.load() }.buttonStyle(.borderless) }
-                Spacer(); Text("UTF-8 · 5 MiB 上限")
+                if model.saving || model.loading { Button(L10n.text("取消")) { model.cancelOperation() }.buttonStyle(.borderless) }
+                else if !model.ready { Button(L10n.text("重新读取")) { model.load() }.buttonStyle(.borderless) }
+                Spacer(); Text(L10n.text("UTF-8 · 5 MiB 上限"))
             }.font(.caption).foregroundStyle(.secondary).padding(.horizontal, 18).frame(height: 36)
         }
         .preferredColorScheme(appearance == "dark" ? .dark : (appearance == "light" ? .light : nil))
@@ -339,7 +341,7 @@ private struct NativeTextEditor: NSViewRepresentable {
         view.frame = NSRect(x: 0, y: 0, width: 800, height: 500)
         view.autoresizingMask = [.width]; view.textContainer?.widthTracksTextView = true
         view.textContainerInset = NSSize(width: 16, height: 14); view.string = text
-        view.setAccessibilityLabel("文本内容"); view.delegate = context.coordinator
+        view.setAccessibilityLabel(L10n.text("文本内容")); view.delegate = context.coordinator
         scroll.documentView = view
         return scroll
     }

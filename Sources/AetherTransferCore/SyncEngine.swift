@@ -158,7 +158,7 @@ private enum SyncIO {
         let values = try FileManager.default.attributesOfFileSystem(forPath: url.path)
         let available = (values[.systemFreeSize] as? NSNumber)?.int64Value ?? 0
         guard requiredBytes >= 0, available > requiredBytes, available - requiredBytes > 16 * 1024 * 1024 else {
-            throw TransferError.remote("可用磁盘空间不足以安全生成同步临时文件。")
+            throw TransferError.remote(L10n.text("可用磁盘空间不足以安全生成同步临时文件。"))
         }
     }
     static func createTemporaryDirectory(_ url: URL, requiredBytes: Int64) async throws {
@@ -191,7 +191,7 @@ private enum SyncIO {
             let input = try FileHandle(forReadingFrom: source); defer { try? input.close() }
             let descriptor = open(target.path, O_CREAT | O_EXCL | O_WRONLY | O_NOFOLLOW, 0o600)
             guard descriptor >= 0 else {
-                throw TransferError.remote("无法创建同步临时文件。")
+                throw TransferError.remote(L10n.text("无法创建同步临时文件。"))
             }
             let output = FileHandle(fileDescriptor: descriptor, closeOnDealloc: true); defer { try? output.close() }
             var completed: Int64 = 0, last = Date.distantPast
@@ -250,7 +250,7 @@ public enum SyncEngine {
                         }
                     }
                 }
-                guard metadata(entries) == metadata(try await root.list(directory.path)) else { throw SyncError.changed(directory.path.isEmpty ? "目录内容" : directory.path) }
+                guard metadata(entries) == metadata(try await root.list(directory.path)) else { throw SyncError.changed(directory.path.isEmpty ? L10n.text("目录内容") : directory.path) }
             }
         }
         return SyncSnapshot(rootID: root.id, records: records)
@@ -298,7 +298,7 @@ public enum SyncEngine {
         // One TransferControl owns one native request, so execution scans are sequential.
         let currentLeft = try await scan(roots[.left]!, options: plan.options, control: control)
         let currentRight = try await scan(roots[.right]!, options: plan.options, control: control)
-        guard currentLeft == plan.left, currentRight == plan.right else { throw SyncError.changed("目录内容") }
+        guard currentLeft == plan.left, currentRight == plan.right else { throw SyncError.changed(L10n.text("目录内容")) }
         func priority(_ operation: SyncOperation) -> Int { switch operation { case .createDirectory: 0; case .copy: 1; default: 2 } }
         operations.sort {
             let a = priority($0.1), b = priority($1.1)

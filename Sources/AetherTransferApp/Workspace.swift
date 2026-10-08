@@ -107,9 +107,9 @@ struct ActivityItem: Identifiable {
     }
     func removeProfile(_ profile: ServerProfile) {
         let alert = NSAlert()
-        alert.messageText = "移除服务器收藏？"
-        alert.informativeText = "将移除“\(profile.name.isEmpty ? profile.host : profile.name)”及其保存的钥匙串凭据。服务器上的文件不会改变。"
-        alert.addButton(withTitle: "移除收藏"); alert.addButton(withTitle: "取消")
+        alert.messageText = L10n.text("移除服务器收藏？")
+        alert.informativeText = L10n.format("将移除“%@”及其保存的钥匙串凭据。服务器上的文件不会改变。", String(describing: profile.name.isEmpty ? profile.host : profile.name))
+        alert.addButton(withTitle: L10n.text("移除收藏")); alert.addButton(withTitle: L10n.text("取消"))
         guard alert.runModal() == .alertFirstButtonReturn else { return }
         profileGeneration = UUID()
         Task {
@@ -135,7 +135,7 @@ struct ActivityItem: Identifiable {
             do {
                 let data = try await Task.detached {
                     let size = try source.resourceValues(forKeys: [.fileSizeKey]).fileSize ?? 0
-                    guard size <= 1024 * 1024 else { throw TransferError.remote("收藏文件超过 1 MiB。") }
+                    guard size <= 1024 * 1024 else { throw TransferError.remote(L10n.text("收藏文件超过 1 MiB。")) }
                     return try Data(contentsOf: source)
                 }.value
                 profileGeneration = UUID()
@@ -263,7 +263,7 @@ struct ActivityItem: Identifiable {
     }
     func edit(_ entry: FileEntry, remote: Bool) {
         guard !entry.isDirectory, !entry.isSymbolicLink else { return }
-        guard !remote || !isS3 else { error = "S3 文本编辑尚未接入。"; return }
+        guard !remote || !isS3 else { error = L10n.text("S3 文本编辑尚未接入。"); return }
         if remote, let client { editors.open(entry, source: .remote(client, entry.path)) }
         else if !remote { editors.open(entry, source: .local(URL(fileURLWithPath: entry.path))) }
     }
@@ -273,7 +273,7 @@ struct ActivityItem: Identifiable {
     }
     func preview(_ entry: FileEntry, remote: Bool) {
         guard !entry.isDirectory, !entry.isSymbolicLink else { return }
-        guard !remote || !isS3 else { error = "S3 快速查看尚未接入；可先下载文件。"; return }
+        guard !remote || !isS3 else { error = L10n.text("S3 快速查看尚未接入；可先下载文件。"); return }
         if remote, let client { previews.open(entry, source: .remote(client, entry.path)) }
         else if !remote { previews.open(entry, source: .local(URL(fileURLWithPath: entry.path))) }
     }
@@ -290,7 +290,7 @@ struct ActivityItem: Identifiable {
     func downloadSelection() { download(remoteFiles.filter { remoteSelection.contains($0.id) }) }
     func enqueueSync(_ plan: SyncPlan, left: SyncRoot, right: SyncRoot, selected: Set<String>, resolutions: [String: SyncDirection]) {
         let rate = Int64(max(0, UserDefaults.standard.integer(forKey: "transferRateKiB"))) * 1024
-        enqueue(name: "\(selected.count) 个同步操作", direction: "同步", retryable: false, scope: .synchronization) { control, progress in
+        enqueue(name: L10n.format("%@ 个同步操作", String(describing: selected.count)), direction: "同步", retryable: false, scope: .synchronization) { control, progress in
             _ = try await SyncEngine.execute(plan, left: left, right: right, selected: selected, resolutions: resolutions,
                                              control: control, rateLimit: rate, progress: progress)
         }
@@ -343,10 +343,10 @@ struct ActivityItem: Identifiable {
         }
     }
     func conflictPolicy(_ name: String, directory: Bool) -> ConflictPolicy? {
-        let alert = NSAlert(); alert.messageText = "目标已存在：\(name)"
-        alert.informativeText = directory ? "合并目录将覆盖其中同名文件。也可以保留两份或跳过。" : "请选择覆盖、保留两份或跳过。"
-        alert.addButton(withTitle: directory ? "合并并覆盖" : "覆盖")
-        alert.addButton(withTitle: "保留两份"); alert.addButton(withTitle: "跳过"); alert.addButton(withTitle: "取消")
+        let alert = NSAlert(); alert.messageText = L10n.format("目标已存在：%@", String(describing: name))
+        alert.informativeText = directory ? L10n.text("合并目录将覆盖其中同名文件。也可以保留两份或跳过。") : L10n.text("请选择覆盖、保留两份或跳过。")
+        alert.addButton(withTitle: directory ? L10n.text("合并并覆盖") : L10n.text("覆盖"))
+        alert.addButton(withTitle: L10n.text("保留两份")); alert.addButton(withTitle: L10n.text("跳过")); alert.addButton(withTitle: L10n.text("取消"))
         switch alert.runModal() {
         case .alertFirstButtonReturn: return .overwrite
         case .alertSecondButtonReturn: return .keepBoth
@@ -459,7 +459,7 @@ struct ActivityItem: Identifiable {
                 setState(id, "清理中")
                 Task {
                     do { try await job.transfer.discard(client: job.client); setState(id, "已取消") }
-                    catch { setState(id, "失败", error: "进度清理未完成，可在保留的传输中重试：\(error.localizedDescription)") }
+                    catch { setState(id, "失败", error: L10n.format("进度清理未完成，可在保留的传输中重试：%@", String(describing: error.localizedDescription))) }
                 }
             }
             resumeJobs[id] = nil; refreshLocal(); refreshRemote()
@@ -495,9 +495,9 @@ struct ActivityItem: Identifiable {
     }
     func discardRetained(_ id: UUID) {
         guard let job = resumeJobs[id] else { return }
-        let alert = NSAlert(); alert.messageText = "丢弃“\(job.record.name)”的保留进度？"
-        alert.informativeText = "将清理此任务的部分文件。原始文件和原有目标文件会保留。"
-        alert.addButton(withTitle: "丢弃进度"); alert.addButton(withTitle: "返回")
+        let alert = NSAlert(); alert.messageText = L10n.format("丢弃“%@”的保留进度？", String(describing: job.record.name))
+        alert.informativeText = L10n.text("将清理此任务的部分文件。原始文件和原有目标文件会保留。")
+        alert.addButton(withTitle: L10n.text("丢弃进度")); alert.addButton(withTitle: L10n.text("返回"))
         guard alert.runModal() == .alertFirstButtonReturn else { return }
         setState(id, "清理中")
         Task {
@@ -505,7 +505,7 @@ struct ActivityItem: Identifiable {
                 try await job.transfer.discard(client: job.client)
                 resumeJobs[id] = nil; controls[id] = nil; setState(id, "已取消")
                 if let index = activities.firstIndex(where: { $0.id == id }) { activities[index].canRetry = false; activities[index].canRetain = false }
-            } catch { setState(id, "失败", error: "进度清理未完成：\(error.localizedDescription)") }
+            } catch { setState(id, "失败", error: L10n.format("进度清理未完成：%@", String(describing: error.localizedDescription))) }
         }
     }
     func clearFinishedActivities() {
@@ -514,7 +514,7 @@ struct ActivityItem: Identifiable {
         for id in ended { retryOperations[id] = nil; controls[id] = nil; resumeJobs[id] = nil }
     }
     func createFolder(remote: Bool) {
-        guard let name = askName(title: "新建文件夹", initial: "新文件夹") else { return }
+        guard let name = askName(title: L10n.text("新建文件夹"), initial: L10n.text("新文件夹")) else { return }
         do {
             if remote && isS3 {
                 guard let s3Client else { return }
@@ -534,9 +534,9 @@ struct ActivityItem: Identifiable {
         } catch { self.error = error.localizedDescription }
     }
     func rename(_ entry: FileEntry, remote: Bool) {
-        guard !remote || !isS3 else { error = "S3 对象复制 / 重命名尚未接入。"; return }
+        guard !remote || !isS3 else { error = L10n.text("S3 对象复制 / 重命名尚未接入。"); return }
         guard !remote || client != nil else { return }
-        guard let name = askName(title: "重命名", initial: entry.name) else { return }
+        guard let name = askName(title: L10n.text("重命名"), initial: entry.name) else { return }
         do {
             try RemotePath.validateName(name)
             if remote, let client {
@@ -551,10 +551,10 @@ struct ActivityItem: Identifiable {
     }
     func delete(_ entry: FileEntry, remote: Bool) {
         guard !remote || hasRemoteConnection else { return }
-        guard !remote || !isS3 || !entry.isDirectory else { error = "S3 前缀递归删除尚未接入。"; return }
-        let alert = NSAlert(); alert.messageText = "删除 \(entry.name)？"
-        alert.informativeText = remote ? "服务器删除无法从本机废纸篓恢复。" : "文件将移到废纸篓。"
-        alert.addButton(withTitle: "删除"); alert.addButton(withTitle: "取消")
+        guard !remote || !isS3 || !entry.isDirectory else { error = L10n.text("S3 前缀递归删除尚未接入。"); return }
+        let alert = NSAlert(); alert.messageText = L10n.format("删除 %@？", String(describing: entry.name))
+        alert.informativeText = remote ? L10n.text("服务器删除无法从本机废纸篓恢复。") : L10n.text("文件将移到废纸篓。")
+        alert.addButton(withTitle: L10n.text("删除")); alert.addButton(withTitle: L10n.text("取消"))
         guard alert.runModal() == .alertFirstButtonReturn else { return }
         if remote, let s3Client, let key = entry.s3Key {
             Task { do { try await s3Client.remove(key); refreshRemote() } catch { self.error = error.localizedDescription } }
@@ -568,7 +568,7 @@ struct ActivityItem: Identifiable {
     private func askName(title: String, initial: String) -> String? {
         let alert = NSAlert(); alert.messageText = title
         let field = NSTextField(string: initial); field.frame = NSRect(x: 0, y: 0, width: 320, height: 24)
-        alert.accessoryView = field; alert.addButton(withTitle: "确定"); alert.addButton(withTitle: "取消")
+        alert.accessoryView = field; alert.addButton(withTitle: L10n.text("确定")); alert.addButton(withTitle: L10n.text("取消"))
         return alert.runModal() == .alertFirstButtonReturn ? field.stringValue : nil
     }
 }

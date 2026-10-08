@@ -32,8 +32,8 @@ extension Workspace {
                     }
                     catch S3Error.cleanupRequired(let record) {
                         do { try await S3CleanupStore.shared.add(record) }
-                        catch { throw TransferError.remote("S3 分片清理未完成，清理记录保存失败：\(error.localizedDescription)") }
-                        throw TransferError.remote("S3 分片清理未完成；请在“保留的传输”中重新连接并重试清理。")
+                        catch { throw TransferError.remote(L10n.format("S3 分片清理未完成，清理记录保存失败：%@", String(describing: error.localizedDescription))) }
+                        throw TransferError.remote(L10n.text("S3 分片清理未完成；请在“保留的传输”中重新连接并重试清理。"))
                     }
                 }
             } catch { self.error = error.localizedDescription }

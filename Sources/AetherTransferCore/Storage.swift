@@ -18,10 +18,10 @@ public struct ProfileStore: Sendable {
         try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: file.path)
     }
     public static func importing(_ data: Data, into existing: [ServerProfile]) throws -> [ServerProfile] {
-        guard data.count <= 1024 * 1024 else { throw TransferError.remote("收藏文件超过 1 MiB。") }
+        guard data.count <= 1024 * 1024 else { throw TransferError.remote(L10n.text("收藏文件超过 1 MiB。")) }
         let imported = try JSONDecoder().decode([ServerProfile].self, from: data)
         guard imported.count <= 1000, Set(imported.map(\.id)).count == imported.count else {
-            throw TransferError.remote("收藏数量过多或包含重复标识。")
+            throw TransferError.remote(L10n.text("收藏数量过多或包含重复标识。"))
         }
         var result = existing
         for var profile in imported {

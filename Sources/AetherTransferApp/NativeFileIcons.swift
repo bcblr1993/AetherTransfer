@@ -59,10 +59,14 @@ struct NativeFileIcons: NSViewRepresentable {
         grid.isEnabled = context.environment.isEnabled
         grid.setAccessibilityEnabled(grid.isEnabled)
         coordinator.updating = true; defer { coordinator.updating = false }
+        let languageChanged = coordinator.locale != context.environment.locale
+        if languageChanged { coordinator.locale = context.environment.locale; coordinator.bytes.locale = context.environment.locale }
         if coordinator.revision != revision {
             coordinator.files = files; coordinator.revision = revision
             coordinator.indexByID = files.enumerated().reduce(into: [:]) { $0[$1.element.id] = $1.offset }
             grid.reloadData()
+        } else if languageChanged {
+            grid.reloadItems(at: Set(grid.indexPathsForVisibleItems()))
         }
         let indexes = Set(selection.compactMap { coordinator.indexByID[$0].map { IndexPath(item: $0, section: 0) } })
         if grid.selectionIndexPaths != indexes { grid.selectionIndexPaths = indexes }
@@ -77,13 +81,14 @@ struct NativeFileIcons: NSViewRepresentable {
         var revision: UUID?
         var updating = false
         private let actions = FileBrowserActions()
-        private let bytes: ByteCountFormatter = { let value = ByteCountFormatter(); value.countStyle = .file; return value }()
+        var locale: Locale?
+        var bytes = ByteCountFormatStyle(style: .file, spellsOutZero: false)
         init(_ parent: NativeFileIcons) { self.parent = parent }
         func collectionView(_ collectionView: NSCollectionView, numberOfItemsInSection section: Int) -> Int { files.count }
         func collectionView(_ collectionView: NSCollectionView, itemForRepresentedObjectAt indexPath: IndexPath) -> NSCollectionViewItem {
             let item = collectionView.makeItem(withIdentifier: FileIconItem.identifier, for: indexPath) as! FileIconItem
             let entry = files[indexPath.item]
-            item.configure(entry, detail: entry.isDirectory ? "文件夹" : bytes.string(fromByteCount: entry.size))
+            item.configure(entry, detail: entry.isDirectory ? L10n.text("文件夹") : bytes.format(entry.size))
             item.select = { [weak self, weak collectionView] in
                 guard let self, let collectionView, self.grid?.isEnabled == true else { return false }
                 collectionView.selectionIndexPaths = [indexPath]; self.changedSelection()

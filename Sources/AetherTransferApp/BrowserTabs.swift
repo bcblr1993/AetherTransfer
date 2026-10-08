@@ -35,7 +35,7 @@ import AetherTransferCore
         let workspace = tabs[index].workspace
         // Active file operations must remain visible until the user cancels or finishes them.
         if workspace.activities.contains(where: { ["传输中", "等待中", "已暂停", "保留中", "清理中"].contains($0.state) }) {
-            workspace.error = "此标签页仍有传输任务，请先完成或取消任务。"
+            workspace.error = L10n.text("此标签页仍有传输任务，请先完成或取消任务。")
             return
         }
         workspace.disconnect(); tabs.remove(at: index)
@@ -43,29 +43,51 @@ import AetherTransferCore
     }
 }
 
+struct BrowserTabBar: View {
+    @Environment(\.locale) private var interfaceLocale
+    @ObservedObject var tabs: BrowserTabs
+    var body: some View {
+        let _ = interfaceLocale
+        ScrollView(.horizontal) {
+            GlassEffectContainer(spacing: 8) {
+                HStack(spacing: 4) {
+                    ForEach(tabs.tabs) { tab in
+                        BrowserTabItem(id: tab.id, workspace: tab.workspace, tabs: tabs)
+                    }
+                    Button(L10n.text("新建标签页"), systemImage: "plus") { tabs.add() }
+                        .labelStyle(.iconOnly).buttonStyle(.borderless).padding(.horizontal, 8)
+                }.padding(.horizontal, 10).padding(.vertical, 7)
+            }
+        }.scrollIndicators(.hidden)
+    }
+}
+
 struct BrowserTabItem: View {
+    @Environment(\.locale) private var interfaceLocale
     let id: UUID
     @ObservedObject var workspace: Workspace
     @ObservedObject var tabs: BrowserTabs
-    let namespace: Namespace.ID
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
-    @ViewBuilder var body: some View {
-        if tabs.selected == id {
-            content.glassEffect(.regular.tint(.accentColor.opacity(0.08)), in: Capsule())
-                .glassEffectID("selected-tab", in: namespace)
-                .glassEffectTransition(reduceMotion ? .identity : .matchedGeometry)
-                .accessibilityAddTraits(.isSelected)
-        } else { content }
+    var body: some View {
+        let _ = interfaceLocale
+        // The content and modifier stay structurally stable. Only the glass
+        // material changes; labels and file panes never inherit its animation.
+        content.transaction { $0.animation = nil }
+            .glassEffect(tabs.selected == id ? .regular.tint(.accentColor.opacity(0.08)) : .identity, in: Capsule())
+            .animation(reduceMotion ? nil : .smooth(duration: InterfaceStyle.tabTransition), value: tabs.selected == id)
+            .accessibilityAddTraits(tabs.selected == id ? .isSelected : [])
     }
     private var content: some View {
         HStack(spacing: 8) {
             Button { tabs.selected = id } label: {
-                Label(workspace.connectedProfile.map { $0.name.isEmpty ? $0.host : $0.name } ?? "新连接", systemImage: workspace.connectedProfile == nil ? "folder" : "network")
+                Label(workspace.connectedProfile.map { $0.name.isEmpty ? $0.host : $0.name } ?? L10n.text("新连接"), systemImage: workspace.connectedProfile == nil ? "folder" : "network")
                     .lineLimit(1).frame(maxWidth: 180)
             }.buttonStyle(.plain)
-            if tabs.tabs.count > 1 {
-                Button("关闭标签页", systemImage: "xmark") { tabs.close(id) }.labelStyle(.iconOnly).buttonStyle(.plain)
-            }
+            Button(L10n.text("关闭标签页"), systemImage: "xmark") { tabs.close(id) }
+                .labelStyle(.iconOnly).buttonStyle(.plain)
+                .opacity(tabs.tabs.count > 1 ? 1 : 0)
+                .disabled(tabs.tabs.count < 2)
+                .accessibilityHidden(tabs.tabs.count < 2)
         }
         .padding(.horizontal, 12).padding(.vertical, 8)
     }

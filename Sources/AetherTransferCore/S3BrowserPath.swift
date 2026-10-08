@@ -18,7 +18,7 @@ public enum S3BrowserPath {
     }
     public static func validateLocalName(_ name: String) throws {
         guard !name.isEmpty, name != ".", name != "..", !name.contains("/"), !name.utf8.contains(0) else {
-            throw TransferError.remote("此对象键无法安全映射为本地文件名，请选择其他保存名称。")
+            throw TransferError.remote(L10n.text("此对象键无法安全映射为本地文件名，请选择其他保存名称。"))
         }
     }
 }

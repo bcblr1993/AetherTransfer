@@ -25,12 +25,12 @@ extension S3Client {
         if !destination.utf8.elementsEqual(prefix.utf8) { try await S3TreeSnapshot.validateUpload(manifest, prefix: destination, control: control) }
         var counter = TreeProgress(total: manifest.bytes, totalItems: manifest.items.count)
         var directories: [String: String] = [:], skipped = Set<String>()
-        progress(counter.event(phase: "目录扫描完成"))
+        progress(counter.event(phase: L10n.text("目录扫描完成")))
         for item in manifest.items {
             try await TreeIO.boundary(control)
             if !item.relative.isEmpty && skipped.contains(item.parent) {
                 if item.entry.isDirectory { skipped.insert(item.relative) }
-                counter.finish(item, skipped: true); progress(counter.event(phase: "已跳过 · \(item.entry.name)")); continue
+                counter.finish(item, skipped: true); progress(counter.event(phase: L10n.format("已跳过 · %@", String(describing: item.entry.name)))); continue
             }
             let local = URL(fileURLWithPath: item.entry.path)
             let current = try await TreeIO.run { try TreeIO.localEntry(local) }
@@ -46,7 +46,7 @@ extension S3Client {
                     if policy == .reject { throw TransferError.conflict(target) }
                     if policy == .skip {
                         skipped.insert(item.relative); counter.finish(item, skipped: true)
-                        progress(counter.event(phase: "已跳过 · \(item.entry.name)")); continue
+                        progress(counter.event(phase: L10n.format("已跳过 · %@", String(describing: item.entry.name)))); continue
                     }
                     if policy == .keepBoth { target = try await availablePrefix(target) }
                 }
@@ -55,15 +55,15 @@ extension S3Client {
                     guard marker.size == 0 else { throw TransferError.conflict(target) }
                 } else { try await createPrefix(target) }
                 directories[item.relative] = target; counter.finish(item)
-                progress(counter.event(phase: "已处理目录 · \(item.entry.name)"))
+                progress(counter.event(phase: L10n.format("已处理目录 · %@", String(describing: item.entry.name))))
             } else {
                 let reporter = TreeFileProgress(base: counter, size: item.entry.size, callback: progress)
                 let committed = try await uploadFile(local, to: target, policy: policy) { reporter.receive($0) }
                 counter.finish(item, skipped: !committed)
-                progress(counter.event(phase: committed ? "已提交 · \(item.entry.name)" : "已跳过 · \(item.entry.name)"))
+                progress(counter.event(phase: committed ? L10n.format("已提交 · %@", String(describing: item.entry.name)) : L10n.format("已跳过 · %@", String(describing: item.entry.name))))
             }
         }
-        progress(counter.event(phase: "目录处理完成"))
+        progress(counter.event(phase: L10n.text("目录处理完成")))
     }
 
     public func downloadTree(_ entry: FileEntry, to destination: URL, policy: ConflictPolicy = .reject,
@@ -87,12 +87,12 @@ extension S3Client {
         let snapshot = try await S3TreeSnapshot.scan(entry, client: self, progress: progress)
         var counter = TreeProgress(total: snapshot.manifest.bytes, totalItems: snapshot.manifest.items.count)
         var directories: [String: URL] = [:], skipped = Set<String>()
-        progress(counter.event(phase: "目录扫描完成"))
+        progress(counter.event(phase: L10n.text("目录扫描完成")))
         for item in snapshot.manifest.items {
             try await TreeIO.boundary(control)
             if !item.relative.isEmpty && skipped.contains(item.parent) {
                 if item.entry.isDirectory { skipped.insert(item.relative) }
-                counter.finish(item, skipped: true); progress(counter.event(phase: "已跳过 · \(item.entry.name)")); continue
+                counter.finish(item, skipped: true); progress(counter.event(phase: L10n.format("已跳过 · %@", String(describing: item.entry.name)))); continue
             }
             let parent = item.relative.isEmpty ? destination.deletingLastPathComponent() : try S3TreeSnapshot.parent(item, directories: directories)
             try await TreeIO.run {
@@ -120,16 +120,16 @@ extension S3Client {
                 }
                 if result.1 { skipped.insert(item.relative) } else { directories[item.relative] = result.0 }
                 counter.finish(item, skipped: result.1)
-                progress(counter.event(phase: result.1 ? "已跳过 · \(item.entry.name)" : "已处理目录 · \(item.entry.name)"))
+                progress(counter.event(phase: result.1 ? L10n.format("已跳过 · %@", String(describing: item.entry.name)) : L10n.format("已处理目录 · %@", String(describing: item.entry.name))))
             } else {
-                guard let version = snapshot.versions[Data(item.entry.path.utf8)] else { throw TransferError.invalidListing("S3 扫描缺少对象版本。") }
+                guard let version = snapshot.versions[Data(item.entry.path.utf8)] else { throw TransferError.invalidListing(L10n.text("S3 扫描缺少对象版本。")) }
                 let reporter = TreeFileProgress(base: counter, size: item.entry.size, callback: progress)
                 let committed = try await downloadFile(item.entry, to: target, policy: policy, expectedVersion: version) { reporter.receive($0) }
                 counter.finish(item, skipped: !committed)
-                progress(counter.event(phase: committed ? "已提交 · \(item.entry.name)" : "已跳过 · \(item.entry.name)"))
+                progress(counter.event(phase: committed ? L10n.format("已提交 · %@", String(describing: item.entry.name)) : L10n.format("已跳过 · %@", String(describing: item.entry.name))))
             }
         }
-        progress(counter.event(phase: "目录处理完成"))
+        progress(counter.event(phase: L10n.text("目录处理完成")))
     }
 
     fileprivate func markerVersion(_ prefix: String) async throws -> RemoteFileVersion? {
@@ -187,13 +187,13 @@ struct S3TreeSnapshot: Sendable {
             try S3BrowserPath.validateLocalName(child.name)
             let alias = child.name.precomposedStringWithCanonicalMapping.folding(options: [.caseInsensitive], locale: Locale(identifier: "en_US_POSIX"))
             guard aliases.insert(alias).inserted else {
-                throw TransferError.remote("S3 对象名称在本地可能重合，请分别选择文件并指定保存名称：\(child.name)")
+                throw TransferError.remote(L10n.format("S3 对象名称在本地可能重合，请分别选择文件并指定保存名称：%@", String(describing: child.name)))
             }
         }
     }
     static func validateMarker(_ version: RemoteFileVersion?, name: String) throws {
         guard version == nil || version?.size == 0 else {
-            throw TransferError.remote("S3 前缀标记包含文件内容，不能作为空目录下载：\(name)")
+            throw TransferError.remote(L10n.format("S3 前缀标记包含文件内容，不能作为空目录下载：%@", String(describing: name)))
         }
     }
     static func validateUpload(_ manifest: TreeManifest, prefix: String, control: TransferControl?) async throws {
@@ -219,7 +219,7 @@ struct S3TreeSnapshot: Sendable {
         throw TransferError.conflict(url.lastPathComponent)
     }
     static func skipped() -> TransferProgress {
-        TransferProgress(completed: 0, total: 0, phase: "已跳过目录", scope: .directory,
+        TransferProgress(completed: 0, total: 0, phase: L10n.text("已跳过目录"), scope: .directory,
                          completedItems: 1, totalItems: 1, skippedItems: 1)
     }
 }

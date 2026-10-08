@@ -21,12 +21,12 @@ struct TreeManifest: Sendable {
     mutating func append(_ entry: FileEntry, relative: String, depth: Int) throws {
         let cost = entry.path.utf8.count + relative.utf8.count + entry.name.utf8.count + 256
         guard items.count < entryLimit, depth <= depthLimit, cost <= metadataLimit - metadataBytes else {
-            throw TransferError.remote("目录扫描超过安全容量（32 MiB 元数据、64 层目录）；请分批选择子目录。")
+            throw TransferError.remote(L10n.text("目录扫描超过安全容量（32 MiB 元数据、64 层目录）；请分批选择子目录。"))
         }
         guard !entry.isSymbolicLink, entry.size >= 0 else { throw ResumeTransferError.unsupportedVersion }
-        guard paths.insert(relative).inserted else { throw TransferError.invalidListing("目录包含重复路径。") }
+        guard paths.insert(relative).inserted else { throw TransferError.invalidListing(L10n.text("目录包含重复路径。")) }
         let sum = bytes.addingReportingOverflow(entry.isDirectory ? 0 : entry.size)
-        guard !sum.overflow else { throw TransferError.remote("目录总字节数超出支持范围。") }
+        guard !sum.overflow else { throw TransferError.remote(L10n.text("目录总字节数超出支持范围。")) }
         bytes = sum.partialValue; metadataBytes += cost
         items.append(Item(relative: relative, entry: entry))
     }
@@ -81,7 +81,7 @@ struct TreeManifest: Sendable {
         return manifest
     }
     static func scanProgress(_ count: Int = 0) -> TransferProgress {
-        TransferProgress(completed: 0, total: 0, phase: "扫描目录 · \(count) 个项目", scope: .directory)
+        TransferProgress(completed: 0, total: 0, phase: L10n.format("扫描目录 · %@ 个项目", String(describing: count)), scope: .directory)
     }
 }
 
@@ -93,12 +93,12 @@ enum TreeIO {
     static func boundarySync(_ control: TransferControl?) throws {
         try Task.checkCancellation()
         while control?.isPaused == true && control?.isRetainingProgress != true { try Task.checkCancellation(); Thread.sleep(forTimeInterval: 0.05) }
-        if control?.isRetainingProgress == true { throw TransferError.remote("完整目录的进度保留尚未支持，请完成或取消目录任务。") }
+        if control?.isRetainingProgress == true { throw TransferError.remote(L10n.text("完整目录的进度保留尚未支持，请完成或取消目录任务。")) }
     }
     static func boundary(_ control: TransferControl?) async throws {
         try Task.checkCancellation()
         while control?.isPaused == true && control?.isRetainingProgress != true { try await Task.sleep(for: .milliseconds(50)) }
-        if control?.isRetainingProgress == true { throw TransferError.remote("完整目录的进度保留尚未支持，请完成或取消目录任务。") }
+        if control?.isRetainingProgress == true { throw TransferError.remote(L10n.text("完整目录的进度保留尚未支持，请完成或取消目录任务。")) }
     }
     static func localEntry(_ url: URL) throws -> FileEntry {
         let values = try url.resourceValues(forKeys: [.isDirectoryKey, .isRegularFileKey, .isSymbolicLinkKey,

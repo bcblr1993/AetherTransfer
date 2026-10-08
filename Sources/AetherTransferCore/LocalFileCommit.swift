@@ -10,7 +10,7 @@ enum LocalFileCommit {
     static func commitSync(_ staging: URL, to destination: URL, overwrite: Bool) throws {
         guard staging.deletingLastPathComponent().standardizedFileURL == destination.deletingLastPathComponent().standardizedFileURL ||
               staging.deletingLastPathComponent().deletingLastPathComponent().standardizedFileURL == destination.deletingLastPathComponent().standardizedFileURL else {
-            throw TransferError.remote("暂存文件必须位于目标目录或其专属子目录。")
+            throw TransferError.remote(L10n.text("暂存文件必须位于目标目录或其专属子目录。"))
         }
         var target = stat()
         let exists = destination.path.withCString { lstat($0, &target) }

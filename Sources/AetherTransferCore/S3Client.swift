@@ -29,7 +29,7 @@ public struct S3Client: Sendable {
         try Task.checkCancellation(); try credentials.validate()
         let url = try endpoint.url(key: key, query: query)
         let pointer = url.withCString { at_create($0, "", "", "", "", "") }
-        guard let pointer else { throw TransferError.remote("无法创建 S3 请求。") }
+        guard let pointer else { throw TransferError.remote(L10n.text("无法创建 S3 请求。")) }
         let digest = mode == 5 ? NativeDigest() : nil
         let box = RequestBox(pointer: pointer, callback: progress, digest: digest)
         let allHeaders = try await S3IO.run {
@@ -41,7 +41,7 @@ public struct S3Client: Sendable {
         }}
         guard configured == 0, method.withCString({ at_s3(pointer, $0) }) == 0,
               (certificateAuthority?.path ?? "").withCString({ at_tls(pointer, 0, $0) }) == 0 else {
-            throw TransferError.remote("无法配置 S3 签名或 TLS。")
+            throw TransferError.remote(L10n.text("无法配置 S3 签名或 TLS。"))
         }
         if let uploadSlice, at_upload_window(pointer, uploadSlice.0, uploadSlice.1) != 0 { throw TransferError.invalidPath }
         if let version {
@@ -92,15 +92,15 @@ public struct S3Client: Sendable {
             let response = try await perform(query: query)
             let page = try await S3IO.run { try S3ListingPage.parse(response.body, prefix: prefix, bucket: endpoint.bucket) }
             for object in page.objects {
-                guard ids.insert(Data(object.key.utf8)).inserted else { throw TransferError.invalidListing("S3 分页包含重复对象。") }
+                guard ids.insert(Data(object.key.utf8)).inserted else { throw TransferError.invalidListing(L10n.text("S3 分页包含重复对象。")) }
                 estimatedBytes += object.key.utf8.count * 2 + 256
                 guard estimatedBytes <= 32 * 1024 * 1024, result.count < 100_000 else {
-                    throw TransferError.invalidListing("S3 目录元数据超出限制，请浏览更具体的前缀。")
+                    throw TransferError.invalidListing(L10n.text("S3 目录元数据超出限制，请浏览更具体的前缀。"))
                 }
                 result.append(object)
             }
             next = page.next
-            if let next, !tokens.insert(Data(next.utf8)).inserted || tokens.count > 1000 { throw TransferError.invalidListing("S3 分页没有结束。") }
+            if let next, !tokens.insert(Data(next.utf8)).inserted || tokens.count > 1000 { throw TransferError.invalidListing(L10n.text("S3 分页没有结束。")) }
         } while next != nil
         let objects = result
         return try await S3IO.run {
@@ -161,7 +161,7 @@ public struct S3Client: Sendable {
         do { before = try await fileVersion(key) } catch S3Error.notFound { before = nil }
         if before != nil && !overwrite { throw TransferError.conflict(key) }
         let conditions = before?.etag.map { ["If-Match: \($0)"] } ?? ["If-None-Match: *"]
-        progress(TransferProgress(completed: 0, total: 0, phase: "核对上传源"))
+        progress(TransferProgress(completed: 0, total: 0, phase: L10n.text("核对上传源")))
         let snapshot = try await S3IO.run { try S3UploadSnapshot.read(source, control: control) }
         if snapshot.size == 0 {
             try await TreeIO.boundary(control); try await S3IO.run { try snapshot.verify(source) }; try Task.checkCancellation()
@@ -174,7 +174,7 @@ public struct S3Client: Sendable {
         let created = try await perform(key: key, query: [("uploads", "")], method: "POST", mode: 4)
         let initiation = try await S3IO.run { try S3XML.parse(created.body, root: "InitiateMultipartUploadResult") }
         guard let id = try initiation.value("UploadId"), !id.isEmpty, id.utf8.count <= 4096 else {
-            throw TransferError.invalidListing("S3 没有返回可核对的分片上传标识。")
+            throw TransferError.invalidListing(L10n.text("S3 没有返回可核对的分片上传标识。"))
         }
         do {
             guard try initiation.value("Key")?.utf8.elementsEqual(key.utf8) == true, try initiation.value("Bucket") == endpoint.bucket else {
@@ -191,7 +191,7 @@ public struct S3Client: Sendable {
                 try RemoteFileVersion(size: 0, modified: nil, etag: etag).validate(); etags.append(etag)
             }
             try await TreeIO.boundary(control); try await S3IO.run { try snapshot.verify(source) }; try Task.checkCancellation()
-            progress(TransferProgress(completed: snapshot.size, total: snapshot.size, phase: "提交对象"))
+            progress(TransferProgress(completed: snapshot.size, total: snapshot.size, phase: L10n.text("提交对象")))
             let xml = "<CompleteMultipartUpload>" + etags.enumerated().map {
                 "<Part><PartNumber>\($0.offset + 1)</PartNumber><ETag>\(S3XML.escape($0.element))</ETag></Part>"
             }.joined() + "</CompleteMultipartUpload>"
@@ -254,11 +254,11 @@ public enum S3Error: Error, LocalizedError, Sendable {
     case notFound, authentication, unsupportedResponse(Int), invalidMultipart, cleanupRequired(S3MultipartCleanup)
     public var errorDescription: String? {
         switch self {
-        case .notFound: "S3 存储桶或对象不存在。"
-        case .authentication: "S3 拒绝认证或操作，请核对访问密钥、权限和系统时间。"
-        case .unsupportedResponse(let status): "S3 返回了不支持的结果（HTTP \(status)）。"
-        case .invalidMultipart: "S3 分片结果不完整，未确认上传成功。"
-        case .cleanupRequired: "未能清理此次 S3 分片上传，需重新连接后重试清理；未确认传输成功。"
+        case .notFound: L10n.text("S3 存储桶或对象不存在。")
+        case .authentication: L10n.text("S3 拒绝认证或操作，请核对访问密钥、权限和系统时间。")
+        case .unsupportedResponse(let status): L10n.format("S3 返回了不支持的结果（HTTP %@）。", String(describing: status))
+        case .invalidMultipart: L10n.text("S3 分片结果不完整，未确认上传成功。")
+        case .cleanupRequired: L10n.text("未能清理此次 S3 分片上传，需重新连接后重试清理；未确认传输成功。")
         }
     }
 }

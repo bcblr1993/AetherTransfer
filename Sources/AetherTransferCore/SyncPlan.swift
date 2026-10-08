@@ -87,12 +87,12 @@ public enum SyncError: Error, LocalizedError, Sendable {
     case invalidPlan, overlappingRoots, limitExceeded, changed(String), unresolved(String), dependency(String)
     public var errorDescription: String? {
         switch self {
-        case .invalidPlan: "同步计划或相对路径不合法，请重新预览。"
-        case .overlappingRoots: "两个同步目录不能相同，也不能互相包含。"
-        case .limitExceeded: "同步目录超过 100,000 个项目或 128 层，请选择更小的目录。"
-        case .changed(let path): "预览后文件已经变化：\(path)。请重新生成预览。"
-        case .unresolved(let path): "请为同名差异选择传输方向：\(path)"
-        case .dependency(let path): "请同时选择所需的目录或全部待删除子项：\(path)"
+        case .invalidPlan: L10n.text("同步计划或相对路径不合法，请重新预览。")
+        case .overlappingRoots: L10n.text("两个同步目录不能相同，也不能互相包含。")
+        case .limitExceeded: L10n.text("同步目录超过 100,000 个项目或 128 层，请选择更小的目录。")
+        case .changed(let path): L10n.format("预览后文件已经变化：%@。请重新生成预览。", String(describing: path))
+        case .unresolved(let path): L10n.format("请为同名差异选择传输方向：%@", String(describing: path))
+        case .dependency(let path): L10n.format("请同时选择所需的目录或全部待删除子项：%@", String(describing: path))
         }
     }
 }
@@ -121,15 +121,15 @@ public enum SyncPlanner {
             let operation: SyncOperation
             let explanation: String
             if a?.kind == .symbolicLink || b?.kind == .symbolicLink {
-                operation = .blocked; explanation = "符号链接需要单独处理，不会跟随或删除。"; blockedParents.insert(path)
+                operation = .blocked; explanation = L10n.text("符号链接需要单独处理，不会跟随或删除。"); blockedParents.insert(path)
             } else if let a, let b, a.kind != b.kind {
-                operation = .blocked; explanation = "文件与目录类型冲突，请先处理。"; blockedParents.insert(path)
+                operation = .blocked; explanation = L10n.text("文件与目录类型冲突，请先处理。"); blockedParents.insert(path)
             } else if let a, let b {
                 if a.kind == .directory || equivalent(a, b, options: options) { unchanged += 1; continue }
                 switch options.mode {
-                case .leftToRight: operation = .copy(.leftToRight); explanation = "覆盖右侧同名文件。"
-                case .rightToLeft: operation = .copy(.rightToLeft); explanation = "覆盖左侧同名文件。"
-                case .bidirectional: operation = .conflict; explanation = "两侧文件有差异，请逐项选择方向。"
+                case .leftToRight: operation = .copy(.leftToRight); explanation = L10n.text("覆盖右侧同名文件。")
+                case .rightToLeft: operation = .copy(.rightToLeft); explanation = L10n.text("覆盖左侧同名文件。")
+                case .bidirectional: operation = .conflict; explanation = L10n.text("两侧文件有差异，请逐项选择方向。")
                 }
             } else {
                 let present: SyncSide = a == nil ? .right : .left
@@ -137,9 +137,9 @@ public enum SyncPlanner {
                 let source: SyncSide? = options.mode == .bidirectional ? nil : (options.mode == .leftToRight ? .left : .right)
                 if source == nil || source == present {
                     operation = record.kind == .directory ? .createDirectory(present.opposite) : .copy(present == .left ? .leftToRight : .rightToLeft)
-                    explanation = record.kind == .directory ? "新建目标目录。" : "复制缺少的文件。"
+                    explanation = record.kind == .directory ? L10n.text("新建目标目录。") : L10n.text("复制缺少的文件。")
                 } else if options.mirror {
-                    operation = .delete(present); explanation = "目标多余项目；删除默认不选中。"
+                    operation = .delete(present); explanation = L10n.text("目标多余项目；删除默认不选中。")
                 } else { unchanged += 1; continue }
             }
             items.append(SyncItem(path: path, operation: operation, left: a, right: b, explanation: explanation))

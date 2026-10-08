@@ -19,11 +19,11 @@ struct NativeFileTable: NSViewRepresentable {
         scroll.hasVerticalScroller = true; scroll.hasHorizontalScroller = false
         scroll.autohidesScrollers = true; scroll.borderType = .noBorder
         let table = BrowserTable()
-        table.style = .inset; table.rowHeight = 26; table.usesAutomaticRowHeights = false
+        table.style = .inset; table.rowHeight = InterfaceStyle.listRowHeight; table.usesAutomaticRowHeights = false
         table.usesAlternatingRowBackgroundColors = true; table.allowsMultipleSelection = true
         table.allowsEmptySelection = true; table.columnAutoresizingStyle = .firstColumnOnlyAutoresizingStyle
         table.autoresizingMask = [.width]; table.intercellSpacing = NSSize(width: 6, height: 2)
-        for (key, title, width) in [("name", "名称", 250.0), ("size", "大小", 90.0), ("modified", "修改日期", 140.0)] {
+        for (key, title, width) in [("name", L10n.text("名称"), 250.0), ("size", L10n.text("大小"), 90.0), ("modified", L10n.text("修改日期"), 140.0)] {
             let column = NSTableColumn(identifier: NSUserInterfaceItemIdentifier(key))
             column.title = title; column.width = width; column.minWidth = key == "name" ? 120 : 70
             column.sortDescriptorPrototype = NSSortDescriptor(key: key, ascending: true)
@@ -63,10 +63,27 @@ struct NativeFileTable: NSViewRepresentable {
         table.isEnabled = context.environment.isEnabled
         coordinator.updating = true
         defer { coordinator.updating = false }
+        let languageChanged = coordinator.locale != context.environment.locale
+        if languageChanged {
+            coordinator.locale = context.environment.locale
+            coordinator.updateFormatters()
+            for (key, title) in [("name", "名称"), ("size", "大小"), ("modified", "修改日期")] {
+                table.tableColumn(withIdentifier: NSUserInterfaceItemIdentifier(key))?.title = L10n.text(title)
+            }
+        }
         if coordinator.revision != revision {
             coordinator.files = files; coordinator.revision = revision
             coordinator.rowByID = files.enumerated().reduce(into: [:]) { $0[$1.element.id] = $1.offset }
             table.reloadData()
+        } else if languageChanged {
+            let range = table.rows(in: table.visibleRect)
+            if range.location != NSNotFound, range.length > 0 {
+                let end = min(files.count, range.location + range.length)
+                if range.location < end {
+                    table.reloadData(forRowIndexes: IndexSet(integersIn: range.location..<end),
+                                     columnIndexes: IndexSet(integersIn: 0..<table.numberOfColumns))
+                }
+            }
         }
         let indexes = IndexSet(selection.compactMap { coordinator.rowByID[$0] })
         if table.selectedRowIndexes != indexes { table.selectRowIndexes(indexes, byExtendingSelection: false) }
@@ -84,12 +101,17 @@ struct NativeFileTable: NSViewRepresentable {
         var rowByID: [String: Int] = [:]
         var revision: UUID?
         var updating = false
+        var locale: Locale?
         private let actions = FileBrowserActions()
         private let dateFormatter: DateFormatter = {
             let value = DateFormatter(); value.dateStyle = .short; value.timeStyle = .short; return value
         }()
-        private let byteFormatter = ByteCountFormatter()
-        init(_ parent: NativeFileTable) { self.parent = parent; super.init(); byteFormatter.countStyle = .file }
+        private var byteStyle = ByteCountFormatStyle(style: .file, spellsOutZero: false)
+        init(_ parent: NativeFileTable) { self.parent = parent; super.init() }
+        func updateFormatters() {
+            dateFormatter.locale = locale
+            byteStyle.locale = locale ?? .current
+        }
         func numberOfRows(in tableView: NSTableView) -> Int { files.count }
         func tableView(_ tableView: NSTableView, typeSelectStringFor tableColumn: NSTableColumn?, row: Int) -> String? {
             files.indices.contains(row) ? files[row].name : nil
@@ -99,11 +121,11 @@ struct NativeFileTable: NSViewRepresentable {
             let entry = files[row], nameColumn = column.identifier.rawValue == "name"
             let cell = (tableView.makeView(withIdentifier: column.identifier, owner: self) as? NSTableCellView) ?? makeCell(column.identifier, name: nameColumn)
             switch column.identifier.rawValue {
-            case "size": cell.textField?.stringValue = entry.isDirectory ? "—" : byteFormatter.string(fromByteCount: entry.size)
+            case "size": cell.textField?.stringValue = entry.isDirectory ? "—" : byteStyle.format(entry.size)
             case "modified": cell.textField?.stringValue = entry.modified.map { dateFormatter.string(from: $0) } ?? "—"
             default:
                 cell.textField?.stringValue = entry.name
-                cell.imageView?.image = NSImage(systemSymbolName: symbol(entry), accessibilityDescription: entry.isDirectory ? "文件夹" : "文件")
+                cell.imageView?.image = NSImage(systemSymbolName: symbol(entry), accessibilityDescription: entry.isDirectory ? L10n.text("文件夹") : L10n.text("文件"))
                 cell.imageView?.contentTintColor = entry.isDirectory ? .controlAccentColor : .secondaryLabelColor
             }
             return cell

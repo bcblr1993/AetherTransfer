@@ -6,7 +6,7 @@ public enum WebDAVListing {
         guard xml.utf8.count <= 32 * 1024 * 1024,
               !xml.contains("<!DOCTYPE"), !xml.contains("<!ENTITY"),
               let base = URLComponents(string: origin), base.host != nil else {
-            throw TransferError.invalidListing("WebDAV XML 不合法或超出限制。")
+            throw TransferError.invalidListing(L10n.text("WebDAV XML 不合法或超出限制。"))
         }
         let delegate = ListingDelegate(parent: RemotePath.normalize(parent), origin: base)
         let parser = XMLParser(data: Data(xml.utf8))
@@ -14,7 +14,7 @@ public enum WebDAVListing {
         parser.shouldResolveExternalEntities = false
         parser.delegate = delegate
         guard parser.parse(), !delegate.failed, delegate.foundRoot else {
-            throw TransferError.invalidListing("WebDAV 目录结果不完整或包含不安全的路径。")
+            throw TransferError.invalidListing(L10n.text("WebDAV 目录结果不完整或包含不安全的路径。"))
         }
         return FileEntry.sorted(delegate.entries)
     }
@@ -161,7 +161,7 @@ private final class ListingDelegate: NSObject, XMLParserDelegate {
         else if let raw = successful["size"] {
             guard let parsed = Int64(raw), parsed >= 0 else { throw TransferError.invalidPath }
             size = parsed
-        } else { throw TransferError.invalidListing("WebDAV 未返回文件大小。") }
+        } else { throw TransferError.invalidListing(L10n.text("WebDAV 未返回文件大小。")) }
         entries.append(FileEntry(name: String(path.split(separator: "/").last!), path: path, isDirectory: type == "directory",
                                  size: size, modified: successful["modified"].flatMap { date($0) }))
     }

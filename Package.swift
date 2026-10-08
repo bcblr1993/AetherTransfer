@@ -11,6 +11,7 @@ let runtimeBuildID = (try? String(contentsOfFile: "\(curlPrefix)/.aether-build",
 
 let package = Package(
     name: "AetherTransfer",
+    defaultLocalization: "en",
     platforms: [.macOS("26.0")],
     products: [
         .executable(name: "AetherTransfer", targets: ["AetherTransferApp"]),
@@ -21,7 +22,7 @@ let package = Package(
         .target(name: "CTransfer", cSettings: [.unsafeFlags(["-I\(curlPrefix)/include"]),
                                               .define("AT_PROTOCOL_RUNTIME_BUILD", to: "\"\(runtimeBuildID)\"")],
                 linkerSettings: [.unsafeFlags(["-L\(curlPrefix)/lib"]), .linkedLibrary("curl")]),
-        .target(name: "AetherTransferCore", dependencies: ["CTransfer"]),
+        .target(name: "AetherTransferCore", dependencies: ["CTransfer"], resources: [.process("Resources")]),
         .executableTarget(name: "AetherTransferApp", dependencies: ["AetherTransferCore"]),
         .executableTarget(name: "AetherTransferBenchmarks", dependencies: ["AetherTransferCore"], path: "Tools/PerformanceProbe"),
         .testTarget(name: "AetherTransferCoreTests", dependencies: ["AetherTransferCore"])
