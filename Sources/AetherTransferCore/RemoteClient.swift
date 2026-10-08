@@ -7,6 +7,7 @@ public struct TransferProgress: Sendable {
     public enum Scope: Sendable { case file, directory, synchronization }
     public let completed: Int64
     public let total: Int64
+    /// Localized display text. Use scope and counters for programmatic checks.
     public let phase: String?
     public let scope: Scope
     public let completedItems: Int?

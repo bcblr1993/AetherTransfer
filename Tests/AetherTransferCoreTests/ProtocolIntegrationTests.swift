@@ -31,7 +31,11 @@ private final class ManifestMutation: @unchecked Sendable {
     init(_ file: URL) { self.file = file }
     func apply(_ value: TransferProgress) {
         lock.lock(); defer { lock.unlock() }
-        if !changed && value.phase == "目录扫描完成" { changed = true; try? Data("changed size".utf8).write(to: file) }
+        // The first known directory total is emitted after the manifest scan.
+        // Display text is localized and must not control fault injection.
+        if !changed && value.scope == .directory && value.totalItems != nil && value.completedItems == 0 {
+            changed = true; try? Data("changed size".utf8).write(to: file)
+        }
     }
 }
 
@@ -263,7 +267,7 @@ private final class ManifestMutation: @unchecked Sendable {
             XCTAssertFalse(FileManager.default.fileExists(atPath: folder.appendingPathComponent("download/partial.bin").path))
             let records = try await store.records(); XCTAssertTrue(records.isEmpty)
             XCTAssertFalse(try FileManager.default.contentsOfDirectory(atPath: folder.appendingPathComponent("download").path).contains { $0.hasPrefix(".aethertransfer-resume-") })
-            XCTAssertFalse(log.values().contains { $0.phase == "目录处理完成" })
+            XCTAssertFalse(log.values().contains { $0.totalItems != nil && $0.completedItems == $0.totalItems })
         }
     }
     func testSFTPRejectsUntrustedAndChangedHostKey() async throws {

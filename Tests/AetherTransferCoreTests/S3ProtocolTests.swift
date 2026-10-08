@@ -331,7 +331,9 @@ private final class S3TreeProgressRecorder: @unchecked Sendable {
         let root = FileEntry(name: "tree", path: prefix, isDirectory: true, s3Key: prefix), scanned = expectation(description: "Tree scan completed")
         let controlled = try client(control: control)
         let operation = Task { try await controlled.downloadTree(root, to: destination) { value in
-            if value.phase == "目录扫描完成" { control.pause(); scanned.fulfill() }
+            if value.scope == .directory && value.totalItems != nil && value.completedItems == 0 {
+                control.pause(); scanned.fulfill()
+            }
         } }
         await fulfillment(of: [scanned], timeout: 5)
         try Data("after!".utf8).write(to: source); try await remote.upload(source, to: prefix + "file", overwrite: true)
