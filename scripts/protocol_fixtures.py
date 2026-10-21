@@ -98,6 +98,11 @@ with tempfile.TemporaryDirectory(prefix='aethertransfer-fixture-') as directory:
     try:
         result = subprocess.run(['swift', 'test', '--filter', 'ProtocolIntegrationTests'], env=env)
     finally:
-        ftp.close_all(); listener.close()
-        for transport in transports: transport.close()
-    raise SystemExit(result.returncode)
+        try: ftp.close_all()
+        except Exception: pass
+        try: listener.close()
+        except Exception: pass
+        for transport in transports:
+            try: transport.close()
+            except Exception: pass
+    os._exit(result.returncode)
