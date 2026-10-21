@@ -17,6 +17,10 @@ struct ATRequest {
     char *fingerprint;
     ATProgress progress;
     void *context;
+    int64_t offset;
+    int64_t range_end;
+    int64_t expected_total;
+    int window;
 };
 static pthread_once_t initialized = PTHREAD_ONCE_INIT;
 static void initialize(void) { curl_global_init(CURL_GLOBAL_DEFAULT); }
@@ -34,8 +38,15 @@ static size_t collect(char *data, size_t size, size_t count, void *ctx) {
 }
 static int progress(void *ctx, curl_off_t dt, curl_off_t dn, curl_off_t ut, curl_off_t un) {
     ATRequest *r = ctx;
-    if (r->progress) r->progress(r->context, dn + un, dt + ut);
+    if (r->progress) {
+        int64_t completed = (int64_t)(dn + un) + (r->window ? r->offset : 0);
+        int64_t total = (int64_t)(dt + ut) + (r->window && (dt + ut > 0) ? r->offset : (r->expected_total > 0 ? r->expected_total : 0));
+        r->progress(r->context, completed, total);
+    }
     return atomic_load(&r->cancelled);
+}
+static int seek_upload(void *ctx, curl_off_t offset, int origin) {
+    return fseeko(ctx, (off_t)offset, origin) == 0 ? CURL_SEEKFUNC_OK : CURL_SEEKFUNC_FAIL;
 }
 static int hostkey(void *ctx, int type, const char *key, size_t length) {
     (void)type;
@@ -97,6 +108,38 @@ void at_destroy(ATRequest *r) {
     curl_easy_cleanup(r->curl);
     free(r->result); free(r->host_key); free(r->fingerprint); free(r);
 }
+int at_transfer_window(ATRequest *r, int64_t offset, int64_t end, int64_t total) {
+    if (!r) return CURLE_BAD_FUNCTION_ARGUMENT;
+    if (offset < 0 || (end >= 0 && end < offset) || (total >= 0 && offset > total)) return CURLE_BAD_FUNCTION_ARGUMENT;
+    r->window = 1;
+    r->offset = offset;
+    r->range_end = end;
+    r->expected_total = total;
+    if (end >= 0) {
+        char range[80];
+        snprintf(range, sizeof(range), "%lld-%lld", (long long)offset, (long long)end);
+        return curl_easy_setopt(r->curl, CURLOPT_RANGE, range);
+    }
+    return curl_easy_setopt(r->curl, CURLOPT_RESUME_FROM_LARGE, (curl_off_t)offset);
+}
+int at_set_speed_limit(ATRequest *r, int64_t bytes_per_sec) {
+    if (!r || bytes_per_sec < 0) return CURLE_BAD_FUNCTION_ARGUMENT;
+    CURLcode c1 = curl_easy_setopt(r->curl, CURLOPT_MAX_SEND_SPEED_LARGE, (curl_off_t)bytes_per_sec);
+    if (c1 != CURLE_OK) return c1;
+    return curl_easy_setopt(r->curl, CURLOPT_MAX_RECV_SPEED_LARGE, (curl_off_t)bytes_per_sec);
+}
+int64_t at_file_size(ATRequest *r) {
+    if (!r) return -1;
+    curl_off_t size = -1;
+    curl_easy_getinfo(r->curl, CURLINFO_CONTENT_LENGTH_DOWNLOAD_T, &size);
+    return size;
+}
+int64_t at_file_time(ATRequest *r) {
+    if (!r) return -1;
+    curl_off_t time = -1;
+    curl_easy_getinfo(r->curl, CURLINFO_FILETIME_T, &time);
+    return time;
+}
 int at_perform(ATRequest *r, int mode, const char *local, const char *commands, ATProgress p, void *ctx) {
     r->progress = p; r->context = ctx;
     FILE *f = NULL;
@@ -105,7 +148,26 @@ int at_perform(ATRequest *r, int mode, const char *local, const char *commands, 
         curl_easy_setopt(r->curl, CURLOPT_WRITEFUNCTION, collect);
         curl_easy_setopt(r->curl, CURLOPT_WRITEDATA, r);
     } else if (mode == 1 || mode == 2) {
-        f = fopen(local, mode == 1 ? "wbx" : "rb");
+        if (mode == 1) {
+            if (r->window && r->offset > 0) {
+                f = fopen(local, "r+b");
+                if (!f) f = fopen(local, "wb");
+                if (f && fseeko(f, (off_t)r->offset, SEEK_SET) != 0) {
+                    fclose(f);
+                    f = NULL;
+                }
+            } else {
+                f = fopen(local, "wbx");
+            }
+        } else {
+            f = fopen(local, "rb");
+            if (f && r->window && r->offset > 0) {
+                if (fseeko(f, (off_t)r->offset, SEEK_SET) != 0) {
+                    fclose(f);
+                    f = NULL;
+                }
+            }
+        }
         if (!f) { snprintf(r->error, sizeof(r->error), "Cannot open local transfer file"); return CURLE_READ_ERROR; }
         if (mode == 1) curl_easy_setopt(r->curl, CURLOPT_WRITEDATA, f);
         else {
@@ -113,6 +175,8 @@ int at_perform(ATRequest *r, int mode, const char *local, const char *commands, 
             if (fstat(fileno(f), &st) != 0) { fclose(f); return CURLE_READ_ERROR; }
             curl_easy_setopt(r->curl, CURLOPT_UPLOAD, 1L);
             curl_easy_setopt(r->curl, CURLOPT_READDATA, f);
+            curl_easy_setopt(r->curl, CURLOPT_SEEKFUNCTION, seek_upload);
+            curl_easy_setopt(r->curl, CURLOPT_SEEKDATA, (void *)f);
             curl_easy_setopt(r->curl, CURLOPT_INFILESIZE_LARGE, (curl_off_t)st.st_size);
             curl_easy_setopt(r->curl, CURLOPT_WRITEFUNCTION, collect);
             curl_easy_setopt(r->curl, CURLOPT_WRITEDATA, r);

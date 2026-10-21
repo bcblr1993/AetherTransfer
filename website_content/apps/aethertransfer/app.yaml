@@ -8,55 +8,79 @@ tagline:
   zh: 原生文件传输工作台，让每一步清楚可控
   en: A native file transfer workspace, clear at every step
 summary:
-  zh: "面向 Apple 芯片 Mac 的原生文件传输客户端，正在开发双栏浏览、FTP / SFTP 连接与传输活动管理。以 Transmit 的完整文件工作流为功能目标，采用 macOS 26 Liquid Glass 界面。"
-  en: "A native file transfer client for Apple silicon Mac. Dual-pane browsing, FTP / SFTP connections and transfer activity are in development, with Transmit workflow parity as the goal and a macOS 26 Liquid Glass interface."
+  zh: "为 Apple 芯片 Mac 打造的原生 SFTP / FTPS / FTP 客户端。本地与远程双栏、多标签、有界传输队列与断点续传，目录同步先预览再执行，凭据留在系统钥匙串。"
+  en: "A native SFTP / FTPS / FTP client for Apple silicon Macs. Local and remote panes, tabs, a bounded transfer queue with resume, previewed folder sync and credentials kept in the system Keychain."
 platforms:
   - id: mac
-    status: dev
+    status: available
     requirement: { zh: Apple 芯片 · macOS 26.0+, en: Apple silicon · macOS 26.0+ }
+cardStats:
+  - value: "SFTP · FTPS · FTP"
+    label: { zh: 三种协议，一个窗口, en: "Three protocols, one window" }
+  - value: "原生 / Native"
+    label: { zh: SwiftUI 与 Liquid Glass, en: SwiftUI and Liquid Glass }
+  - value: "本机 / Local"
+    label: { zh: 凭据存入 Keychain，无追踪, en: "Keychain credentials, no tracking" }
 notice:
-  zh: 开发中，尚未发布安装包。协议兼容性与完整功能仍在验证。
-  en: In development. No installer has been released; protocol compatibility and full functionality are still being verified.
+  zh: "首个正式版 0.1.0 支持 SFTP、FTPS 与 FTP，提供中英双语界面与应用内更新。WebDAV、S3 / R2 等云存储尚未包含在本版本中。"
+  en: "The first release, 0.1.0, supports SFTP, FTPS and FTP, with English and Chinese interfaces and in-app updates. WebDAV and S3 / R2 cloud storage are not included in this version."
 hero:
-  eyebrow: { zh: 文件传输 · 原生 Mac · 开发中, en: File transfer · Native Mac · In development }
+  eyebrow: { zh: 文件传输 · 原生 Mac, en: File transfer · Native Mac }
   title: { zh: "文件两端，\n尽在掌握。", en: "Two sides.\nOne clear workspace." }
   lead:
-    zh: "在一个原生窗口中浏览本地与远程文件，掌握连接与传输状态。\n从 FTP / SFTP 核心开始，逐步完成云存储、目录同步与编辑工作流。"
-    en: "Browse local and remote files in one native window, with clear connection and transfer status.\nStarting with FTP / SFTP, then building out cloud storage, folder sync and editing workflows."
+    zh: "在一个原生窗口中并排浏览本地与远程文件，拖放即可上传下载。\n每个任务的进度、速度与结果都清楚可见，失败不会被当作成功。"
+    en: "Browse local and remote files side by side in one native window, and drag to upload or download.\nEvery task shows its progress, speed and outcome, and a failure is never reported as a success."
   requirements: { zh: Apple 芯片 Mac · macOS 26.0+, en: Apple silicon Mac · macOS 26.0+ }
 features:
-  eyebrow: { zh: 开发方向, en: Development goals }
+  eyebrow: { zh: 0.1.0 功能, en: In version 0.1.0 }
   title: { zh: 文件为中心，原生为底色。, en: Focused on files. Native at the core. }
   lead:
-    zh: 以下是正在实现的产品方向，实际支持范围以未来版本记录为准。
-    en: These are development goals. Actual support will be documented in release notes.
+    zh: 以下均为当前版本已包含、经过单元测试与真实 FTP / SFTP 集成测试验证的能力。
+    en: Everything below ships in the current version and is covered by unit tests and real FTP / SFTP integration tests.
   items:
     - kicker: { zh: 浏览, en: Browse }
-      title: { zh: 本地与远程双栏, en: Local and remote, side by side }
+      title: { zh: 本地与远程双栏, en: "Local and remote, side by side" }
       body:
-        zh: 文件列表、路径导航与系统快捷键，结合原生工具栏和 Liquid Glass 操作控件。
-        en: File lists, path navigation and keyboard shortcuts with native toolbars and Liquid Glass controls.
+        zh: 多标签工作区，每个标签保留独立的连接与路径。列表与图标视图、可点击的路径栏、前进后退、按名称 / 大小 / 日期 / 种类排序与搜索；支持空格键快速查看和 Finder 拖放。
+        en: A tabbed workspace where each tab keeps its own connection and paths. List and icon views, a clickable path bar, back and forward, sorting by name, size, date or kind, and search, plus spacebar Quick Look and Finder drag-and-drop.
     - kicker: { zh: 传输, en: Transfer }
-      title: { zh: 可靠传输与可见进度, en: Reliable transfers and visible progress }
+      title: { zh: 可靠传输，进度可见, en: Reliable transfers you can follow }
       body:
-        zh: 正在构建 FTP / FTPS / SFTP、任务队列、冲突处理与恢复能力；完成校验后才将文件标记为成功。
-        en: Building FTP / FTPS / SFTP support, a task queue, conflict handling and recovery. Files are only marked successful after completion checks.
-    - kicker: { zh: 隐私, en: Privacy }
-      title: { zh: 凭据留在系统钥匙串, en: Credentials in system Keychain }
+        zh: 有界并发队列，可暂停、取消、重试与限速。文件先写入临时路径，校验后再提交；断点续传前核对两端是否变化，不会从错误的位置继续。
+        en: A bounded concurrent queue with pause, cancel, retry and bandwidth limits. Files land in a temporary path and are committed only after verification; before resuming, both sides are checked for changes so a transfer never continues from the wrong offset.
+    - kicker: { zh: 同步, en: Sync }
+      title: { zh: 看清差异，再决定同步, en: Review differences before syncing }
       body:
-        zh: 连接配置保存在本地，密码与口令由 Keychain 管理。SFTP 核对主机密钥，TLS 验证证书。
-        en: Local connection profiles with passwords and passphrases in Keychain. SFTP verifies host keys and TLS validates certificates.
+        zh: 本地到远程、远程到本地或双向比较，按大小与修改时间生成计划，逐项勾选后执行。默认不删除远程多余文件；另有同步浏览，让两侧目录跟随切换。
+        en: Compare local to remote, remote to local or both ways by size and modification time, then run a plan you approve item by item. Remote extras are never deleted by default, and synchronized browsing keeps both panes in step.
+    - kicker: { zh: 编辑, en: Edit }
+      title: { zh: 改完即回传, en: Edit and save back }
+      body:
+        zh: 内置文本编辑器直接打开远程文件，⌘S 保存回服务器。批量重命名支持替换、前后缀与编号并预览冲突；检查器可查看和修改 POSIX 权限。
+        en: Open remote text files in the built-in editor and press ⌘S to save them back. Batch rename supports replacement, prefixes, suffixes and numbering with conflict previews, and the inspector views and edits POSIX permissions.
+    - kicker: { zh: 安全, en: Security }
+      title: { zh: 主机密钥与证书必须核对, en: Host keys and certificates are always checked }
+      body:
+        zh: SFTP 首次连接请你核对主机指纹，密钥变化即拒绝连接；FTPS 验证 TLS 证书。支持密码与 SSH 私钥认证，密码和口令存入系统钥匙串。
+        en: The first SFTP connection asks you to confirm the host fingerprint, and a changed key is refused. FTPS validates TLS certificates. Password and SSH private-key authentication are supported, with passwords and passphrases in the system Keychain.
+    - kicker: { zh: 更新, en: Updates }
+      title: { zh: 应用内安全更新, en: Verified in-app updates }
+      body:
+        zh: 检查新版本后在应用内下载，先核对 SHA-256 与 Apple 代码签名，再替换并重启。界面跟随系统中英文与浅深色外观，也可手动切换语言。
+        en: New versions download inside the app and are checked against their SHA-256 and Apple code signature before being installed and relaunched. The interface follows the system language and appearance, with a manual language switch.
 faq:
   eyebrow: FAQ
   title: { zh: 常见问题, en: Questions }
-  lead: { zh: 关于开发状态与产品定位。, en: Development status and product scope. }
+  lead: { zh: 关于下载、协议与产品定位。, en: "Downloads, protocols and product scope." }
   items:
-    - q: { zh: 现在可以下载使用吗？, en: Can I download it now? }
-      a: { zh: 目前处于开发阶段，尚未发布安装包。源码与进度会在 GitHub 仓库中更新。, en: It is in development and no installer has been released. Source and progress will be available on GitHub. }
-    - q: { zh: 与 ApexTerm 有什么不同？, en: How does it differ from ApexTerm? }
-      a: { zh: ApexTerm 专注 SSH 终端与运维；AetherTransfer 专注文件浏览、批量传输、任务管理与目录同步。, en: ApexTerm focuses on SSH terminals and operations. AetherTransfer focuses on file browsing, batch transfers, task management and folder sync. }
-    - q: { zh: 是否已经支持全部云服务？, en: Are all cloud services supported already? }
-      a: { zh: 还没有。完整目标包含多种云服务，但每一种都需要独立实现与真实验证，未来版本会明确列出支持范围。, en: Not yet. The goal includes multiple cloud services, each requiring its own implementation and real validation. Future releases will specify actual support. }
+    - q: { zh: 如何安装？, en: How do I install it? }
+      a: { zh: 下载 DMG 后将 AetherTransfer 拖入“应用程序”即可。安装包经过 Developer ID 签名与 Apple 公证，之后可在应用内检查更新。, en: "Download the DMG and drag AetherTransfer into Applications. The installer is signed with Developer ID and notarized by Apple, and later versions can be installed from inside the app." }
+    - q: { zh: 支持哪些协议？, en: Which protocols are supported? }
+      a: { zh: 当前版本支持 SFTP、FTPS 与 FTP。WebDAV、S3 / R2 等云存储正在开发，会在后续版本的发布说明中明确列出。, en: "This version supports SFTP, FTPS and FTP. WebDAV and S3 / R2 cloud storage are in development and will be listed in the release notes of future versions." }
+    - q: { zh: 与 AetherTerm 有什么不同？, en: How does it differ from AetherTerm? }
+      a: { zh: AetherTerm 专注 SSH 终端与运维；AetherTransfer 专注文件浏览、批量传输、任务管理与目录同步，也可以从当前位置直接打开终端。, en: "AetherTerm focuses on SSH terminals and operations. AetherTransfer focuses on file browsing, batch transfers, task management and folder sync, and can open a terminal at the current location." }
+    - q: { zh: 会收集我的数据吗？, en: Does it collect my data? }
+      a: { zh: 不会。没有分析埋点、广告或账号要求；应用只在检查更新时访问 GitHub。, en: "No. There are no analytics, ads or accounts; the app contacts GitHub only to check for updates." }
 cta:
-  title: { zh: 关注原生文件传输的开发进展。, en: Follow the native file transfer project. }
-  note: { zh: 开发中 · macOS 26.0+ · Apple 芯片, en: In development · macOS 26.0+ · Apple silicon }
+  title: { zh: 原生文件传输，从这里开始。, en: Native file transfer starts here. }
+  note: { zh: 免费 · macOS 26.0+ · Apple 芯片, en: Free · macOS 26.0+ · Apple silicon }

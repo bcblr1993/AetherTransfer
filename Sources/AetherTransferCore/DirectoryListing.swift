@@ -35,6 +35,21 @@ public enum DirectoryListing {
     }
 }
 
+public struct LocalFileItem: Sendable {
+    public let relativePath: String
+    public let fileURL: URL
+    public let isDirectory: Bool
+    public let size: Int64
+    public let modified: Date?
+    public init(relativePath: String, fileURL: URL, isDirectory: Bool, size: Int64, modified: Date? = nil) {
+        self.relativePath = relativePath
+        self.fileURL = fileURL
+        self.isDirectory = isDirectory
+        self.size = size
+        self.modified = modified
+    }
+}
+
 public enum LocalFiles {
     public static func list(_ url: URL, showHidden: Bool = false) throws -> [FileEntry] {
         let keys: [URLResourceKey] = [.isDirectoryKey, .isSymbolicLinkKey, .fileSizeKey, .contentModificationDateKey]
@@ -46,5 +61,28 @@ public enum LocalFiles {
                              isSymbolicLink: values.isSymbolicLink == true, size: Int64(values.fileSize ?? 0),
                              modified: values.contentModificationDate)
         })
+    }
+    public static func walk(_ rootURL: URL, showHidden: Bool = false) throws -> [LocalFileItem] {
+        var results: [LocalFileItem] = []
+        let keys: [URLResourceKey] = [.isDirectoryKey, .fileSizeKey, .contentModificationDateKey]
+        let rootPath = rootURL.standardizedFileURL.path
+        let enumerator = FileManager.default.enumerator(
+            at: rootURL,
+            includingPropertiesForKeys: keys,
+            options: showHidden ? [] : [.skipsHiddenFiles]
+        )
+        while let fileURL = enumerator?.nextObject() as? URL {
+            let values = try fileURL.resourceValues(forKeys: Set(keys))
+            let isDir = values.isDirectory == true
+            let standardPath = fileURL.standardizedFileURL.path
+            guard standardPath.hasPrefix(rootPath) else { continue }
+            var relative = String(standardPath.dropFirst(rootPath.count))
+            if relative.hasPrefix("/") { relative.removeFirst() }
+            guard !relative.isEmpty else { continue }
+            let size = Int64(values.fileSize ?? 0)
+            let modified = values.contentModificationDate
+            results.append(LocalFileItem(relativePath: relative, fileURL: fileURL, isDirectory: isDir, size: size, modified: modified))
+        }
+        return results
     }
 }

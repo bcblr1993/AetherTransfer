@@ -8,6 +8,10 @@ ATRequest *at_create(const char *url, const char *user, const char *password,
                      const char *private_key, const char *passphrase, const char *fingerprint);
 void at_destroy(ATRequest *request);
 void at_cancel(ATRequest *request);
+int at_transfer_window(ATRequest *request, int64_t offset, int64_t end, int64_t total);
+int at_set_speed_limit(ATRequest *request, int64_t bytes_per_sec);
+int64_t at_file_size(ATRequest *request);
+int64_t at_file_time(ATRequest *request);
 // mode: 0 listing, 1 download, 2 upload, 3 quote commands
 int at_perform(ATRequest *request, int mode, const char *local_path, const char *commands,
                ATProgress progress, void *context);
