@@ -24,10 +24,15 @@ final class ProfileAndPlacesTests: XCTestCase {
 
     func testDefaultPlaces() {
         let places = PlaceItem.defaultPlaces()
-        XCTAssertFalse(places.isEmpty)
-        XCTAssertTrue(places.contains { $0.name == "个人个人文件夹" || $0.name == "个人文件夹" })
-        XCTAssertTrue(places.contains { $0.name == "下载" })
-        XCTAssertTrue(places.contains { $0.name == "桌面" })
-        XCTAssertTrue(places.contains { $0.name == "文稿" })
+        let home = FileManager.default.homeDirectoryForCurrentUser
+        // 名称随系统语言变化（CI 为英文），按路径核对并与当前语言的本地化名称比对
+        let expected = [
+            (home.path, L10n.tr("个人文件夹", "Home")),
+            (home.appendingPathComponent("Desktop").path, L10n.tr("桌面", "Desktop")),
+            (home.appendingPathComponent("Documents").path, L10n.tr("文稿", "Documents")),
+            (home.appendingPathComponent("Downloads").path, L10n.tr("下载", "Downloads"))
+        ]
+        XCTAssertEqual(places.map(\.path), expected.map(\.0))
+        XCTAssertEqual(places.map(\.name), expected.map(\.1))
     }
 }
