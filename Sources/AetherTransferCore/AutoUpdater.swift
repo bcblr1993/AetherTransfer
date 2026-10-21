@@ -197,7 +197,7 @@ public enum UpdateState: Equatable, Sendable {
 }
 
 public enum AutoUpdater {
-    public static let defaultFeedURLString = "https://www.aethernative.com/apps/aethertransfer/appcast.json"
+    public static let defaultFeedURLString = "https://github.com/bcblr1993/AetherTransfer/releases/latest/download/appcast.json"
     public static let githubLatestReleaseAPIURLString = "https://api.github.com/repos/bcblr1993/AetherTransfer/releases/latest"
     public static let expectedBundleIdentifier = "com.aethernative.AetherTransfer"
 

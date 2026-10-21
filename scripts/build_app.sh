@@ -4,7 +4,7 @@ cd "$(dirname "$0")/.."
 
 VERSION="${VERSION:-0.1.0}"
 BUILD_NUMBER="${BUILD_NUMBER:-2026102101}"
-FEED_URL="${FEED_URL:-https://www.aethernative.com/apps/aethertransfer/appcast.json}"
+FEED_URL="${FEED_URL:-https://github.com/bcblr1993/AetherTransfer/releases/latest/download/appcast.json}"
 ENTITLEMENTS="scripts/Entitlements.plist"
 
 # Auto-detect Developer ID Application identity unless CODESIGN_IDENTITY is explicitly set
@@ -126,7 +126,7 @@ cat > "outputs/appcast.json" <<JSON
     "version": "${VERSION}",
     "buildNumber": "${BUILD_NUMBER}",
     "publishedAt": "$(date -u +"%Y-%m-%dT%H:%M:%SZ")",
-    "downloadURL": "https://www.aethernative.com/apps/aethertransfer/downloads/AetherTransfer-${VERSION}-arm64.zip",
+    "downloadURL": "https://github.com/bcblr1993/AetherTransfer/releases/download/v${VERSION}/AetherTransfer-${VERSION}-arm64.zip",
     "sha256": "${ZIP_SHA256}",
     "sizeBytes": ${ZIP_SIZE},
     "minimumSystemVersion": "26.0",

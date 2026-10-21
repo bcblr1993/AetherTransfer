@@ -213,4 +213,11 @@ final class AutoUpdaterTests: XCTestCase {
         XCTAssertEqual(manifest.latest.sha256, validSHA)
         XCTAssertEqual(manifest.latest.sizeBytes, 1_572_864)
     }
+
+    func testDefaultFeedIsPublishedAsGitHubReleaseAsset() throws {
+        let url = try XCTUnwrap(URL(string: AutoUpdater.defaultFeedURLString))
+        XCTAssertEqual(url.scheme, "https")
+        XCTAssertEqual(url.host, "github.com")
+        XCTAssertEqual(url.path, "/bcblr1993/AetherTransfer/releases/latest/download/appcast.json")
+    }
 }

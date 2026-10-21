@@ -2,6 +2,8 @@
 
 ## [0.1.0] - 2026-10-21
 
+- feat(icon): redesign the app icon as a macOS-grid light plate with a blue folder and embossed upload / download arrows, rendered by `scripts/create_icon.swift` at 1024 px.
+- fix(updater): publish `appcast.json` and the update ZIP as GitHub Release assets and point the default feed to `releases/latest/download/appcast.json`, keeping the GitHub Releases API fallback.
 - feat(updater): add zero-dependency native In-App Online Updater (`AutoUpdater`, `SoftwareUpdateSheet`, `SemanticVersion`, `UpdateManifest`) supporting automatic/manual update checks, GitHub Releases API dual-channel fallback, streaming in-app download with live progress, SHA-256 + `codesign` verification, and atomic `.app` bundle replacement with immediate relaunch.
 - feat(settings): add native macOS Settings window (`⌘,`, `SettingsView`) for dynamic max concurrency (1-10), default conflict resolution policy, default local folder, interface language, and automatic update checks.
 - feat(tabs): add per-tab remote session and directory listing snapshot cache (`TabStateSnapshot`) for instant tab switching without re-listing or dropping active sessions.

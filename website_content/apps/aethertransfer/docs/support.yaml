@@ -1,0 +1,31 @@
+title: { zh: 使用帮助, en: Help }
+heading: { zh: "两端文件，\n从这里开始。", en: "File transfer help\nstarts here." }
+lead: { zh: AetherTransfer 安装、连接与反馈说明。, en: "Installing, connecting and sending feedback." }
+sections:
+  - heading: { zh: 安装与更新, en: Installation and updates }
+    steps:
+      - zh: 打开 DMG，将 AetherTransfer 拖入“应用程序”，然后启动应用。
+        en: Open the DMG, drag AetherTransfer into Applications and launch it.
+      - zh: 在“设置”（⌘,）中可开关自动检查更新；也可从菜单手动检查。更新包核对 SHA-256 与代码签名后才会安装。
+        en: Turn automatic update checks on or off in Settings (⌘,), or check manually from the menu. Updates install only after their SHA-256 and code signature are verified.
+  - heading: { zh: 连接服务器, en: Connecting to a server }
+    list:
+      - zh: SFTP 首次连接会显示主机指纹，请与服务器管理员提供的指纹核对后再信任；指纹变化时连接会被拒绝。
+        en: The first SFTP connection shows the host fingerprint. Compare it with the one from your server administrator before trusting it; a changed fingerprint is refused.
+      - zh: FTPS 会验证服务器的 TLS 证书，自签名或过期证书无法连接。
+        en: FTPS validates the server's TLS certificate; self-signed or expired certificates cannot connect.
+      - zh: 首次在当前位置打开终端时，macOS 会请求控制“终端”的权限。
+        en: The first time you open Terminal at the current location, macOS asks for permission to control Terminal.
+  - heading: { zh: 当前边界, en: Current limits }
+    list:
+      - zh: 仅支持 Apple 芯片与 macOS 26+；协议为 SFTP、FTPS 与 FTP，暂不支持 WebDAV 与 S3 / R2。
+        en: Apple silicon and macOS 26+ only. Protocols are SFTP, FTPS and FTP; WebDAV and S3 / R2 are not yet supported.
+      - zh: 目录同步默认不删除远程多余文件；删除与覆盖都需要你明确确认。
+        en: Folder sync never deletes remote extras by default, and deleting or overwriting always requires your confirmation.
+  - heading: { zh: 反馈, en: Feedback }
+    body:
+      - zh: 请附系统版本、应用版本、使用协议和复现步骤；不要公开密码、私钥或未脱敏的服务器配置。
+        en: Include your OS version, app version, protocol and reproduction steps. Do not publish passwords, private keys or unredacted server configuration.
+    links:
+      - { label: GitHub Issues, href: https://github.com/bcblr1993/AetherTransfer/issues }
+      - { label: { zh: 官网反馈, en: Website feedback }, href: /feedback/?app=aethertransfer }
