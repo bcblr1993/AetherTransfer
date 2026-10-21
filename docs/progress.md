@@ -51,4 +51,12 @@
 - 中英文双语国际化（`L10n`、`AppLanguage`）：支持跟随系统语言及菜单栏实时切换中英文，补充无障碍标签。
 - 发行打包升级：`scripts/build_app.sh` 自动生成 `AppIcon.icns`，执行 Developer ID Application (Hardened Runtime) 签名，产出 `AetherTransfer-0.1.0-arm64.dmg`、`AetherTransfer-0.1.0-arm64.zip`、`SHA256SUMS.txt` 与 `appcast.json`。
 
-仍需：WebDAV / S3 / R2 等云协议扩展。公共发行签名、公证与下载发布门禁尚未完成。
+仍需：WebDAV / S3 / R2 等云协议扩展。
+
+2026-10-21：v0.1.0 正式发布：
+- 门禁：`swift test` 全部通过；`scripts/test_protocols.sh` 7 项真实 FTP / SFTP 集成测试通过；CI（macos-26）测试、集成测试、Release 构建与打包全部通过；公证后的 `.app` 实际启动正常。
+- 打包：Developer ID 签名，ZIP 与 DMG 均经 Apple 公证（Accepted）并装订票据，`spctl` 显示 Notarized Developer ID，无 Homebrew 依赖。
+- 发布：PR #3 合并至 `main`（`3b35707`），GitHub Release `v0.1.0` 附 DMG、ZIP、`SHA256SUMS.txt`、`appcast.json`；应用内更新改读 Release 附件 `appcast.json`。
+- 官网：Release 自动同步版本记录；产品页、隐私政策、使用帮助与新图标上线，状态为可下载。
+- 公开验证：GitHub 与官网下载的 DMG SHA-256 均为 `2ae24ee1…`，带隔离属性的 Gatekeeper 评估通过；`releases/latest/download/appcast.json` 可访问且与 ZIP 校验值一致。尚未在干净账户中实机安装验证。
+- 后续：官网界面截图；`feat/transfer-workflows`（WebDAV / S3 / SSH agent 等）留待后续版本合并。
