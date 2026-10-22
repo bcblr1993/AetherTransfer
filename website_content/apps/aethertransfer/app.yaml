@@ -22,8 +22,8 @@ cardStats:
   - value: "本机 / Local"
     label: { zh: 凭据存入 Keychain，无追踪, en: "Keychain credentials, no tracking" }
 notice:
-  zh: "首个正式版 0.1.0 支持 SFTP、FTPS 与 FTP，提供中英双语界面与应用内更新。WebDAV、S3 / R2 等云存储尚未包含在本版本中。"
-  en: "The first release, 0.1.0, supports SFTP, FTPS and FTP, with English and Chinese interfaces and in-app updates. WebDAV and S3 / R2 cloud storage are not included in this version."
+  zh: "0.1.1 修复书签密码保存，并支持拖到任意文件夹上传下载、把远程文件直接拖到访达。支持 SFTP、FTPS 与 FTP；WebDAV、S3 / R2 等云存储尚未包含。"
+  en: "Version 0.1.1 fixes saving bookmark passwords and adds drag-and-drop onto any folder and straight into Finder. SFTP, FTPS and FTP are supported; WebDAV and S3 / R2 cloud storage are not included yet."
 hero:
   eyebrow: { zh: 文件传输 · 原生 Mac, en: File transfer · Native Mac }
   title: { zh: "文件两端，\n尽在掌握。", en: "Two sides.\nOne clear workspace." }
@@ -41,8 +41,8 @@ features:
     - kicker: { zh: 浏览, en: Browse }
       title: { zh: 本地与远程双栏, en: "Local and remote, side by side" }
       body:
-        zh: 多标签工作区，每个标签保留独立的连接与路径。列表与图标视图、可点击的路径栏、前进后退、按名称 / 大小 / 日期 / 种类排序与搜索；支持空格键快速查看和 Finder 拖放。
-        en: A tabbed workspace where each tab keeps its own connection and paths. List and icon views, a clickable path bar, back and forward, sorting by name, size, date or kind, and search, plus spacebar Quick Look and Finder drag-and-drop.
+        zh: 多标签工作区，每个标签保留独立的连接与路径。列表与图标视图、路径栏、排序与搜索、空格键快速查看；把文件拖到任意文件夹即上传或下载，远程文件也能直接拖到访达。
+        en: A tabbed workspace where each tab keeps its own connection and paths. List and icon views, a path bar, sorting, search and spacebar Quick Look. Drop files onto any folder to upload or download, or drag remote files straight into Finder.
     - kicker: { zh: 传输, en: Transfer }
       title: { zh: 可靠传输，进度可见, en: Reliable transfers you can follow }
       body:
