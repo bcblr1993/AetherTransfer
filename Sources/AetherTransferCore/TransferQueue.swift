@@ -59,12 +59,15 @@ public struct TransferTaskItem: Identifiable, Sendable {
 }
 
 public typealias TransferOperation = @Sendable (@escaping @Sendable (TransferProgress) -> Void) async throws -> Void
+/// 任务第一次进入终态（完成、失败、取消）时调用一次；之后的重试不再回调。
+public typealias TransferFinishHandler = @Sendable (TransferState, String?) -> Void
 
 public final class TransferQueueManager: @unchecked Sendable {
     private var maxConcurrent: Int
     private let lock = NSLock()
     private var taskItems: [TransferTaskItem] = []
     private var operations: [UUID: TransferOperation] = [:]
+    private var finishHandlers: [UUID: TransferFinishHandler] = [:]
     private var runningTasks: [UUID: Task<Void, Never>] = [:]
     private var speedTrackers: [UUID: (lastTime: Date, lastBytes: Int64)] = [:]
     private var speedLimit: Int64?
@@ -143,12 +146,14 @@ public final class TransferQueueManager: @unchecked Sendable {
     }
 
     @discardableResult
-    public func enqueue(name: String, direction: TransferDirection, operation: @escaping TransferOperation) -> UUID {
+    public func enqueue(name: String, direction: TransferDirection, operation: @escaping TransferOperation,
+                        onFinish: TransferFinishHandler? = nil) -> UUID {
         let id = UUID()
         let item = TransferTaskItem(id: id, name: name, direction: direction, state: .queued)
         lock.lock()
         taskItems.insert(item, at: 0)
         operations[id] = operation
+        finishHandlers[id] = onFinish
         lock.unlock()
         notify()
         processNext()
@@ -156,14 +161,17 @@ public final class TransferQueueManager: @unchecked Sendable {
     }
 
     public func cancel(id: UUID) {
+        var handler: TransferFinishHandler?
         lock.lock()
         if let task = runningTasks[id] {
             task.cancel()
         } else if let index = taskItems.firstIndex(where: { $0.id == id && $0.state == .queued }) {
             taskItems[index].state = .cancelled
             operations.removeValue(forKey: id)
+            handler = finishHandlers.removeValue(forKey: id)
         }
         lock.unlock()
+        handler?(.cancelled, nil)
         notify()
     }
 
@@ -197,12 +205,15 @@ public final class TransferQueueManager: @unchecked Sendable {
         for (_, task) in runningTasks {
             task.cancel()
         }
+        var handlers: [TransferFinishHandler] = []
         for i in 0..<taskItems.count {
             if taskItems[i].state == .queued {
                 taskItems[i].state = .cancelled
+                if let handler = finishHandlers.removeValue(forKey: taskItems[i].id) { handlers.append(handler) }
             }
         }
         lock.unlock()
+        handlers.forEach { $0(.cancelled, nil) }
         notify()
     }
 
@@ -296,7 +307,9 @@ public final class TransferQueueManager: @unchecked Sendable {
         }
         runningTasks.removeValue(forKey: id)
         speedTrackers.removeValue(forKey: id)
+        let handler = finishHandlers.removeValue(forKey: id)
         lock.unlock()
+        handler?(state, error)
         notify()
         processNext()
     }

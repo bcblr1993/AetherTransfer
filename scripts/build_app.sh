@@ -2,8 +2,8 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-VERSION="${VERSION:-0.1.0}"
-BUILD_NUMBER="${BUILD_NUMBER:-2026102101}"
+VERSION="${VERSION:-0.1.1}"
+BUILD_NUMBER="${BUILD_NUMBER:-2026102201}"
 FEED_URL="${FEED_URL:-https://github.com/bcblr1993/AetherTransfer/releases/latest/download/appcast.json}"
 ENTITLEMENTS="scripts/Entitlements.plist"
 
@@ -53,6 +53,11 @@ cat > "$APP/Contents/Info.plist" <<PLIST
 <key>NSAppleEventsUsageDescription</key><string>AetherTransfer 需要控制「终端」以在当前本地目录或远程 SSH 会话中快速打开命令行窗口。</string>
 <key>ATUpdateFeedURL</key><string>${FEED_URL}</string>
 <key>CFBundleLocalizations</key><array><string>en</string><string>zh-Hans</string></array>
+<key>UTExportedTypeDeclarations</key><array><dict>
+<key>UTTypeIdentifier</key><string>com.aethernative.aethertransfer.item</string>
+<key>UTTypeDescription</key><string>AetherTransfer Item</string>
+<key>UTTypeConformsTo</key><array><string>public.data</string></array>
+</dict></array>
 </dict></plist>
 PLIST
 
@@ -130,8 +135,8 @@ cat > "outputs/appcast.json" <<JSON
     "sha256": "${ZIP_SHA256}",
     "sizeBytes": ${ZIP_SIZE},
     "minimumSystemVersion": "26.0",
-    "releaseNotesZh": "AetherTransfer v${VERSION} 正式版：原生 Apple Silicon 双栏 SFTP/FTPS/FTP 传输工作台，支持断点续传、目录同步、快速查看预览、内置编辑器与应用内在线更新。",
-    "releaseNotesEn": "AetherTransfer v${VERSION}: Native Apple Silicon dual-pane SFTP/FTPS/FTP workbench with resumable transfers, directory synchronization, Quick Look preview, built-in editor, and in-app online updates."
+    "releaseNotesZh": "AetherTransfer v${VERSION}：修复书签密码未保存到钥匙串；支持拖到任意文件夹上传下载、把远程文件直接拖到访达。",
+    "releaseNotesEn": "AetherTransfer v${VERSION}: fixes bookmark passwords not being saved to Keychain; drag onto any folder to upload or download, and drag remote files straight into Finder."
   }
 }
 JSON

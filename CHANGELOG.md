@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.1.1] - 2026-10-22
+
+- fix(credentials): "Save credentials in macOS Keychain" now defaults to on; turning it off removes stored secrets; connecting a bookmark without a stored password asks for it (with an option to save) instead of connecting with an empty password; Keychain read errors are shown instead of being treated as "no password".
+- feat(drag): drop onto a folder row (list or icon view) to upload or download into that folder; drag remote files and folders into Finder or other apps through file promises that download via the transfer queue and hand over only verified files; local items are offered as copies; multi-row drags in list view; dropping on the remote side while disconnected explains that a connection is needed.
+- feat(transfer): uploads, downloads and local copies take a target directory and resolve conflicts against that directory's listing; local copies run off the main thread and never copy a folder into itself.
+- feat(queue): `TransferQueueManager.enqueue(onFinish:)` reports the first terminal state of each task.
+
 ## [0.1.0] - 2026-10-21
 
 - feat(icon): redesign the app icon as a macOS-grid light plate with a blue folder and embossed upload / download arrows, rendered by `scripts/create_icon.swift` at 1024 px.

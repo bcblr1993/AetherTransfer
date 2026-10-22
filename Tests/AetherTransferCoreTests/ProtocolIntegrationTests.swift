@@ -241,4 +241,38 @@ import XCTest
             try await remote.remove(remoteDestination, directory: false)
         }
     }
+
+    /// 拖到文件夹行时，传输目标是那个子目录而不是当前目录：冲突判断基于子目录的列表，并经可恢复传输落地。
+    func testResumableTransfersIntoChosenSubdirectory() async throws {
+        for kind in [TransferProtocol.ftp, .sftp] {
+            let remote = try client(kind)
+            let folder = FileManager.default.temporaryDirectory.appendingPathComponent("aethertransfer-sub-\(UUID().uuidString)")
+            try FileManager.default.createDirectory(at: folder.appendingPathComponent("drop target"), withIntermediateDirectories: true)
+            defer { try? FileManager.default.removeItem(at: folder) }
+            let source = folder.appendingPathComponent("拖放 源.bin")
+            let data = Data((0..<(256 * 1024)).map { UInt8($0 % 241) })
+            try data.write(to: source)
+
+            let root = "/\(kind.rawValue)-drop-\(UUID().uuidString)"
+            let sub = try RemotePath.join(root, "目标 文件夹")
+            try await remote.mkdirRecursive(sub)
+            let target = try RemotePath.join(sub, source.lastPathComponent)
+            try await ResumableTransfer(direction: .upload, local: source, remote: target, profile: remote.profile, overwrite: false)
+                .run(client: remote) { _ in }
+            let existing = try await remote.list(sub).map(\.name)
+            XCTAssertEqual(existing, [source.lastPathComponent])
+            let rootListing = try await remote.list(root)
+            XCTAssertTrue(rootListing.allSatisfy { $0.isDirectory })
+            XCTAssertEqual(RemotePath.uniqueName(for: source.lastPathComponent, existingNames: existing), "拖放 源 (1).bin")
+
+            let destination = folder.appendingPathComponent("drop target").appendingPathComponent(source.lastPathComponent)
+            try await ResumableTransfer(direction: .download, local: destination, remote: target, profile: remote.profile, overwrite: false)
+                .run(client: remote) { _ in }
+            XCTAssertEqual(try Data(contentsOf: destination), data)
+
+            try await remote.remove(target, directory: false)
+            try await remote.remove(sub, directory: true)
+            try await remote.remove(root, directory: true)
+        }
+    }
 }

@@ -127,7 +127,10 @@ struct MainView: View {
                                 workspace: workspace
                             )
                         } else {
-                            DisconnectedStateView(showConnect: $showConnect)
+                            DisconnectedStateView(showConnect: $showConnect) {
+                                workspace.error = L10n.tr("请先连接服务器，再把文件拖到这里上传。",
+                                                          "Connect to a server first, then drop files here to upload.")
+                            }
                         }
                     }
 
@@ -300,6 +303,9 @@ struct MainView: View {
         } message: { Text(workspace.error ?? "") }
         .sheet(item: $workspace.hostChallenge) { challenge in
             HostChallengeDialog(challenge: challenge, workspace: workspace)
+        }
+        .sheet(item: $workspace.passwordPrompt) { profile in
+            PasswordPromptSheet(profile: profile, workspace: workspace)
         }
         .onChange(of: workspace.showHidden) { workspace.refreshLocal() }
     }
@@ -521,6 +527,7 @@ struct FilePaneView: View {
     @ObservedObject var workspace: Workspace
     @State private var isEditingPath = false
     @State private var tempPathText = ""
+    @State private var dropTargetID: String?
 
     var currentSortField: FileSortField {
         remote ? workspace.remoteSortField : workspace.localSortField
@@ -694,7 +701,7 @@ struct FilePaneView: View {
 
             // Content: Table or Grid
             if workspace.viewMode == .list {
-                Table(filtered, selection: $selection) {
+                Table(of: FileEntry.self, selection: $selection) {
                     TableColumn(L10n.tr("名称", "Name")) { entry in
                         Label {
                             Text(entry.name)
@@ -703,7 +710,6 @@ struct FilePaneView: View {
                                 .foregroundStyle(entry.isDirectory ? Color.accentColor : Color.secondary)
                         }
                         .contentShape(Rectangle())
-                        .draggable(remote ? "remote://\(entry.path)" : "local://\(entry.path)")
                         .onTapGesture(count: 2) {
                             if !entry.isDirectory && TextFileHelper.isTextFileName(entry.name) {
                                 workspace.openEditor(for: entry, remote: remote)
@@ -732,6 +738,20 @@ struct FilePaneView: View {
                             .foregroundStyle(.secondary)
                     }
                     .width(min: 100, ideal: 140)
+                } rows: {
+                    // 每一行都可拖出（选中多行时一起拖动）；文件夹行可作为投放目标。
+                    ForEach(filtered) { entry in
+                        if entry.isDirectory {
+                            TableRow(entry)
+                                .itemProvider { workspace.dragProvider(for: entry, remote: remote) }
+                                .dropDestination(for: DroppedItem.self) { items in
+                                    workspace.handleDrop(items, toRemote: remote, directory: entry.path)
+                                }
+                        } else {
+                            TableRow(entry)
+                                .itemProvider { workspace.dragProvider(for: entry, remote: remote) }
+                        }
+                    }
                 }
                 .contextMenu(forSelectionType: String.self) { ids in
                     paneContextMenu(ids: ids)
@@ -759,8 +779,14 @@ struct FilePaneView: View {
                 ScrollView {
                     LazyVGrid(columns: [GridItem(.adaptive(minimum: 95, maximum: 120), spacing: 12)], spacing: 12) {
                         ForEach(filtered) { entry in
-                            FileGridCell(entry: entry, isSelected: selection.contains(entry.id))
-                                .draggable(remote ? "remote://\(entry.path)" : "local://\(entry.path)")
+                            FileGridCell(entry: entry, isSelected: selection.contains(entry.id) || dropTargetID == entry.id)
+                                .onDrag { workspace.dragProvider(for: entry, remote: remote) }
+                                .dropDestination(for: DroppedItem.self) { items, _ in
+                                    guard entry.isDirectory else { return false }
+                                    return workspace.handleDrop(items, toRemote: remote, directory: entry.path)
+                                } isTargeted: { targeted in
+                                    if entry.isDirectory { dropTargetID = targeted ? entry.id : (dropTargetID == entry.id ? nil : dropTargetID) }
+                                }
                                 .onTapGesture {
                                     selection = [entry.id]
                                 }
@@ -789,19 +815,8 @@ struct FilePaneView: View {
             }
         }
         .frame(minWidth: 350, maxWidth: .infinity, maxHeight: .infinity)
-        .dropDestination(for: String.self) { payloads, _ in
-            guard !payloads.isEmpty else { return false }
-            workspace.handleDroppedItems(payloads, toRemotePane: remote)
-            return true
-        }
-        .dropDestination(for: URL.self) { urls, _ in
-            guard !urls.isEmpty else { return false }
-            if remote {
-                workspace.uploadLocalURLs(urls)
-            } else {
-                workspace.copyLocalURLs(urls, to: path)
-            }
-            return true
+        .dropDestination(for: DroppedItem.self) { items, _ in
+            workspace.handleDrop(items, toRemote: remote, directory: nil)
         }
     }
 
@@ -1453,6 +1468,7 @@ struct StatusBarView: View {
 // MARK: - Disconnected State View
 struct DisconnectedStateView: View {
     @Binding var showConnect: Bool
+    var onDropWithoutConnection: () -> Void = {}
 
     var body: some View {
         ContentUnavailableView {
@@ -1469,6 +1485,10 @@ struct DisconnectedStateView: View {
         }
         .frame(minWidth: 350, maxWidth: .infinity, maxHeight: .infinity)
         .background(Color.primary.opacity(0.01))
+        .dropDestination(for: DroppedItem.self) { _, _ in
+            onDropWithoutConnection()
+            return false
+        }
     }
 }
 
@@ -1521,6 +1541,40 @@ struct HostChallengeDialog: View {
     }
 }
 
+// MARK: - Password Prompt (saved bookmark without a stored password)
+struct PasswordPromptSheet: View {
+    let profile: ServerProfile
+    @ObservedObject var workspace: Workspace
+    @State private var password = ""
+    @State private var remember = true
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            Label(L10n.tr("输入密码", "Enter Password"), systemImage: "key.fill")
+                .font(.title2.bold())
+            Text(L10n.tr("钥匙串中没有「\(profile.username)@\(profile.host)」的密码。",
+                         "No password for \"\(profile.username)@\(profile.host)\" is stored in Keychain."))
+                .foregroundStyle(.secondary)
+            SecureField(L10n.tr("登录密码", "Password"), text: $password)
+                .textFieldStyle(.roundedBorder)
+            Toggle(L10n.tr("将密码保存到系统钥匙串 (Keychain)", "Save password in macOS Keychain"), isOn: $remember)
+            HStack {
+                Button(L10n.tr("取消", "Cancel")) { workspace.passwordPrompt = nil }
+                    .keyboardShortcut(.cancelAction)
+                Spacer()
+                Button(L10n.tr("连接", "Connect")) {
+                    workspace.connectWithPromptedPassword(profile, password: password, remember: remember)
+                }
+                .buttonStyle(.glassProminent)
+                .keyboardShortcut(.defaultAction)
+                .disabled(password.isEmpty)
+            }
+        }
+        .padding(24)
+        .frame(width: 440)
+    }
+}
+
 // MARK: - Connection View (Add / Edit Bookmark)
 struct ConnectionView: View {
     @Environment(\.dismiss) private var dismiss
@@ -1541,14 +1595,14 @@ struct ConnectionView: View {
             let creds = workspace.loadCredentials(for: existing)
             self._password = State(initialValue: creds.password)
             self._passphrase = State(initialValue: creds.passphrase)
-            self._remember = State(initialValue: !creds.password.isEmpty || !creds.passphrase.isEmpty)
+            self._remember = State(initialValue: true)
             self._save = State(initialValue: true)
         } else {
             self.isEditing = false
             self._profile = State(initialValue: ServerProfile())
             self._password = State(initialValue: "")
             self._passphrase = State(initialValue: "")
-            self._remember = State(initialValue: false)
+            self._remember = State(initialValue: true)
             self._save = State(initialValue: true)
         }
     }
