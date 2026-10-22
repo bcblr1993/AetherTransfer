@@ -30,6 +30,13 @@ public struct ServerProfile: Identifiable, Codable, Hashable, Sendable {
               !username.isEmpty else { throw TransferError.invalidConnection }
         try RemotePath.validate(initialPath)
     }
+    /// 连接已保存书签时是否需要先询问密码：没有密码、也不能靠私钥认证，且不是匿名 FTP。
+    public func needsPasswordPrompt(for credentials: Credentials) -> Bool {
+        guard credentials.password.isEmpty else { return false }
+        if protocolKind == .sftp && !privateKeyPath.isEmpty { return false }
+        if protocolKind != .sftp && username.lowercased() == "anonymous" { return false }
+        return true
+    }
     public func url(path: String, directory: Bool = false) throws -> String {
         try validate(); try RemotePath.validate(path)
         var components = URLComponents()

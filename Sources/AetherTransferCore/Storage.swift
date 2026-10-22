@@ -48,4 +48,12 @@ public enum CredentialStore {
         guard status == errSecSuccess, let data = result as? Data else { throw TransferError.keychain(status) }
         return String(decoding: data, as: UTF8.self)
     }
+    /// 记住凭据时写入（空值会删除对应条目）；不记住时删除已有条目，避免留下用不到的旧密码。
+    public static func store(_ credentials: Credentials, id: UUID, remember: Bool) throws {
+        try save(remember ? credentials.password : "", id: id)
+        try save(remember ? credentials.passphrase : "", id: id, kind: "passphrase")
+    }
+    public static func loadCredentials(id: UUID) throws -> Credentials {
+        Credentials(password: try load(id: id), passphrase: try load(id: id, kind: "passphrase"))
+    }
 }

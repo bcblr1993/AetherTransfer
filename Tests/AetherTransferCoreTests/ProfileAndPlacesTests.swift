@@ -35,4 +35,14 @@ final class ProfileAndPlacesTests: XCTestCase {
         XCTAssertEqual(places.map(\.path), expected.map(\.0))
         XCTAssertEqual(places.map(\.name), expected.map(\.1))
     }
+
+    func testPasswordPromptOnlyWhenNoUsableCredential() {
+        let empty = Credentials()
+        XCTAssertTrue(ServerProfile(host: "h", username: "u", protocolKind: .ftp).needsPasswordPrompt(for: empty))
+        XCTAssertTrue(ServerProfile(host: "h", username: "u", protocolKind: .sftp).needsPasswordPrompt(for: empty))
+        XCTAssertFalse(ServerProfile(host: "h", username: "u", protocolKind: .ftp).needsPasswordPrompt(for: Credentials(password: "p")))
+        XCTAssertFalse(ServerProfile(host: "h", username: "u", protocolKind: .sftp, privateKeyPath: "/k").needsPasswordPrompt(for: empty))
+        XCTAssertFalse(ServerProfile(host: "h", username: "Anonymous", protocolKind: .ftp).needsPasswordPrompt(for: empty))
+        XCTAssertTrue(ServerProfile(host: "h", username: "anonymous", protocolKind: .sftp).needsPasswordPrompt(for: empty))
+    }
 }

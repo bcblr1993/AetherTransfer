@@ -130,4 +130,42 @@ final class TransferQueueTests: XCTestCase, @unchecked Sendable {
         let state = queue.items.first(where: { $0.id == id })?.state
         XCTAssertTrue(state == .inProgress || state == .completed)
     }
+
+    func testFinishHandlerReportsEachTerminalStateOnce() async throws {
+        struct Boom: Error {}
+        let queue = TransferQueueManager(maxConcurrentTransfers: 1)
+        let completed = expectation(description: "completed")
+        let failed = expectation(description: "failed")
+        let cancelled = expectation(description: "cancelled while queued")
+        let gate = expectation(description: "release first task")
+
+        queue.enqueue(name: "ok", direction: .download, operation: { _ in
+            await self.fulfillment(of: [gate], timeout: 2.0)
+        }, onFinish: { state, _ in
+            XCTAssertEqual(state, .completed)
+            completed.fulfill()
+        })
+        let waiting = queue.enqueue(name: "waiting", direction: .download, operation: { _ in
+            XCTFail("cancelled task must not run")
+        }, onFinish: { state, _ in
+            XCTAssertEqual(state, .cancelled)
+            cancelled.fulfill()
+        })
+        let failing = queue.enqueue(name: "bad", direction: .download, operation: { _ in
+            throw Boom()
+        }, onFinish: { state, error in
+            XCTAssertEqual(state, .failed)
+            XCTAssertNotNil(error)
+            failed.fulfill()
+        })
+
+        queue.cancel(id: waiting)
+        await fulfillment(of: [cancelled], timeout: 1.0)
+        gate.fulfill()
+        await fulfillment(of: [completed, failed], timeout: 2.0)
+
+        // 重试不会再次回调已经结束过的处理器（expectation 重复 fulfill 会报错）
+        queue.retry(id: failing)
+        try await Task.sleep(nanoseconds: 200_000_000)
+    }
 }

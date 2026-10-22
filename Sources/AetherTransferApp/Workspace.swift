@@ -62,6 +62,7 @@ public enum DefaultConflictPreference: String, CaseIterable, Identifiable, Senda
     @Published var showHidden = false
     @Published var error: String?
     @Published var hostChallenge: HostChallenge?
+    @Published var passwordPrompt: ServerProfile?
     @Published var connectedProfile: ServerProfile?
 
     // Bookmark editing
@@ -291,6 +292,7 @@ public enum DefaultConflictPreference: String, CaseIterable, Identifiable, Senda
         self.autoCheckForUpdates = autoCheckDefault
 
         do { profiles = try store.load() } catch { self.error = error.localizedDescription }
+        try? FileManager.default.removeItem(at: Self.dragExportRoot)
 
         queue.onQueueUpdated = { [weak self] in
             Task { @MainActor in
@@ -413,26 +415,21 @@ public enum DefaultConflictPreference: String, CaseIterable, Identifiable, Senda
 
     func save(_ profile: ServerProfile, credentials: Credentials, remember: Bool) throws {
         try profile.validate()
-        if remember {
-            try CredentialStore.save(credentials.password, id: profile.id)
-            try CredentialStore.save(credentials.passphrase, id: profile.id, kind: "passphrase")
-        }
+        try CredentialStore.store(credentials, id: profile.id, remember: remember)
         if let index = profiles.firstIndex(where: { $0.id == profile.id }) { profiles[index] = profile }
         else { profiles.append(profile) }
         try store.save(profiles)
     }
 
     func loadCredentials(for profile: ServerProfile) -> Credentials {
-        let pwd = (try? CredentialStore.load(id: profile.id)) ?? ""
-        let pass = (try? CredentialStore.load(id: profile.id, kind: "passphrase")) ?? ""
-        return Credentials(password: pwd, passphrase: pass)
+        do { return try CredentialStore.loadCredentials(id: profile.id) }
+        catch { self.error = error.localizedDescription; return Credentials() }
     }
 
     func deleteProfile(_ profile: ServerProfile) {
         profiles.removeAll { $0.id == profile.id }
         persist()
-        try? CredentialStore.save("", id: profile.id)
-        try? CredentialStore.save("", id: profile.id, kind: "passphrase")
+        try? CredentialStore.store(Credentials(), id: profile.id, remember: false)
         if connectedProfile?.id == profile.id {
             disconnect()
         }
@@ -448,9 +445,22 @@ public enum DefaultConflictPreference: String, CaseIterable, Identifiable, Senda
 
     func connectSaved(_ profile: ServerProfile) {
         do {
-            connect(profile, credentials: Credentials(password: try CredentialStore.load(id: profile.id),
-                                                      passphrase: try CredentialStore.load(id: profile.id, kind: "passphrase")))
+            let saved = try CredentialStore.loadCredentials(id: profile.id)
+            if profile.needsPasswordPrompt(for: saved) { passwordPrompt = profile; return }
+            connect(profile, credentials: saved)
         } catch { self.error = error.localizedDescription }
+    }
+
+    /// 钥匙串里没有密码时由输入框调用；选择保存则写入钥匙串，口令保持原样。
+    func connectWithPromptedPassword(_ profile: ServerProfile, password: String, remember: Bool) {
+        passwordPrompt = nil
+        var credentials = (try? CredentialStore.loadCredentials(id: profile.id)) ?? Credentials()
+        credentials.password = password
+        if remember {
+            do { try CredentialStore.save(password, id: profile.id) }
+            catch { self.error = error.localizedDescription }
+        }
+        connect(profile, credentials: credentials)
     }
 
     func connect(_ profile: ServerProfile, credentials: Credentials) {
@@ -591,33 +601,37 @@ public enum DefaultConflictPreference: String, CaseIterable, Identifiable, Senda
     func uploadSelection() { upload(localFiles.filter { localSelection.contains($0.id) }) }
     func downloadSelection() { download(remoteFiles.filter { remoteSelection.contains($0.id) }) }
 
-    func upload(_ entries: [FileEntry]) {
-        guard let client else { return }
-        for entry in entries {
-            if entry.isDirectory {
-                uploadDirectory(entry, client: client)
-            } else {
-                uploadSingleFile(entry, client: client)
-            }
+    /// 上传到指定远程目录（默认当前远程目录）；目标不是当前目录时先列出它用于冲突判断。
+    func upload(_ entries: [FileEntry], to remoteDirectory: String? = nil) {
+        guard let client else { error = L10n.tr("请先连接服务器。", "Connect to a server first."); return }
+        guard !entries.isEmpty else { return }
+        let target = RemotePath.normalize(remoteDirectory ?? remotePath)
+        if target == remotePath {
+            enqueueUploads(entries, to: target, existing: remoteFiles.map(\.name), client: client)
+            return
+        }
+        Task { [weak self] in
+            do {
+                let names = try await client.list(target).map(\.name)
+                self?.enqueueUploads(entries, to: target, existing: names, client: client)
+            } catch { self?.error = error.localizedDescription }
         }
     }
 
-    private func uploadSingleFile(_ entry: FileEntry, client: RemoteClient) {
+    private func enqueueUploads(_ entries: [FileEntry], to target: String, existing: [String], client: RemoteClient) {
+        var names = existing
+        for entry in entries {
+            let name = entry.isDirectory
+                ? uploadDirectory(entry, to: target, existing: names, client: client)
+                : uploadSingleFile(entry, to: target, existing: names, client: client)
+            if let name { names.append(name) }
+        }
+    }
+
+    private func uploadSingleFile(_ entry: FileEntry, to targetDir: String, existing: [String], client: RemoteClient) -> String? {
         do {
-            var targetName = entry.name
-            var overwrite = remoteFiles.contains { $0.name == targetName }
-            if overwrite {
-                let choice = confirmConflict(targetName)
-                switch choice {
-                case .skip: return
-                case .overwrite: overwrite = true
-                case .keepBoth:
-                    targetName = RemotePath.uniqueName(for: targetName, existingNames: remoteFiles.map(\.name))
-                    overwrite = false
-                }
-            }
-            let finalTarget = try RemotePath.join(remotePath, targetName)
-            let finalOverwrite = overwrite
+            guard let (targetName, overwrite) = resolveConflict(entry.name, existing: existing) else { return nil }
+            let finalTarget = try RemotePath.join(targetDir, targetName)
             queue.enqueue(name: targetName, direction: .upload) { [weak self] progress in
                 let activeClient = await MainActor.run { self?.client ?? client }
                 let task = try ResumableTransfer(
@@ -625,30 +639,19 @@ public enum DefaultConflictPreference: String, CaseIterable, Identifiable, Senda
                     local: URL(fileURLWithPath: entry.path),
                     remote: finalTarget,
                     profile: activeClient.profile,
-                    overwrite: finalOverwrite
+                    overwrite: overwrite
                 )
                 try await task.run(client: activeClient, progress: progress)
                 await MainActor.run { self?.refreshRemote() }
             }
-        } catch { self.error = error.localizedDescription }
+            return targetName
+        } catch { self.error = error.localizedDescription; return nil }
     }
 
-    private func uploadDirectory(_ entry: FileEntry, client: RemoteClient) {
+    private func uploadDirectory(_ entry: FileEntry, to targetDir: String, existing: [String], client: RemoteClient) -> String? {
         let rootURL = URL(fileURLWithPath: entry.path)
-        var folderName = entry.name
-        var overwriteFiles = true
-        if remoteFiles.contains(where: { $0.name == folderName }) {
-            let choice = confirmConflict(folderName)
-            switch choice {
-            case .skip: return
-            case .overwrite: overwriteFiles = true
-            case .keepBoth:
-                folderName = RemotePath.uniqueName(for: folderName, existingNames: remoteFiles.map(\.name))
-                overwriteFiles = false
-            }
-        }
-        let baseRemoteFolder = RemotePath.normalize(remotePath + "/" + folderName)
-        let finalOverwrite = overwriteFiles
+        guard let (folderName, finalOverwrite) = resolveConflict(entry.name, existing: existing) else { return nil }
+        let baseRemoteFolder = RemotePath.normalize(targetDir + "/" + folderName)
         Task { [weak self] in
             guard let self else { return }
             do {
@@ -677,70 +680,44 @@ public enum DefaultConflictPreference: String, CaseIterable, Identifiable, Senda
                 refreshRemote()
             } catch { self.error = error.localizedDescription }
         }
+        return folderName
     }
 
-    func download(_ entries: [FileEntry]) {
-        guard let client else { return }
+    /// 下载到指定本地目录（默认当前本地目录）。
+    func download(_ entries: [FileEntry], to localDirectory: String? = nil) {
+        guard let client else { error = L10n.tr("请先连接服务器。", "Connect to a server first."); return }
+        let target = localDirectory ?? localPath
+        let localDir = URL(fileURLWithPath: target)
+        var names = (try? FileManager.default.contentsOfDirectory(atPath: target)) ?? []
         for entry in entries {
-            if entry.isDirectory {
-                downloadDirectory(entry, client: client)
-            } else {
-                downloadSingleFile(entry, client: client)
-            }
+            let name = entry.isDirectory
+                ? downloadDirectory(entry, to: localDir, existing: names, client: client)
+                : downloadSingleFile(entry, to: localDir, existing: names, client: client)
+            if let name { names.append(name) }
         }
     }
 
-    private func downloadSingleFile(_ entry: FileEntry, client: RemoteClient) {
-        var targetName = entry.name
-        let localDir = URL(fileURLWithPath: localPath)
-        var destination = localDir.appendingPathComponent(targetName)
-        var overwrite = FileManager.default.fileExists(atPath: destination.path)
-        if overwrite {
-            let choice = confirmConflict(targetName)
-            switch choice {
-            case .skip: return
-            case .overwrite: overwrite = true
-            case .keepBoth:
-                targetName = RemotePath.uniqueName(for: targetName, existingNames: localFiles.map(\.name))
-                destination = localDir.appendingPathComponent(targetName)
-                overwrite = false
-            }
-        }
-        let finalDestination = destination
-        let finalOverwrite = overwrite
+    private func downloadSingleFile(_ entry: FileEntry, to localDir: URL, existing: [String], client: RemoteClient) -> String? {
+        guard let (targetName, overwrite) = resolveConflict(entry.name, existing: existing) else { return nil }
+        let destination = localDir.appendingPathComponent(targetName)
         queue.enqueue(name: targetName, direction: .download) { [weak self] progress in
             let activeClient = await MainActor.run { self?.client ?? client }
             let task = try ResumableTransfer(
                 direction: .download,
-                local: finalDestination,
+                local: destination,
                 remote: entry.path,
                 profile: activeClient.profile,
-                overwrite: finalOverwrite
+                overwrite: overwrite
             )
             try await task.run(client: activeClient, progress: progress)
             await MainActor.run { self?.refreshLocal() }
         }
+        return targetName
     }
 
-    private func downloadDirectory(_ entry: FileEntry, client: RemoteClient) {
-        var folderName = entry.name
-        let localParent = URL(fileURLWithPath: localPath)
-        var baseLocalDir = localParent.appendingPathComponent(folderName)
-        var overwriteFiles = true
-        if FileManager.default.fileExists(atPath: baseLocalDir.path) {
-            let choice = confirmConflict(folderName)
-            switch choice {
-            case .skip: return
-            case .overwrite: overwriteFiles = true
-            case .keepBoth:
-                folderName = RemotePath.uniqueName(for: folderName, existingNames: localFiles.map(\.name))
-                baseLocalDir = localParent.appendingPathComponent(folderName)
-                overwriteFiles = false
-            }
-        }
-        let finalBaseLocalDir = baseLocalDir
-        let finalFolderName = folderName
-        let finalOverwrite = overwriteFiles
+    private func downloadDirectory(_ entry: FileEntry, to localParent: URL, existing: [String], client: RemoteClient) -> String? {
+        guard let (folderName, finalOverwrite) = resolveConflict(entry.name, existing: existing) else { return nil }
+        let finalBaseLocalDir = localParent.appendingPathComponent(folderName)
         let remoteBase = entry.path
         Task { [weak self] in
             guard let self else { return }
@@ -757,7 +734,7 @@ public enum DefaultConflictPreference: String, CaseIterable, Identifiable, Senda
                         try FileManager.default.createDirectory(at: localTarget, withIntermediateDirectories: true)
                     } else {
                         try FileManager.default.createDirectory(at: localTarget.deletingLastPathComponent(), withIntermediateDirectories: true)
-                        queue.enqueue(name: "\(finalFolderName)/\(rel)", direction: .download) { [weak self] progress in
+                        queue.enqueue(name: "\(folderName)/\(rel)", direction: .download) { [weak self] progress in
                             let activeClient = await MainActor.run { self?.client ?? client }
                             let task = try ResumableTransfer(
                                 direction: .download,
@@ -772,6 +749,17 @@ public enum DefaultConflictPreference: String, CaseIterable, Identifiable, Senda
                 }
                 refreshLocal()
             } catch { self.error = error.localizedDescription }
+        }
+        return folderName
+    }
+
+    /// 目标已存在时按偏好或询问处理；返回最终名称与是否覆盖，跳过时返回 nil。
+    private func resolveConflict(_ name: String, existing: [String]) -> (String, Bool)? {
+        guard existing.contains(name) else { return (name, false) }
+        switch confirmConflict(name) {
+        case .skip: return nil
+        case .overwrite: return (name, true)
+        case .keepBoth: return (RemotePath.uniqueName(for: name, existingNames: existing), false)
         }
     }
 
@@ -1199,48 +1187,42 @@ public enum DefaultConflictPreference: String, CaseIterable, Identifiable, Senda
     }
 
     // MARK: - Drag and Drop Helpers
-    func handleDroppedItems(_ payloads: [String], toRemotePane: Bool) {
-        for payload in payloads {
-            if payload.hasPrefix("remote://") {
-                let remoteItemPath = String(payload.dropFirst("remote://".count))
-                if !toRemotePane, let entry = remoteFiles.first(where: { $0.path == remoteItemPath }) {
-                    download([entry])
-                }
-            } else if payload.hasPrefix("local://") {
-                let localItemPath = String(payload.dropFirst("local://".count))
-                if toRemotePane, let entry = localFiles.first(where: { $0.path == localItemPath }) {
-                    upload([entry])
-                }
-            }
-        }
-    }
-
-    func uploadLocalURLs(_ urls: [URL]) {
-        for url in urls {
-            let isDir = (try? url.resourceValues(forKeys: [.isDirectoryKey]))?.isDirectory == true
-            let entry = FileEntry(name: url.lastPathComponent, path: url.path, isDirectory: isDir, isSymbolicLink: false, size: 0, modified: nil)
-            upload([entry])
-        }
-    }
-
+    /// 复制到本地目录：跳过已在该目录的项目和把文件夹放进自身的情况；冲突按偏好处理，复制在后台进行。
     func copyLocalURLs(_ urls: [URL], to targetDirectory: String) {
-        let destURL = URL(fileURLWithPath: targetDirectory)
-        for url in urls {
+        let destURL = URL(fileURLWithPath: targetDirectory).standardizedFileURL
+        var names = (try? FileManager.default.contentsOfDirectory(atPath: destURL.path)) ?? []
+        var plan: [(source: URL, target: URL, overwrite: Bool)] = []
+        for url in urls.map(\.standardizedFileURL) {
             if url.deletingLastPathComponent().path == destURL.path { continue }
-            let target = destURL.appendingPathComponent(url.lastPathComponent)
-            do {
-                if FileManager.default.fileExists(atPath: target.path) {
-                    let uniqueTarget = destURL.appendingPathComponent(RemotePath.uniqueName(for: url.lastPathComponent, existingNames: localFiles.map(\.name)))
-                    try FileManager.default.copyItem(at: url, to: uniqueTarget)
-                } else {
-                    try FileManager.default.copyItem(at: url, to: target)
-                }
-            } catch {
-                self.error = L10n.tr("复制文件失败: \(error.localizedDescription)",
-                                     "Failed to copy file: \(error.localizedDescription)")
-            }
+            if destURL.path == url.path || destURL.path.hasPrefix(url.path + "/") { continue }
+            guard let (name, overwrite) = resolveConflict(url.lastPathComponent, existing: names) else { continue }
+            names.append(name)
+            plan.append((url, destURL.appendingPathComponent(name), overwrite))
         }
-        refreshLocal()
+        guard !plan.isEmpty else { return }
+        let copies = plan
+        Task { [weak self] in
+            let failures = await Task.detached { () -> [String] in
+                var failures: [String] = []
+                for item in copies {
+                    do {
+                        if item.overwrite { try FileManager.default.trashItem(at: item.target, resultingItemURL: nil) }
+                        try FileManager.default.copyItem(at: item.source, to: item.target)
+                    } catch { failures.append("\(item.source.lastPathComponent): \(error.localizedDescription)") }
+                }
+                return failures
+            }.value
+            guard let self else { return }
+            if !failures.isEmpty {
+                self.error = L10n.tr("复制文件失败：", "Failed to copy: ") + failures.joined(separator: "\n")
+            }
+            self.refreshLocal()
+        }
+    }
+
+    func enqueueTransfer(name: String, direction: TransferDirection, operation: @escaping TransferOperation,
+                         onFinish: TransferFinishHandler? = nil) {
+        queue.enqueue(name: name, direction: direction, operation: operation, onFinish: onFinish)
     }
 
     // MARK: - Compress and Upload
