@@ -103,6 +103,10 @@ ATRequest *at_create(const char *url, const char *user, const char *password,
     return r;
 }
 void at_cancel(ATRequest *r) { atomic_store(&r->cancelled, 1); }
+int at_set_ca_bundle(ATRequest *r, const char *path) {
+    if (!r || !path || !*path) return CURLE_BAD_FUNCTION_ARGUMENT;
+    return curl_easy_setopt(r->curl, CURLOPT_CAINFO, path);
+}
 void at_destroy(ATRequest *r) {
     if (!r) return;
     curl_easy_cleanup(r->curl);

@@ -8,6 +8,7 @@ ATRequest *at_create(const char *url, const char *user, const char *password,
                      const char *private_key, const char *passphrase, const char *fingerprint);
 void at_destroy(ATRequest *request);
 void at_cancel(ATRequest *request);
+int at_set_ca_bundle(ATRequest *request, const char *path);
 int at_transfer_window(ATRequest *request, int64_t offset, int64_t end, int64_t total);
 int at_set_speed_limit(ATRequest *request, int64_t bytes_per_sec);
 int64_t at_file_size(ATRequest *request);

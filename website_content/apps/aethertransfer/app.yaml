@@ -22,8 +22,8 @@ cardStats:
   - value: "本机 / Local"
     label: { zh: 凭据存入 Keychain，无追踪, en: "Keychain credentials, no tracking" }
 notice:
-  zh: "0.1.1 修复书签密码保存，并支持拖到任意文件夹上传下载、把远程文件直接拖到访达。支持 SFTP、FTPS 与 FTP；WebDAV、S3 / R2 等云存储尚未包含。"
-  en: "Version 0.1.1 fixes saving bookmark passwords and adds drag-and-drop onto any folder and straight into Finder. SFTP, FTPS and FTP are supported; WebDAV and S3 / R2 cloud storage are not included yet."
+  zh: "0.1.2 换上全新深色连接桥图标，安装包附带 TLS 证书根和依赖许可证。支持拖到任意文件夹上传下载、把远程文件直接拖到访达。支持 SFTP、FTPS 与 FTP；WebDAV、S3 / R2 等云存储尚未包含。"
+  en: "Version 0.1.2 introduces a new dark connection-bridge icon and bundles TLS certificate roots and dependency licenses. Drag and drop onto any folder or straight into Finder. SFTP, FTPS and FTP are supported; WebDAV and S3 / R2 cloud storage are not included yet."
 hero:
   eyebrow: { zh: 文件传输 · 原生 Mac, en: File transfer · Native Mac }
   title: { zh: "文件两端，\n尽在掌握。", en: "Two sides.\nOne clear workspace." }
@@ -32,7 +32,7 @@ hero:
     en: "Browse local and remote files side by side in one native window, and drag to upload or download.\nEvery task shows its progress, speed and outcome, and a failure is never reported as a success."
   requirements: { zh: Apple 芯片 Mac · macOS 26.0+, en: Apple silicon Mac · macOS 26.0+ }
 features:
-  eyebrow: { zh: 0.1.0 功能, en: In version 0.1.0 }
+  eyebrow: { zh: 当前版本功能, en: In the current version }
   title: { zh: 文件为中心，原生为底色。, en: Focused on files. Native at the core. }
   lead:
     zh: 以下均为当前版本已包含、经过单元测试与真实 FTP / SFTP 集成测试验证的能力。

@@ -9,6 +9,13 @@ frameworks = app / "Contents/Frameworks"
 pending = [(app / "Contents/MacOS/AetherTransfer", app / "Contents/MacOS/AetherTransfer")]
 visited = set()
 origins = {}
+licenses = app / "Contents/Resources/Licenses"
+licenses.mkdir(parents=True, exist_ok=True)
+shutil.copy2("LICENSE", licenses / "AetherTransfer-MIT.txt")
+shutil.copy2("THIRD_PARTY_NOTICES.md", licenses / "THIRD_PARTY_NOTICES.md")
+shutil.copy2("resources/licenses/librtmp-LGPL-2.1.txt", licenses / "librtmp-LGPL-2.1.txt")
+shutil.copy2("resources/licenses/Mozilla-MPL-2.0.txt", licenses / "Mozilla-MPL-2.0.txt")
+licensed_roots = set()
 while pending:
     binary, source = pending.pop()
     if binary in visited:
@@ -33,6 +40,21 @@ while pending:
         original = pathlib.Path(resolved_dependency).resolve()
         if not original.is_file():
             raise RuntimeError(f"Missing dependency: {dependency}")
+        # Homebrew Cellar paths identify the exact package owning each dylib.
+        root = next((parent for parent in original.parents if (parent / "INSTALL_RECEIPT.json").is_file()), None)
+        if root is None:
+            raise RuntimeError(f"Cannot identify dependency license: {original.name}")
+        if root not in licensed_roots:
+            texts = [p for p in root.iterdir() if p.is_file() and p.name.upper().startswith(("COPYING", "LICENSE", "COPYRIGHT"))]
+            if not texts:
+                raise RuntimeError(f"Missing license text for {root.parent.name}")
+            destination = licenses / root.parent.name
+            destination.mkdir(exist_ok=True)
+            for text in texts:
+                shutil.copy2(text, destination / text.name)
+            for formula in (root / ".brew").glob("*.rb"):
+                shutil.copy2(formula, destination / formula.name)
+            licensed_roots.add(root)
         target = frameworks / original.name
         if target.name in origins and origins[target.name] != original:
             raise RuntimeError(f"Dependency name collision: {target.name}")
