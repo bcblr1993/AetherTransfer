@@ -43,6 +43,13 @@ public struct RemoteClient: Sendable {
             }}
         }}}
         guard let request else { throw TransferError.remote(L10n.tr("无法创建传输连接。", "Unable to create transfer connection.")) }
+        if let caBundle = Bundle.main.url(forResource: "cacert", withExtension: "pem") {
+            let result = caBundle.path.withCString { at_set_ca_bundle(request, $0) }
+            guard result == 0 else {
+                at_destroy(request)
+                throw TransferError.remote(L10n.tr("无法配置 TLS 证书根。", "Unable to configure TLS certificate roots."))
+            }
+        }
         if let limit = speedLimitBytesPerSec, limit > 0, (mode == 1 || mode == 2) {
             _ = at_set_speed_limit(request, limit)
         }

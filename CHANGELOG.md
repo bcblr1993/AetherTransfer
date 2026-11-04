@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.1.2] - 2026-11-04
+
+- feat(icon): use the approved blue bidirectional-flow icon as the shared app and website master; generate all ICNS sizes from it.
+- fix(tls): bundle CA roots and configure FTPS requests to use them, removing the Homebrew certificate-path dependency.
+- fix(packaging): include license texts and Homebrew source formulas for the actual embedded dependency closure; refuse to overwrite a running output app.
+
 ## [0.1.1] - 2026-10-22
 
 - fix(credentials): "Save credentials in macOS Keychain" now defaults to on; turning it off removes stored secrets; connecting a bookmark without a stored password asks for it (with an option to save) instead of connecting with an empty password; Keychain read errors are shown instead of being treated as "no password".

@@ -2,10 +2,10 @@
 
 正式发布必须依次完成下列步骤；任一步失败都不得发布或在官网标注“已公证”。
 
-1. 门禁：`swift test`、`scripts/test_protocols.sh`（真实 FTP / SFTP）、运行 `.app` 检查主要窗口。
+1. 门禁：`scripts/test_core.sh`、`scripts/test_protocols.sh`（真实 FTP / FTPS / SFTP）、运行 `.app` 检查主要窗口。
 2. 一次性配置公证凭据（需 Apple ID 的 App 专用密码，由维护者本人执行）：
    `xcrun notarytool store-credentials AetherTransfer --apple-id <Apple ID> --team-id 5984KQD4D7`
-3. 打包：`NOTARY_PROFILE=AetherTransfer VERSION=0.1.0 BUILD_NUMBER=<构建号> scripts/build_app.sh`。
+3. 打包：`NOTARY_PROFILE=AetherTransfer VERSION=0.1.2 BUILD_NUMBER=<构建号> scripts/build_app.sh`。
    产物在 `outputs/`：DMG、ZIP、`SHA256SUMS.txt`、`appcast.json`。
 4. 验证：`spctl -a -vvv -t install outputs/AetherTransfer-<版本>-arm64.dmg` 显示 `Notarized Developer ID`，
    `xcrun stapler validate` 通过，`shasum -a 256 -c outputs/SHA256SUMS.txt` 通过。
