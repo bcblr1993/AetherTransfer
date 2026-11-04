@@ -15,4 +15,4 @@ jobs:
         run: brew install curl
       - run: ./scripts/test_core.sh
       - run: ./scripts/test_protocols.sh
-            - run: ./scripts/build_app.sh
+      - run: ./scripts/build_app.sh

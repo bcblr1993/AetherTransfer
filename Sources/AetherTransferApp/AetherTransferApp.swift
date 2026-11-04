@@ -59,7 +59,7 @@ import AetherTransferCore
                 }
                 .keyboardShortcut(.space, modifiers: [])
             }
-            CommandMenu(L10n.tr("显示", "View")) {
+            CommandGroup(after: .sidebar) {
                 Toggle(L10n.tr("显示隐藏文件", "Show Hidden Files"), isOn: $workspace.showHidden)
                     .keyboardShortcut(".", modifiers: [.command, .shift])
                 Picker(L10n.tr("视图模式", "View Mode"), selection: $workspace.viewMode) {

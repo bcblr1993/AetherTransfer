@@ -141,8 +141,8 @@ cat > "outputs/appcast.json" <<JSON
     "sha256": "${ZIP_SHA256}",
     "sizeBytes": ${ZIP_SIZE},
     "minimumSystemVersion": "26.0",
-    "releaseNotesZh": "AetherTransfer v${VERSION}：全新蓝色双向流图标，应用与官网统一；安装包附带 TLS 证书根和第三方依赖许可证。",
-    "releaseNotesEn": "AetherTransfer v${VERSION}: new blue bidirectional-flow icon shared by the app and website; bundled TLS certificate roots and third-party dependency licenses."
+    "releaseNotesZh": "AetherTransfer v${VERSION}：全新深色连接桥图标，应用与官网统一；安装包附带 TLS 证书根和第三方依赖许可证。",
+    "releaseNotesEn": "AetherTransfer v${VERSION}: new dark connection-bridge icon shared by the app and website; bundled TLS certificate roots and third-party dependency licenses."
   }
 }
 JSON

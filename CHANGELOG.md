@@ -2,7 +2,8 @@
 
 ## [0.1.2] - 2026-11-04
 
-- feat(icon): use the approved blue bidirectional-flow icon as the shared app and website master; generate all ICNS sizes from it.
+- feat(icon): use the approved dark connection-bridge icon as the shared app and website master; generate all ICNS sizes from it.
+- fix(ui): merge file-view commands into the native View menu instead of displaying two View menus.
 - fix(tls): bundle CA roots and configure FTPS requests to use them, removing the Homebrew certificate-path dependency.
 - fix(packaging): include license texts and Homebrew source formulas for the actual embedded dependency closure; refuse to overwrite a running output app.
 
