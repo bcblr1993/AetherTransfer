@@ -124,6 +124,48 @@ public struct SyncPlan: Sendable {
             return total
         }
     }
+
+    public func exportReportMarkdown() -> String {
+        var lines: [String] = [
+            "# AetherTransfer Folder Sync Plan",
+            "- Direction: \(direction.localizedTitle)",
+            "- Rule: \(rule.localizedTitle)",
+            "- Delete Orphans: \(deleteOrphans ? "Yes" : "No")",
+            "- Uploads: \(uploadItems.count) | Downloads: \(downloadItems.count) | Deletions: \(deleteItems.count) | Skipped: \(skipItems.count)",
+            ""
+        ]
+        for item in activeItems {
+            lines.append("- [\(item.actionType.localizedTitle)] `\(item.relativePath)` (\(item.size) bytes)")
+        }
+        return lines.joined(separator: "\n")
+    }
+}
+
+public enum SyncIgnoreFilter {
+    public static let defaultPatternString = ".DS_Store, .git, node_modules, .svn, *.swp"
+
+    public static func parsePatterns(_ raw: String) -> [String] {
+        raw.split(whereSeparator: { $0 == "," || $0 == ";" || $0.isNewline })
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.isEmpty }
+    }
+
+    public static func shouldIgnore(relativePath: String, patterns: [String]) -> Bool {
+        guard !patterns.isEmpty else { return false }
+        let components = relativePath.split(separator: "/").map(String.init)
+        let fileName = components.last ?? relativePath
+        for rawPattern in patterns {
+            let pattern = rawPattern.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !pattern.isEmpty else { continue }
+            if components.contains(pattern) || fileName == pattern || relativePath == pattern {
+                return true
+            }
+            if fnmatch(pattern, fileName, 0) == 0 || fnmatch(pattern, relativePath, 0) == 0 {
+                return true
+            }
+        }
+        return false
+    }
 }
 
 public enum SyncEngine {
@@ -134,7 +176,8 @@ public enum SyncEngine {
         remoteFiles: [FileEntry],
         direction: SyncDirection = .localToRemote,
         rule: SyncComparisonRule = .sizeAndDate,
-        deleteOrphans: Bool = false
+        deleteOrphans: Bool = false,
+        ignorePatterns: [String] = []
     ) -> SyncPlan {
         let normalizedRemoteRoot = RemotePath.normalize(remoteRoot)
 
@@ -143,7 +186,7 @@ public enum SyncEngine {
         for item in localFiles {
             var rel = item.relativePath
             if rel.hasPrefix("/") { rel.removeFirst() }
-            if !rel.isEmpty {
+            if !rel.isEmpty && !SyncIgnoreFilter.shouldIgnore(relativePath: rel, patterns: ignorePatterns) {
                 localDict[rel] = item
             }
         }
@@ -155,7 +198,7 @@ public enum SyncEngine {
             guard normalized.hasPrefix(normalizedRemoteRoot) else { continue }
             var rel = String(normalized.dropFirst(normalizedRemoteRoot.count))
             if rel.hasPrefix("/") { rel.removeFirst() }
-            if !rel.isEmpty {
+            if !rel.isEmpty && !SyncIgnoreFilter.shouldIgnore(relativePath: rel, patterns: ignorePatterns) {
                 remoteDict[rel] = entry
             }
         }

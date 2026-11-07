@@ -1,9 +1,33 @@
 import Foundation
 
 public enum TransferProtocol: String, Codable, CaseIterable, Sendable {
-    case sftp, ftp, ftps
-    public var defaultPort: Int { self == .sftp ? 22 : (self == .ftps ? 990 : 21) }
-    public var title: String { rawValue.uppercased() }
+    case sftp, ftp, ftps, webdav, webdavs, s3
+    public var defaultPort: Int {
+        switch self {
+        case .sftp: return 22
+        case .ftp: return 21
+        case .ftps: return 990
+        case .webdav: return 80
+        case .webdavs, .s3: return 443
+        }
+    }
+    public var title: String {
+        switch self {
+        case .sftp: return "SFTP"
+        case .ftp: return "FTP"
+        case .ftps: return "FTPS"
+        case .webdav: return "WebDAV"
+        case .webdavs: return "WebDAV HTTPS"
+        case .s3: return "S3 / R2"
+        }
+    }
+    public var httpScheme: String {
+        switch self {
+        case .webdav: return "http"
+        case .webdavs, .s3: return "https"
+        default: return rawValue
+        }
+    }
 }
 
 public struct ServerProfile: Identifiable, Codable, Hashable, Sendable {
@@ -17,33 +41,76 @@ public struct ServerProfile: Identifiable, Codable, Hashable, Sendable {
     public var initialPath: String
     public var privateKeyPath: String
     public var trustedHostKey: String?
+    public var useSSHAgent: Bool
+    public var s3Bucket: String
+    public var s3Region: String
+    public var s3PathStyle: Bool
+
     public init(id: UUID = UUID(), name: String = "", group: String = "", host: String = "", port: Int = 22,
                 username: String = "", protocolKind: TransferProtocol = .sftp, initialPath: String = "/",
-                privateKeyPath: String = "", trustedHostKey: String? = nil) {
+                privateKeyPath: String = "", trustedHostKey: String? = nil,
+                useSSHAgent: Bool = false, s3Bucket: String = "", s3Region: String = "us-east-1", s3PathStyle: Bool = false) {
         self.id = id; self.name = name; self.group = group; self.host = host; self.port = port
         self.username = username; self.protocolKind = protocolKind; self.initialPath = initialPath
         self.privateKeyPath = privateKeyPath; self.trustedHostKey = trustedHostKey
+        self.useSSHAgent = useSSHAgent; self.s3Bucket = s3Bucket; self.s3Region = s3Region; self.s3PathStyle = s3PathStyle
     }
+
+    enum CodingKeys: String, CodingKey {
+        case id, name, group, host, port, username, protocolKind, initialPath, privateKeyPath, trustedHostKey
+        case useSSHAgent, s3Bucket, s3Region, s3PathStyle
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        id = try c.decodeIfPresent(UUID.self, forKey: .id) ?? UUID()
+        name = try c.decodeIfPresent(String.self, forKey: .name) ?? ""
+        group = try c.decodeIfPresent(String.self, forKey: .group) ?? ""
+        host = try c.decodeIfPresent(String.self, forKey: .host) ?? ""
+        let kind = try c.decodeIfPresent(TransferProtocol.self, forKey: .protocolKind) ?? .sftp
+        protocolKind = kind
+        port = try c.decodeIfPresent(Int.self, forKey: .port) ?? kind.defaultPort
+        username = try c.decodeIfPresent(String.self, forKey: .username) ?? ""
+        initialPath = try c.decodeIfPresent(String.self, forKey: .initialPath) ?? "/"
+        privateKeyPath = try c.decodeIfPresent(String.self, forKey: .privateKeyPath) ?? ""
+        trustedHostKey = try c.decodeIfPresent(String.self, forKey: .trustedHostKey)
+        useSSHAgent = try c.decodeIfPresent(Bool.self, forKey: .useSSHAgent) ?? false
+        s3Bucket = try c.decodeIfPresent(String.self, forKey: .s3Bucket) ?? ""
+        s3Region = try c.decodeIfPresent(String.self, forKey: .s3Region) ?? "us-east-1"
+        s3PathStyle = try c.decodeIfPresent(Bool.self, forKey: .s3PathStyle) ?? false
+    }
+
     public func validate() throws {
-        guard !host.isEmpty, !host.contains(where: { $0.isWhitespace }), !host.contains("/"),
-              !host.contains("@"), !host.contains("?"), !host.contains("#"), (1...65535).contains(port),
+        let effectiveHost = (protocolKind == .s3 && host.trimmingCharacters(in: .whitespaces).isEmpty) ? "s3.amazonaws.com" : host
+        guard !effectiveHost.isEmpty, !effectiveHost.contains(where: { $0.isWhitespace }), !effectiveHost.contains("/"),
+              !effectiveHost.contains("@"), !effectiveHost.contains("?"), !effectiveHost.contains("#"), (1...65535).contains(port),
               !username.isEmpty else { throw TransferError.invalidConnection }
+        if protocolKind == .s3 && s3Bucket.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            throw TransferError.invalidConnection
+        }
         try RemotePath.validate(initialPath)
     }
-    /// 连接已保存书签时是否需要先询问密码：没有密码、也不能靠私钥认证，且不是匿名 FTP。
+    /// 连接已保存书签时是否需要先询问密码：没有密码、也不能靠私钥/SSH Agent 认证，且不是匿名 FTP。
     public func needsPasswordPrompt(for credentials: Credentials) -> Bool {
         guard credentials.password.isEmpty else { return false }
-        if protocolKind == .sftp && !privateKeyPath.isEmpty { return false }
-        if protocolKind != .sftp && username.lowercased() == "anonymous" { return false }
+        if protocolKind == .sftp && (!privateKeyPath.isEmpty || useSSHAgent) { return false }
+        if (protocolKind == .ftp || protocolKind == .ftps) && username.lowercased() == "anonymous" { return false }
         return true
     }
     public func url(path: String, directory: Bool = false) throws -> String {
         try validate(); try RemotePath.validate(path)
         var components = URLComponents()
-        components.scheme = protocolKind.rawValue; components.host = host; components.port = port
+        components.scheme = protocolKind.httpScheme
+        components.host = (protocolKind == .s3 && host.trimmingCharacters(in: .whitespaces).isEmpty) ? "s3.amazonaws.com" : host
+        components.port = port
         let absolute = RemotePath.normalize(path)
-        // FTP URLs need a second slash to address an absolute server path.
-        components.path = (protocolKind == .sftp ? "" : "/") + absolute + (directory && absolute != "/" ? "/" : "")
+        switch protocolKind {
+        case .sftp, .webdav, .webdavs, .s3:
+            components.path = absolute + (directory && absolute != "/" ? "/" : "")
+        case .ftp, .ftps:
+            // FTP URLs need a second slash to address an absolute server path.
+            components.path = "/" + absolute + (directory && absolute != "/" ? "/" : "")
+        }
         guard let url = components.url else { throw TransferError.invalidConnection }
         return url.absoluteString
     }
@@ -198,12 +265,14 @@ public struct BreadcrumbItem: Identifiable, Hashable, Equatable, Sendable {
 
 public enum ConflictResolution: String, CaseIterable, Identifiable, Sendable {
     case overwrite = "覆盖"
+    case merge = "合并"
     case skip = "跳过"
     case keepBoth = "保留两者"
     public var id: String { rawValue }
     public var localizedTitle: String {
         switch self {
         case .overwrite: return L10n.tr("覆盖", "Overwrite")
+        case .merge: return L10n.tr("合并文件夹", "Merge Folder")
         case .skip: return L10n.tr("跳过", "Skip")
         case .keepBoth: return L10n.tr("保留两者", "Keep Both")
         }

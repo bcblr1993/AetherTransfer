@@ -2,17 +2,21 @@
 
 依据：本机 Transmit 协议菜单与 Panic 官方功能/协议文档（2026-10-07）。目标是等价的文件传输工作流，使用自己的品牌、代码与原生 macOS 26 Liquid Glass 设计。
 
-## 完整目标（未实现的项继续保持待办）
+## 已完成对齐（v0.2.0）
 
-- 协议：FTP、显式/隐式 FTPS、SFTP、WebDAV/HTTPS、S3/IAM Role、B2、Box、DreamObjects、Dropbox、Google Drive、Azure、OneDrive/Business、OpenStack Swift、Rackspace。
-- 浏览器：本地/远程、远程/远程、多标签、列表/图标/列视图、排序、搜索、隐藏文件、路径栏、常用位置、文件信息、预览。
-- 文件操作：递归传输、远程复制/移动、批量重命名、创建/删除、权限/时间戳、复制粘贴、Finder 拖放、压缩上传。
-- 传输：活动队列、并发、暂停/恢复、取消/重试、速度限制、断点续传、覆盖/跳过/保留两份、目录合并、Dock 进度。
-- 同步：本地/远程、本地/本地、远程/远程，单向/双向/镜像，差异预览、逐项排除、规则过滤、日志。
-- 连接：收藏/分组/历史、导入导出、Keychain、SSH config/agent/ProxyCommand、密钥管理、2FA/OTP、主机密钥核对。
-- 编辑：内置文本编辑器、外部编辑器保存回传、在终端打开。
-- 配置同步：加密跨 Mac 同步、明确冲突和密钥边界。
-- 系统体验：中英文、状态恢复、无障碍、快捷键、浅深色、减少透明度、系统原生工具栏与侧栏。
+- **协议引擎**：FTP、显式/隐式 FTPS、SFTP（含 `libssh2` 主机密钥 SHA-256 指纹核对）、**WebDAV / WebDAV HTTPS**（RFC 4918 `PROPFIND`/`GET`/`PUT`/`MKCOL`/`MOVE`/`DELETE`）、**Amazon S3 / Cloudflare R2 / MinIO**（原生 `CryptoKit` AWS Signature V4、Virtual-Hosted 与 Path-Style 寻址、`ListObjectsV2`、**S3 Presigned URL 临时签名链接生成**）。
+- **浏览器与视图**：本地/远程双栏、多标签会话快照、**列表 / Finder 风格分栏（Miller Columns）/ 网格视图**、排序、搜索、隐藏文件、面包屑路径栏、常用位置、文件信息检查器、Quick Look 预览、同步导航（Sync Browsing）。
+- **文件操作**：递归传输、远程移动/重命名、批量重命名、新建/删除、POSIX 权限修改、**跨面板复制粘贴（`⌥⌘C` / `⌥⌘V`）、原地创建副本（Duplicate `⌘D`）、复制路径/URL/S3 签名链接**、Finder 原生双向拖放、ZIP 压缩并上传。
+- **传输队列**：活动队列、并发控制（1~10）、暂停/恢复、取消/重试、速度限制（`CURLOPT_MAX_SEND/RECV_SPEED_LARGE`）、断点续传（`.aetherresume`）、**覆盖 / 合并文件夹（Merge）/ 跳过 / 保留两者**、Dock 进度角标。
+- **文件夹同步**：本地 ⇄ 远程单向/双向对比预览、逐项勾选排除、**Glob 忽略过滤规则（`.DS_Store, .git, node_modules, *.log`）**、Markdown 同步报告一键导出、默认不删远程文件安全保护。
+- **SSH 与连接管理**：收藏/分组、JSON 导入导出、macOS Keychain、**SSH Agent 免密认证（`CURLSSH_AUTH_AGENT`）、`~/.ssh/config` 主机配置自动解析导入、内置 SSH 密钥管理器（`Ed25519` / `RSA-4096` 生成与公钥一键复制）**。
+- **编辑与终端联动**：内置单文件文本编辑器、**外部编辑器打开并实时监听保存自动回传（`ExternalEditorManager`）**、**ApexTerm 优先探测联动与 `Terminal.app` 回退**。
+- **加密配置同步与菜单栏微件**：**零知识加密书签保险箱（`.aethersync`，`HKDF-SHA256` + `AES-GCM-256`）**、**macOS 菜单栏闪电上传微件（`MenuBarExtra` Droplet）**。
+- **应用内更新与本地化**：应用内在线检查更新、流式下载、SHA-256 与 Apple 代码签名双重校验、原子替换立即重启（`AutoUpdater`），以及中英双语实时切换（`L10n`）。
+
+## 后续待办（需第三方 OAuth 应用凭据的专有云盘）
+
+- 第三方专有云存储协议：Backblaze B2 Native API、Box、Dropbox、Google Drive、Microsoft OneDrive / Azure Blob、OpenStack Swift、Rackspace（需独立 OAuth 客户端注册与线上账号验收）。
 
 ## 实施顺序
 

@@ -2,8 +2,8 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-VERSION="${VERSION:-0.1.1}"
-BUILD_NUMBER="${BUILD_NUMBER:-2026102201}"
+VERSION="${VERSION:-0.2.0}"
+BUILD_NUMBER="${BUILD_NUMBER:-2026110701}"
 FEED_URL="${FEED_URL:-https://github.com/bcblr1993/AetherTransfer/releases/latest/download/appcast.json}"
 ENTITLEMENTS="scripts/Entitlements.plist"
 
@@ -135,8 +135,8 @@ cat > "outputs/appcast.json" <<JSON
     "sha256": "${ZIP_SHA256}",
     "sizeBytes": ${ZIP_SIZE},
     "minimumSystemVersion": "26.0",
-    "releaseNotesZh": "AetherTransfer v${VERSION}：修复书签密码未保存到钥匙串；支持拖到任意文件夹上传下载、把远程文件直接拖到访达。",
-    "releaseNotesEn": "AetherTransfer v${VERSION}: fixes bookmark passwords not being saved to Keychain; drag onto any folder to upload or download, and drag remote files straight into Finder."
+    "releaseNotesZh": "AetherTransfer v${VERSION}（对齐 Transmit 5）：新增 WebDAV 与 S3/R2/MinIO 协议及临时签名链接、Finder 分栏视图、SSH Agent 与内置密钥管理器、外部编辑器保存自动回传、跨面板复制粘贴、同步忽略规则与合并、零知识加密书签同步 (.aethersync) 及菜单栏闪电上传。",
+    "releaseNotesEn": "AetherTransfer v${VERSION} (Transmit 5 Parity): adds WebDAV & S3/R2/MinIO protocols with Presigned URLs, Finder Column View, SSH Agent & Key Manager, External Editor auto-upload on save, cross-pane clipboard, sync ignore rules & merge, zero-knowledge encrypted bookmark vault (.aethersync), and Menu Bar Droplet."
   }
 }
 JSON

@@ -43,6 +43,9 @@ public struct RemoteClient: Sendable {
             }}
         }}}
         guard let request else { throw TransferError.remote(L10n.tr("无法创建传输连接。", "Unable to create transfer connection.")) }
+        if profile.protocolKind == .sftp && profile.useSSHAgent {
+            _ = at_set_ssh_agent(request, 1)
+        }
         if let limit = speedLimitBytesPerSec, limit > 0, (mode == 1 || mode == 2) {
             _ = at_set_speed_limit(request, limit)
         }
@@ -78,11 +81,30 @@ public struct RemoteClient: Sendable {
     }
 
     public func list(_ path: String) async throws -> [FileEntry] {
-        try DirectoryListing.parse(await perform(path: path, directory: true, mode: 0), parent: RemotePath.normalize(path))
+        switch profile.protocolKind {
+        case .webdav, .webdavs:
+            return try await WebDAVClient(profile: profile, credentials: credentials).list(path)
+        case .s3:
+            return try await S3Client(profile: profile, credentials: credentials).list(path)
+        case .sftp, .ftp, .ftps:
+            return try DirectoryListing.parse(await perform(path: path, directory: true, mode: 0), parent: RemotePath.normalize(path))
+        }
     }
     public func download(_ remote: String, to destination: URL, overwrite: Bool = false,
                          offset: Int64? = nil, stagingURL: URL? = nil,
                          progress: @escaping @Sendable (TransferProgress) -> Void = { _ in }) async throws {
+        switch profile.protocolKind {
+        case .webdav, .webdavs:
+            try await WebDAVClient(profile: profile, credentials: credentials)
+                .download(remote, to: destination, overwrite: overwrite, offset: offset, stagingURL: stagingURL, progress: progress)
+            return
+        case .s3:
+            try await S3Client(profile: profile, credentials: credentials)
+                .download(remote, to: destination, overwrite: overwrite, offset: offset, stagingURL: stagingURL, progress: progress)
+            return
+        case .sftp, .ftp, .ftps:
+            break
+        }
         let fm = FileManager.default
         if fm.fileExists(atPath: destination.path) && !overwrite { throw TransferError.conflict(destination.lastPathComponent) }
         let temporary = stagingURL ?? destination.deletingLastPathComponent().appendingPathComponent(".aethertransfer-\(UUID().uuidString).part")
@@ -96,6 +118,18 @@ public struct RemoteClient: Sendable {
     public func upload(_ local: URL, to remote: String, overwrite: Bool = false,
                        offset: Int64? = nil, stagingRemotePath: String? = nil,
                        progress: @escaping @Sendable (TransferProgress) -> Void = { _ in }) async throws {
+        switch profile.protocolKind {
+        case .webdav, .webdavs:
+            try await WebDAVClient(profile: profile, credentials: credentials)
+                .upload(local, to: remote, overwrite: overwrite, progress: progress)
+            return
+        case .s3:
+            try await S3Client(profile: profile, credentials: credentials)
+                .upload(local, to: remote, overwrite: overwrite, progress: progress)
+            return
+        case .sftp, .ftp, .ftps:
+            break
+        }
         let parent = RemotePath.parent(remote)
         let name = URL(fileURLWithPath: remote).lastPathComponent
         if offset == nil && !overwrite {
@@ -125,7 +159,14 @@ public struct RemoteClient: Sendable {
         }
     }
     public func mkdir(_ path: String) async throws {
-        try await command(sftp: "mkdir \(RemotePath.quoted(path))", ftp: "MKD \(path)")
+        switch profile.protocolKind {
+        case .webdav, .webdavs:
+            try await WebDAVClient(profile: profile, credentials: credentials).mkdir(path)
+        case .s3:
+            try await S3Client(profile: profile, credentials: credentials).mkdir(path)
+        case .sftp, .ftp, .ftps:
+            try await command(sftp: "mkdir \(RemotePath.quoted(path))", ftp: "MKD \(path)")
+        }
     }
     public func mkdirRecursive(_ path: String) async throws {
         let parts = RemotePath.normalize(path).split(separator: "/").map(String.init)
@@ -153,16 +194,42 @@ public struct RemoteClient: Sendable {
     }
     public func rename(_ source: String, to destination: String) async throws {
         try RemotePath.validate(source); try RemotePath.validate(destination)
-        try await command(sftp: "rename \(RemotePath.quoted(source)) \(RemotePath.quoted(destination))", ftp: "RNFR \(source)\nRNTO \(destination)")
+        switch profile.protocolKind {
+        case .webdav, .webdavs:
+            try await WebDAVClient(profile: profile, credentials: credentials).rename(source, to: destination)
+        case .s3:
+            try await S3Client(profile: profile, credentials: credentials).rename(source, to: destination)
+        case .sftp, .ftp, .ftps:
+            try await command(sftp: "rename \(RemotePath.quoted(source)) \(RemotePath.quoted(destination))", ftp: "RNFR \(source)\nRNTO \(destination)")
+        }
     }
     public func remove(_ path: String, directory: Bool) async throws {
-        try await command(sftp: "\(directory ? "rmdir" : "rm") \(RemotePath.quoted(path))", ftp: "\(directory ? "RMD" : "DELE") \(path)")
+        switch profile.protocolKind {
+        case .webdav, .webdavs:
+            try await WebDAVClient(profile: profile, credentials: credentials).remove(path, directory: directory)
+        case .s3:
+            try await S3Client(profile: profile, credentials: credentials).remove(path, directory: directory)
+        case .sftp, .ftp, .ftps:
+            try await command(sftp: "\(directory ? "rmdir" : "rm") \(RemotePath.quoted(path))", ftp: "\(directory ? "RMD" : "DELE") \(path)")
+        }
     }
     public func chmod(_ path: String, permissions: POSIXPermissions) async throws {
         try RemotePath.validate(path)
+        guard profile.protocolKind == .sftp || profile.protocolKind == .ftp || profile.protocolKind == .ftps else {
+            return
+        }
         let octal = permissions.octalString
         let octal3 = String(octal.suffix(3))
         try await command(sftp: "chmod \(octal) \(RemotePath.quoted(path))", ftp: "SITE CHMOD \(octal3) \(path)")
+    }
+    public func presignedDownloadURL(for remotePath: String, expiresIn seconds: Int = 3600) throws -> URL {
+        guard profile.protocolKind == .s3 else {
+            guard let url = URL(string: try profile.url(path: remotePath)) else {
+                throw TransferError.invalidConnection
+            }
+            return url
+        }
+        return try S3Client(profile: profile, credentials: credentials).presignedDownloadURL(for: remotePath, expiresIn: seconds)
     }
     private func command(sftp: String, ftp: String) async throws {
         _ = try await perform(path: "/", directory: true, mode: 3, commands: profile.protocolKind == .sftp ? sftp : ftp)

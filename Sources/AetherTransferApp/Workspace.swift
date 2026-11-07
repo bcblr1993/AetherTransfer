@@ -19,11 +19,13 @@ public struct EditingFileContext: Identifiable {
 
 public enum FileViewMode: String, CaseIterable, Identifiable, Sendable {
     case list = "列表"
+    case columns = "分栏"
     case icons = "网格"
     public var id: String { rawValue }
     public var localizedTitle: String {
         switch self {
         case .list: return L10n.tr("列表", "List")
+        case .columns: return L10n.tr("分栏", "Columns")
         case .icons: return L10n.tr("网格", "Grid")
         }
     }
@@ -32,6 +34,7 @@ public enum FileViewMode: String, CaseIterable, Identifiable, Sendable {
 public enum DefaultConflictPreference: String, CaseIterable, Identifiable, Sendable {
     case ask = "ask"
     case overwrite = "overwrite"
+    case merge = "merge"
     case keepBoth = "keepBoth"
     case skip = "skip"
 
@@ -40,6 +43,7 @@ public enum DefaultConflictPreference: String, CaseIterable, Identifiable, Senda
         switch self {
         case .ask: return L10n.tr("每次询问", "Always Ask")
         case .overwrite: return ConflictResolution.overwrite.localizedTitle
+        case .merge: return ConflictResolution.merge.localizedTitle
         case .keepBoth: return ConflictResolution.keepBoth.localizedTitle
         case .skip: return ConflictResolution.skip.localizedTitle
         }
@@ -103,6 +107,16 @@ public enum DefaultConflictPreference: String, CaseIterable, Identifiable, Senda
     @Published var syncDirection: SyncDirection = .localToRemote
     @Published var syncRule: SyncComparisonRule = .sizeAndDate
     @Published var syncDeleteOrphans: Bool = false
+    @Published var syncIgnorePatternsText: String = SyncIgnoreFilter.defaultPatternString
+
+    // Transmit Parity: SSH Key Manager, Encrypted Sync, Clipboard & External Editor
+    @Published var showSSHKeyManager: Bool = false
+    @Published var showEncryptedSyncSheet: Bool = false
+    @Published var clipboard: FileClipboardPayload?
+    @Published var activeExternalEditSessions: [ExternalEditorSession] = []
+    @Published var statusNotice: String?
+    private let externalEditorManager = ExternalEditorManager()
+    private var externalEditorWatchTask: Task<Void, Never>?
 
     // Synchronized Browsing (Transmit Sync Navigation)
     @Published var isSyncBrowsingEnabled: Bool = false
@@ -311,6 +325,7 @@ public enum DefaultConflictPreference: String, CaseIterable, Identifiable, Senda
                 self?.checkForUpdates(silentIfUpToDate: true)
             }
         }
+        startExternalEditorWatcher()
     }
 
     // MARK: - In-App Auto-Updater Actions
@@ -758,7 +773,7 @@ public enum DefaultConflictPreference: String, CaseIterable, Identifiable, Senda
         guard existing.contains(name) else { return (name, false) }
         switch confirmConflict(name) {
         case .skip: return nil
-        case .overwrite: return (name, true)
+        case .overwrite, .merge: return (name, true)
         case .keepBoth: return (RemotePath.uniqueName(for: name, existingNames: existing), false)
         }
     }
@@ -766,20 +781,23 @@ public enum DefaultConflictPreference: String, CaseIterable, Identifiable, Senda
     private func confirmConflict(_ name: String) -> ConflictResolution {
         switch defaultConflictPreference {
         case .overwrite: return .overwrite
+        case .merge: return .merge
         case .keepBoth: return .keepBoth
         case .skip: return .skip
         case .ask: break
         }
         let alert = NSAlert()
-        alert.messageText = L10n.tr("目标文件 \(name) 已存在", "Target \"\(name)\" already exists")
-        alert.informativeText = L10n.tr("请选择如何处理此文件冲突：", "Choose how to resolve this conflict:")
+        alert.messageText = L10n.tr("目标 \(name) 已存在", "Target \"\(name)\" already exists")
+        alert.informativeText = L10n.tr("请选择如何处理此冲突：", "Choose how to resolve this conflict:")
         alert.addButton(withTitle: ConflictResolution.overwrite.localizedTitle)
+        alert.addButton(withTitle: ConflictResolution.merge.localizedTitle)
         alert.addButton(withTitle: ConflictResolution.keepBoth.localizedTitle)
         alert.addButton(withTitle: ConflictResolution.skip.localizedTitle)
         let response = alert.runModal()
         switch response {
         case .alertFirstButtonReturn: return .overwrite
-        case .alertSecondButtonReturn: return .keepBoth
+        case .alertSecondButtonReturn: return .merge
+        case .alertThirdButtonReturn: return .keepBoth
         default: return .skip
         }
     }
@@ -1033,15 +1051,256 @@ public enum DefaultConflictPreference: String, CaseIterable, Identifiable, Senda
     func openTerminal(remote: Bool) {
         let shellCmd: String
         if remote, let server = connectedProfile {
-            let target = ShellEscape.singleQuoted("\(server.username)@\(server.host)")
-            shellCmd = "ssh -p \(server.port) \(target)"
+            shellCmd = TerminalIntegration.sshCommand(for: server)
         } else {
             shellCmd = "cd \(ShellEscape.singleQuoted(localPath))"
+        }
+        let detected = TerminalIntegration.detectPreferredTerminal()
+        if detected.kind == .apexTerm, let appURL = detected.appURL {
+            NSPasteboard.general.clearContents()
+            NSPasteboard.general.setString(shellCmd, forType: .string)
+            NSWorkspace.shared.open(appURL)
+            flashNotice(L10n.tr("已启动 ApexTerm 并复制终端指令", "Launched ApexTerm and copied SSH command"))
+            return
         }
         let script = "tell application \"Terminal\" to do script \(ShellEscape.appleScriptQuoted(shellCmd))"
         if let appleScript = NSAppleScript(source: script) {
             var error: NSDictionary?
             appleScript.executeAndReturnError(&error)
+        }
+    }
+
+    func flashNotice(_ text: String) {
+        statusNotice = text
+        Task { @MainActor [weak self] in
+            try? await Task.sleep(nanoseconds: 2_500_000_000)
+            if self?.statusNotice == text {
+                self?.statusNotice = nil
+            }
+        }
+    }
+
+    // MARK: - External Editor with Auto-Upload on Save (Transmit Parity)
+    private func startExternalEditorWatcher() {
+        externalEditorWatchTask?.cancel()
+        externalEditorWatchTask = Task { @MainActor [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: 2_000_000_000)
+                guard let self else { return }
+                let modifiedSessions = self.externalEditorManager.drainModifiedSessions()
+                guard !modifiedSessions.isEmpty else { continue }
+                self.activeExternalEditSessions = self.externalEditorManager.activeSessions()
+                for session in modifiedSessions {
+                    let creds = self.loadCredentials(for: session.profile)
+                    let sessionClient = RemoteClient(
+                        profile: session.profile,
+                        credentials: creds,
+                        speedLimitBytesPerSec: self.queue.speedLimitBytesPerSec
+                    )
+                    self.queue.enqueue(
+                        name: "\(L10n.tr("外部编辑自动回传", "Auto-Save Upload")): \(session.entryName)",
+                        direction: .upload
+                    ) { [weak self] progress in
+                        try await sessionClient.upload(session.localFileURL, to: session.remotePath, overwrite: true, progress: progress)
+                        await MainActor.run {
+                            self?.flashNotice(L10n.tr("已自动回传外部修改：\(session.entryName)", "Auto-uploaded saved changes: \(session.entryName)"))
+                            if self?.connectedProfile?.id == session.profile.id {
+                                self?.refreshRemote()
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    func openInExternalEditor(_ entry: FileEntry, remote: Bool) {
+        guard !entry.isDirectory else { return }
+        if !remote {
+            NSWorkspace.shared.open(URL(fileURLWithPath: entry.path))
+            return
+        }
+        guard let client else { return }
+        let sessionDir = externalEditorManager.stagingRootDirectory
+            .appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try? FileManager.default.createDirectory(at: sessionDir, withIntermediateDirectories: true)
+        let localFileURL = sessionDir.appendingPathComponent(entry.name)
+        Task {
+            do {
+                try await client.download(entry.path, to: localFileURL, overwrite: true)
+                _ = try externalEditorManager.registerSession(
+                    entryName: entry.name,
+                    remotePath: entry.path,
+                    localFileURL: localFileURL,
+                    profile: client.profile
+                )
+                self.activeExternalEditSessions = externalEditorManager.activeSessions()
+                NSWorkspace.shared.open(localFileURL)
+                flashNotice(L10n.tr("已在外部编辑器打开 \(entry.name)，保存后将自动回传",
+                                    "Opened \(entry.name) in external editor; saving will auto-upload"))
+            } catch {
+                self.error = L10n.tr("外部编辑器打开失败：\(error.localizedDescription)",
+                                     "Failed to open in external editor: \(error.localizedDescription)")
+            }
+        }
+    }
+
+    // MARK: - Clipboard (Copy / Cut / Paste / Duplicate / Copy URL / Presigned S3 URL)
+    func copySelection(remote: Bool, cut: Bool = false) {
+        let entries = remote
+            ? remoteFiles.filter { remoteSelection.contains($0.id) }
+            : localFiles.filter { localSelection.contains($0.id) }
+        guard !entries.isEmpty else { return }
+        clipboard = FileClipboardPayload(
+            entries: entries,
+            sourceRemote: remote,
+            sourceProfileId: remote ? connectedProfile?.id : nil,
+            operation: cut ? .move : .copy
+        )
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(entries.map(\.path).joined(separator: "\n"), forType: .string)
+        flashNotice(L10n.tr("已\(cut ? "剪切" : "复制") \(entries.count) 个项目",
+                            "\(cut ? "Cut" : "Copied") \(entries.count) item(s)"))
+    }
+
+    func pasteClipboard(toRemote targetRemote: Bool) {
+        guard let payload = clipboard, !payload.entries.isEmpty else { return }
+        if !payload.sourceRemote && targetRemote {
+            upload(payload.entries, to: remotePath)
+        } else if payload.sourceRemote && !targetRemote {
+            download(payload.entries, to: localPath)
+        } else if !payload.sourceRemote && !targetRemote {
+            let urls = payload.entries.map { URL(fileURLWithPath: $0.path) }
+            if payload.operation == .move {
+                for url in urls {
+                    let dst = URL(fileURLWithPath: localPath).appendingPathComponent(url.lastPathComponent)
+                    try? FileManager.default.moveItem(at: url, to: dst)
+                }
+                clipboard = nil
+                refreshLocal()
+            } else {
+                copyLocalURLs(urls, to: localPath)
+            }
+        } else if payload.sourceRemote && targetRemote, let client {
+            if payload.operation == .move {
+                Task {
+                    for item in payload.entries {
+                        if let dst = try? RemotePath.join(remotePath, item.name), dst != item.path {
+                            try? await client.rename(item.path, to: dst)
+                        }
+                    }
+                    self.clipboard = nil
+                    self.refreshRemote()
+                }
+            } else {
+                for item in payload.entries where !item.isDirectory {
+                    duplicateItem(item, remote: true)
+                }
+            }
+        }
+    }
+
+    func copyPathOrURL(_ entry: FileEntry, remote: Bool, asURL: Bool, presignedS3: Bool = false) {
+        let stringToCopy: String
+        if !remote {
+            stringToCopy = asURL ? URL(fileURLWithPath: entry.path).absoluteString : entry.path
+        } else if presignedS3, let client {
+            do {
+                stringToCopy = try client.presignedDownloadURL(for: entry.path, expiresIn: 3600).absoluteString
+            } catch {
+                self.error = error.localizedDescription
+                return
+            }
+        } else if asURL, let profile = connectedProfile {
+            stringToCopy = FileClipboard.remoteURLString(for: entry, profile: profile)
+        } else {
+            stringToCopy = entry.path
+        }
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(stringToCopy, forType: .string)
+        flashNotice(L10n.tr("已复制到剪贴板：\(stringToCopy.prefix(48))", "Copied to clipboard"))
+    }
+
+    func duplicateItem(_ entry: FileEntry, remote: Bool) {
+        if !remote {
+            let existing = localFiles.map(\.name)
+            let newName = FileClipboard.duplicateName(for: entry.name, existingNames: existing)
+            let src = URL(fileURLWithPath: entry.path)
+            let dst = URL(fileURLWithPath: localPath).appendingPathComponent(newName)
+            do {
+                try FileManager.default.copyItem(at: src, to: dst)
+                refreshLocal()
+            } catch {
+                self.error = error.localizedDescription
+            }
+        } else if let client, !entry.isDirectory {
+            let existing = remoteFiles.map(\.name)
+            let newName = FileClipboard.duplicateName(for: entry.name, existingNames: existing)
+            guard let targetRemote = try? RemotePath.join(remotePath, newName) else { return }
+            let tempFile = FileManager.default.temporaryDirectory.appendingPathComponent("aether-dup-\(UUID().uuidString)-\(entry.name)")
+            queue.enqueue(name: "\(L10n.tr("创建副本", "Duplicate")): \(newName)", direction: .upload) { [weak self] progress in
+                let activeClient = await MainActor.run { self?.client ?? client }
+                try await activeClient.download(entry.path, to: tempFile, overwrite: true)
+                defer { try? FileManager.default.removeItem(at: tempFile) }
+                try await activeClient.upload(tempFile, to: targetRemote, overwrite: false, progress: progress)
+                await MainActor.run { self?.refreshRemote() }
+            }
+        }
+    }
+
+    // MARK: - SSH Config Import & Encrypted Profile Vault Sync
+    func importSSHConfigHosts() -> Int {
+        let parsed = SSHConfigParser.parseDefaultConfig()
+        var added = 0
+        for entry in parsed {
+            let candidate = entry.toServerProfile()
+            let exists = profiles.contains { $0.name == candidate.name && $0.host == candidate.host && $0.username == candidate.username }
+            if !exists {
+                profiles.append(candidate)
+                added += 1
+            }
+        }
+        if added > 0 { persist() }
+        flashNotice(L10n.tr("已从 ~/.ssh/config 导入 \(added) 台主机", "Imported \(added) host(s) from ~/.ssh/config"))
+        return added
+    }
+
+    func exportEncryptedVault(password: String) throws -> Data {
+        try EncryptedProfileSync.encrypt(profiles: profiles, masterPassword: password)
+    }
+
+    @discardableResult
+    func importEncryptedVault(data: Data, password: String) throws -> Int {
+        let decrypted = try EncryptedProfileSync.decrypt(vaultData: data, masterPassword: password)
+        for profile in decrypted {
+            if let idx = profiles.firstIndex(where: { $0.id == profile.id }) {
+                profiles[idx] = profile
+            } else {
+                profiles.append(profile)
+            }
+        }
+        persist()
+        flashNotice(L10n.tr("已解密并同步 \(decrypted.count) 个加密书签", "Decrypted and synced \(decrypted.count) bookmark(s)"))
+        return decrypted.count
+    }
+
+    // MARK: - Menu Bar Droplet Upload (Drop files onto any saved ServerProfile)
+    func uploadDroppedURLs(_ urls: [URL], to profile: ServerProfile) {
+        let creds = loadCredentials(for: profile)
+        let targetClient = RemoteClient(profile: profile, credentials: creds, speedLimitBytesPerSec: queue.speedLimitBytesPerSec)
+        let remoteDir = RemotePath.normalize(profile.initialPath)
+        for url in urls {
+            let name = url.lastPathComponent
+            guard let targetRemote = try? RemotePath.join(remoteDir, name) else { continue }
+            queue.enqueue(name: "[\(profile.name.isEmpty ? profile.host : profile.name)] \(name)", direction: .upload) { [weak self] progress in
+                try await targetClient.upload(url, to: targetRemote, overwrite: true, progress: progress)
+                await MainActor.run {
+                    if self?.connectedProfile?.id == profile.id {
+                        self?.refreshRemote()
+                    }
+                    self?.flashNotice(L10n.tr("闪电上传完成：\(name)", "Droplet upload completed: \(name)"))
+                }
+            }
         }
     }
 
@@ -1086,6 +1345,7 @@ public enum DefaultConflictPreference: String, CaseIterable, Identifiable, Senda
         let currentDirection = syncDirection
         let currentRule = syncRule
         let currentDelete = syncDeleteOrphans
+        let ignorePatterns = SyncIgnoreFilter.parsePatterns(syncIgnorePatternsText)
 
         Task {
             do {
@@ -1099,7 +1359,8 @@ public enum DefaultConflictPreference: String, CaseIterable, Identifiable, Senda
                     remoteFiles: remotes,
                     direction: currentDirection,
                     rule: currentRule,
-                    deleteOrphans: currentDelete
+                    deleteOrphans: currentDelete,
+                    ignorePatterns: ignorePatterns
                 )
 
                 await MainActor.run {
@@ -1121,6 +1382,7 @@ public enum DefaultConflictPreference: String, CaseIterable, Identifiable, Senda
 
     func recalculateSyncPlan() {
         let localRoot = URL(fileURLWithPath: localPath)
+        let ignorePatterns = SyncIgnoreFilter.parsePatterns(syncIgnorePatternsText)
         self.syncPlan = SyncEngine.generatePlan(
             localRoot: localRoot,
             localFiles: cachedSyncLocalFiles,
@@ -1128,7 +1390,8 @@ public enum DefaultConflictPreference: String, CaseIterable, Identifiable, Senda
             remoteFiles: cachedSyncRemoteFiles,
             direction: syncDirection,
             rule: syncRule,
-            deleteOrphans: syncDeleteOrphans
+            deleteOrphans: syncDeleteOrphans,
+            ignorePatterns: ignorePatterns
         )
     }
 
@@ -1220,9 +1483,10 @@ public enum DefaultConflictPreference: String, CaseIterable, Identifiable, Senda
         }
     }
 
+    @discardableResult
     func enqueueTransfer(name: String, direction: TransferDirection, operation: @escaping TransferOperation,
-                         onFinish: TransferFinishHandler? = nil) {
-        queue.enqueue(name: name, direction: direction, operation: operation, onFinish: onFinish)
+                         onFinish: TransferFinishHandler? = nil) -> UUID {
+        return queue.enqueue(name: name, direction: direction, operation: operation, onFinish: onFinish)
     }
 
     // MARK: - Compress and Upload

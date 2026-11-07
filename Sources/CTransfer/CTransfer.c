@@ -128,6 +128,14 @@ int at_set_speed_limit(ATRequest *r, int64_t bytes_per_sec) {
     if (c1 != CURLE_OK) return c1;
     return curl_easy_setopt(r->curl, CURLOPT_MAX_RECV_SPEED_LARGE, (curl_off_t)bytes_per_sec);
 }
+int at_set_ssh_agent(ATRequest *r, int enabled) {
+    if (!r) return CURLE_BAD_FUNCTION_ARGUMENT;
+    if (enabled) {
+        return curl_easy_setopt(r->curl, CURLOPT_SSH_AUTH_TYPES,
+                                (long)(CURLSSH_AUTH_AGENT | CURLSSH_AUTH_PUBLICKEY | CURLSSH_AUTH_PASSWORD));
+    }
+    return CURLE_OK;
+}
 int64_t at_file_size(ATRequest *r) {
     if (!r) return -1;
     curl_off_t size = -1;
