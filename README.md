@@ -2,7 +2,7 @@
 
 为 Apple 芯片打造的原生 macOS 文件传输工作台。双栏浏览本地与远程文件，连接 FTP / FTPS / SFTP 服务器，管理传输任务。
 
-**状态：v0.1.0 首个正式版。** [下载](https://github.com/bcblr1993/AetherTransfer/releases/latest) · [官网](https://www.aethernative.com/apps/aethertransfer/) · [首版范围](docs/first-version.md)
+**状态：v0.1.2 正式版。** [下载](https://github.com/bcblr1993/AetherTransfer/releases/latest) · [官网](https://www.aethernative.com/apps/aethertransfer/) · [首版范围](docs/first-version.md)
 
 支持 SFTP / FTPS / FTP、双栏多标签浏览、有界传输队列与断点续传、目录差异同步、快速查看、内置文本编辑、批量重命名、权限编辑、中英文界面和应用内更新。WebDAV、S3 / R2 等云存储尚未包含在本版本中。
 

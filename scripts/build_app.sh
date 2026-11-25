@@ -13,13 +13,19 @@ if [ -z "${CODESIGN_IDENTITY:-}" ]; then
     CODESIGN_IDENTITY="${DETECTED_ID:--}"
 fi
 
+APP="outputs/AetherTransfer.app"
+if pgrep -f "^$PWD/$APP/Contents/MacOS/AetherTransfer( |$)" >/dev/null; then
+    echo "Quit the running output app before replacing its bundle." >&2
+    exit 1
+fi
+python3 scripts/clean_generated.py swift
 echo "==> Building AetherTransfer v${VERSION} (${BUILD_NUMBER}) in release mode..."
 swift build -c release
 
-APP="outputs/AetherTransfer.app"
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Frameworks" "$APP/Contents/Resources"
 cp .build/release/AetherTransfer "$APP/Contents/MacOS/AetherTransfer"
+cp /opt/homebrew/etc/ca-certificates/cert.pem "$APP/Contents/Resources/cacert.pem"
 
 # Generate AppIcon.icns
 ICONSET_DIR="outputs/AppIcon.iconset"

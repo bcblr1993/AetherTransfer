@@ -1,5 +1,8 @@
-"""Run Swift integration tests against disposable loopback FTP/SFTP servers."""
+"""Run Swift integration tests against disposable loopback FTP/FTPS/SFTP servers."""
 import errno
+import datetime
+import ipaddress
+import sys
 import logging
 import os
 from pathlib import Path
@@ -10,7 +13,12 @@ import threading
 
 import paramiko
 from pyftpdlib.authorizers import DummyAuthorizer
-from pyftpdlib.handlers import FTPHandler
+from pyftpdlib.handlers import FTPHandler, TLS_FTPHandler
+from pyftpdlib.ioloop import IOLoop
+from cryptography import x509
+from cryptography.x509.oid import NameOID
+from cryptography.hazmat.primitives import hashes, serialization
+from cryptography.hazmat.primitives.asymmetric import rsa
 from pyftpdlib.servers import FTPServer
 
 logging.disable(logging.CRITICAL)
@@ -74,7 +82,43 @@ with tempfile.TemporaryDirectory(prefix='aethertransfer-fixture-') as directory:
     class Handler(FTPHandler): pass
     Handler.authorizer = authorizer
     ftp = FTPServer(('127.0.0.1', 0), Handler)
-    threading.Thread(target=ftp.serve_forever, kwargs={'timeout': .1}, daemon=True).start()
+    stopping = threading.Event()
+    def serve(server):
+        while not stopping.is_set():
+            server.ioloop.loop(timeout=.1, blocking=False)
+        server.close_all()
+    ftp_thread = threading.Thread(target=serve, args=(ftp,), daemon=True)
+    ftp_thread.start()
+    tls_key = rsa.generate_private_key(public_exponent=65537, key_size=2048)
+    name = x509.Name([x509.NameAttribute(NameOID.COMMON_NAME, "localhost")])
+    now = datetime.datetime.now(datetime.timezone.utc)
+    cert = (x509.CertificateBuilder().subject_name(name).issuer_name(name)
+            .public_key(tls_key.public_key()).serial_number(x509.random_serial_number())
+            .not_valid_before(now - datetime.timedelta(minutes=5))
+            .not_valid_after(now + datetime.timedelta(days=1))
+            .add_extension(x509.SubjectAlternativeName([x509.DNSName("localhost"),
+                           x509.IPAddress(ipaddress.ip_address("127.0.0.1"))]), critical=False)
+            .add_extension(x509.BasicConstraints(ca=True, path_length=None), critical=True)
+            .sign(tls_key, hashes.SHA256()))
+    cert_path = root / "fixture-ca.pem"
+    cert_path.write_bytes(cert.public_bytes(serialization.Encoding.PEM))
+    key_path = root / "fixture-key.pem"
+    key_path.write_bytes(tls_key.private_bytes(serialization.Encoding.PEM,
+                         serialization.PrivateFormat.PKCS8, serialization.NoEncryption()))
+    key_path.chmod(0o600)
+    class ImplicitTLSHandler(TLS_FTPHandler):
+        certfile = str(cert_path)
+        keyfile = str(key_path)
+        tls_control_required = True
+        tls_data_required = True
+        def handle(self):
+            self.secure_connection(self.ssl_context)
+            super().handle()
+    ImplicitTLSHandler.authorizer = authorizer
+    tls_loop = IOLoop()
+    ftps = FTPServer(('127.0.0.1', 0), ImplicitTLSHandler, ioloop=tls_loop)
+    ftps_thread = threading.Thread(target=serve, args=(ftps,), daemon=True)
+    ftps_thread.start()
     key = paramiko.RSAKey.generate(2048)
     listener = socket.socket()
     listener.bind(('127.0.0.1', 0)); listener.listen(16)
@@ -94,15 +138,17 @@ with tempfile.TemporaryDirectory(prefix='aethertransfer-fixture-') as directory:
     threading.Thread(target=accept, daemon=True).start()
     env = os.environ.copy()
     env.update(AT_FTP_PORT=str(ftp.socket.getsockname()[1]), AT_SFTP_PORT=str(listener.getsockname()[1]),
-               AT_SFTP_KEY=key.get_base64())
+               AT_SFTP_KEY=key.get_base64(), AT_FTPS_PORT=str(ftps.socket.getsockname()[1]),
+               AT_FTPS_CA=str(cert_path))
     try:
-        result = subprocess.run(['swift', 'test', '--filter', 'ProtocolIntegrationTests'], env=env)
+        result = subprocess.run(['swift', 'test', '--filter', 'ProtocolIntegrationTests|FTPSIntegrationTests'], env=env)
     finally:
-        try: ftp.close_all()
-        except Exception: pass
+        stopping.set()
+        ftp_thread.join(timeout=5)
+        ftps_thread.join(timeout=5)
         try: listener.close()
         except Exception: pass
         for transport in transports:
             try: transport.close()
             except Exception: pass
-    os._exit(result.returncode)
+    sys.exit(result.returncode)
