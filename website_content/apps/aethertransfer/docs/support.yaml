@@ -10,18 +10,18 @@ sections:
         en: Turn automatic update checks on or off in Settings (⌘,), or check manually from the menu. Updates install only after their SHA-256 and code signature are verified.
   - heading: { zh: 连接服务器与对象存储, en: Connecting to servers and object storage }
     list:
-      - zh: SFTP 首次连接会显示主机指纹，请与服务器管理员提供的指纹核对后再信任；指纹变化时连接会被拒绝。支持在「SSH 密钥管理器」生成 Ed25519 / RSA-4096 密钥、使用 SSH Agent 或导入 `~/.ssh/config`。
-        en: The first SFTP connection shows the host fingerprint. Compare it with the one from your server administrator before trusting it; a changed fingerprint is refused. You can generate Ed25519 / RSA-4096 keys in the SSH Key Manager, use SSH Agent, or import `~/.ssh/config`.
-      - zh: 隐式/显式 FTPS 与 HTTPS（WebDAV HTTPS / S3 / R2 / Backblaze B2 / Azure Blob / OpenStack Swift）均验证服务器 TLS 证书，自签名或过期证书会被拒绝。
-        en: Implicit/Explicit FTPS and HTTPS protocols (WebDAV HTTPS, S3, R2, Backblaze B2, Azure Blob, OpenStack Swift) validate TLS certificates; self-signed or expired certificates are refused.
+      - zh: SFTP 首次连接会显示主机指纹，请与服务器管理员提供的指纹核对后再信任；指纹变化时连接会被拒绝。支持在「SSH 密钥管理器」生成 Ed25519 / RSA-4096 密钥、使用 SSH Agent 或通过书签导入向导导入 FileZilla、Cyberduck、Transmit、`~/.ssh/config` 与 `~/.aws/config`。
+        en: The first SFTP connection shows the host fingerprint. Compare it with the one from your server administrator before trusting it; a changed fingerprint is refused. You can generate Ed25519 / RSA-4096 keys in the SSH Key Manager, use SSH Agent, or import bookmarks from FileZilla, Cyberduck, Transmit, `~/.ssh/config`, and `~/.aws/config`.
+      - zh: 隐式/显式 FTPS 与 HTTPS（WebDAV HTTPS / S3 / R2 / Backblaze B2 / Azure Blob / OpenStack Swift）均验证服务器 TLS 证书，自签名或过期证书会被拒绝。S3 支持服务商预设、留空存储桶自动列出 `ListBuckets` 以及 AWS STS `AssumeRole` + MFA 临时凭据。
+        en: Implicit/Explicit FTPS and HTTPS protocols (WebDAV HTTPS, S3, R2, Backblaze B2, Azure Blob, OpenStack Swift) validate TLS certificates; self-signed or expired certificates are refused. S3 supports provider presets, empty-bucket `ListBuckets` discovery, and AWS STS `AssumeRole` + MFA temporary credentials.
       - zh: 首次在当前位置打开终端时，macOS 会请求控制 ApexTerm 或「终端」的权限。
         en: The first time you open a terminal at the current location, macOS asks for permission to control ApexTerm or Terminal.
-  - heading: { zh: "视图、规则、日志与自动化", en: "Views, rules, transcripts, and automation" }
+  - heading: { zh: "视图、规则、同步、日志与自动化", en: "Views, rules, sync, transcripts, and automation" }
     list:
-      - zh: 工具栏可在列表、级联分栏、缩略图网格与画廊视图间切换，并可切换聚焦模式或双栏本地/远程来源；在 Launchpad 中可配置文件夹关联与颜色标签。
-        en: Switch between List, cascading Miller Columns, Thumbnail Grid, and Gallery Split views, toggle Focus Mode or dual-pane sources, and configure Folder Linking and color tags in the Servers Launchpad.
-      - zh: 在「设置 → 规则」中配置 Skip Rules 跳过规则与 ASCII 扩展名；在底部抽屉「协议日志」中查看或导出经自动脱敏的连接与传输记录。
-        en: Configure Skip Rules and ASCII extensions in Settings → Rules, and inspect or export automatically redacted connection and transfer logs from the bottom Transcript drawer.
+      - zh: 工具栏可在列表、级联分栏、缩略图网格与画廊视图间切换，通过 View Options（⌘J）调整视图参数，并可切换聚焦模式、双栏来源或使用 Raw 命令控制台；在 Launchpad 中可配置文件夹关联与颜色标签。
+        en: Switch between List, cascading Miller Columns, Thumbnail Grid, and Gallery Split views, customize layout via View Options (⌘J), toggle Focus Mode or dual-pane sources, open the Raw Command Console, and configure Folder Linking and color tags in the Servers Launchpad.
+      - zh: 在「设置 → 文件与编辑器」配置双击行为、默认传输模式（自动/ASCII/二进制）与按扩展名指定自定义编辑器；在「设置 → 规则」配置 Skip Rules 与 ASCII 扩展名；目录同步支持时差补偿、Simulate 干跑与 CSV/Markdown 导出；在底部抽屉「协议日志」中查看或导出经自动脱敏的连接与传输记录。
+        en: Configure double-click actions, transfer modes (Automatic/ASCII/Binary), and per-extension custom editors in Settings → Files & Editors; configure Skip Rules and ASCII extensions in Settings → Rules; use time-offset, Simulate dry-run, and CSV/Markdown export in Folder Sync; and inspect or export redacted Transcript logs from the bottom drawer.
       - zh: 可导出 Finder 上传 Droplet 小应用，或通过 `.aethersync` 零知识加密保险箱跨 Mac 迁移书签配置（需妥善保管主密码）。
         en: Export Finder upload Droplets or transfer bookmarks across Macs using password-protected `.aethersync` encrypted vaults.
   - heading: { zh: 当前边界, en: Current limits }

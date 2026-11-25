@@ -151,7 +151,8 @@ public struct RemoteClient: RemoteTransport, Sendable {
             }
         }
         if Self.isFTPFamily(profile.protocolKind) && (mode == 1 || mode == 2), let transferFilename {
-            let useAscii = shouldUseAsciiTransfer(forFilename: transferFilename)
+            // Byte-offset resumed transfers require binary mode so server and local byte offsets match.
+            let useAscii = (offset == nil) && shouldUseAsciiTransfer(forFilename: transferFilename)
             let asciiResult = at_set_ascii_mode(request, useAscii ? 1 : 0)
             guard asciiResult == 0 else {
                 at_destroy(request)

@@ -71,3 +71,12 @@
   - `NOTARY_PROFILE=AetherRoute-Notary VERSION=0.2.0 BUILD_NUMBER=2026112501 ./scripts/build_app.sh`：Release 构建与独立 arm64 打包通过，Developer ID Application（`5984KQD4D7`）签名、Apple 公证（Accepted）与票据装订（`xcrun stapler validate`）均通过；`spctl -a -vvv` 对 DMG（`-t install`）与 `.app`（`-t exec`）均显示 `Notarized Developer ID`；`codesign --verify --deep --strict` 通过，`otool -L` 校验主程序及 12 个内嵌 dylib 均无 `/opt/homebrew` 或 `/usr/local` 依赖；捆绑 `cacert.pem`、`AppIcon.icns`、许可证文本及 `CFBundleURLTypes`；`SHA256SUMS.txt` 校验通过（DMG `e3905a5a...`，ZIP `2c48f313...`）。
   - 运行态检查：启动已公证的 `outputs/AetherTransfer.app` 后主窗口（`1280x820`）正常上屏且无崩溃日志，AppleScript 正常退出；非交互式代理 Shell 未获 macOS 屏幕录制/辅助功能 TCC 权限，窗口截图留待维护者补充。
 - 正式发布：合并 `feat/transmit-parity` 至 `main` 并打标签 `v0.2.0` 推送，发布 GitHub Release `v0.2.0`（附 DMG、ZIP、`SHA256SUMS.txt`、`appcast.json`），同步更新官网产品页与版本记录并完成发布后磁盘清理。
+
+2026-11-25：完成 v0.3.0 Transmit 5 深度对齐开发与全量 QA 验收预备：
+- 协议与云存储深度对齐：新增 FTP Active/Passive 模式与全局/单连接 ASCII/Binary/Auto 传输模式（断点续传窗口自动保持二进制偏移一致性）；新增 Raw FTP/SFTP 命令控制台（`RemoteClient.sendRawCommand` / `at_perform_raw`，拦截 `\0`/`\r`/`\n` 注入并用 `TranscriptRedactor` 脱敏输出）；新增 S3 服务商预设（AWS S3、IAM Role/STS、R2、MinIO、DreamObjects、Wasabi、DigitalOcean Spaces）、`ListBuckets`（`GET /`）与 AWS STS `AssumeRole` + MFA 临时凭据流程（`AWSSTSClient`）。
+- 导入、归档与编辑器能力：新增 FileZilla XML、Cyberduck `.duck`、Transmit Favorites/`.inetloc`、`~/.ssh/config` 与 `~/.aws/{config,credentials}` 书签导入器；新增 `ArchiveHelper.extractZip` 防 Zip-Slip 与防符号链接逃逸解压；内置编辑器支持 `⌘F` 查找与替换及 UTF-8 / UTF-16 / ISO-8859-1 / GB18030 多编码。
+- 同步、偏好与 macOS 交互完善：`SyncOptions` 支持 Time Offset 与自动测算、`modifiedWithinSeconds`、`followSymlinks`、`simulateOnly` 干跑模拟与 RFC-4180 CSV 导出；新增 Files & Editors 偏好设置（按扩展名自定义编辑器、双击行为、删除确认与通知提示音）、View Options 弹出面板（`⌘J`）、活跃传输关闭/断连守护及完整 macOS 菜单快捷键；修复 `RemoteClient` 断点续传窗口在 FTP ASCII 模式下可能触发 `TYPE A` 偏移错位的问题。
+- 门禁与验证（2026-11-25，commit 前最新代码）：
+  - `./scripts/test_core.sh`：XCTest 执行 76 项（21 项夹具门禁跳过，0 失败）；Swift Testing 65 项全部通过（0 失败）。
+  - `./scripts/test_protocols.sh`：21 项真实本地回环集成测试全部通过（0 失败），在 v0.2.0 8 大协议家族基础上新增验证 FTP 原始命令（`SYST`/`FEAT` 与控制字符拒绝）、FTP ASCII/Binary 传输模式、S3 `ListBuckets` 及本地回环 AWS STS `AssumeRole` → 临时会话令牌访问 S3（含 `X-Amz-Security-Token` 签名与预签名下载），夹具无残留进程。
+  - `swift build -c release`：Release 编译通过。

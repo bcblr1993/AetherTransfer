@@ -22,8 +22,8 @@ cardStats:
   - value: "本机 / Local"
     label: { zh: Keychain 凭据 · 脱敏日志 · 无追踪, en: "Keychain · Redacted Logs · No Tracking" }
 notice:
-  zh: "0.2.0 全面对齐高效双栏与云端传输工作流：新增显式 FTPS、WebDAV/HTTPS、S3/R2/MinIO、Backblaze B2、Azure Blob 与 OpenStack Swift，带来 Miller 分栏、画廊预览、Servers Launchpad、三标签检查器、Skip Rules、脱敏协议日志、Finder Droplets 与 .aethersync 加密书签同步。"
-  en: "Version 0.2.0 expands to Explicit FTPS, WebDAV/HTTPS, S3/R2/MinIO, Backblaze B2, Azure Blob, and OpenStack Swift, adding cascading Miller columns, Gallery split view, Servers Launchpad, a 3-tab Inspector, Skip Rules, redacted Transcripts, Finder Droplets, and .aethersync encrypted vault sync."
+  zh: "0.3.0 带来 Transmit 5 深度对齐：新增 FTP Active/ASCII 与原始命令控制台、S3 预设 / ListBuckets / AWS STS AssumeRole + MFA、FileZilla/Cyberduck/Transmit/SSH/AWS 书签导入、防 Zip-Slip 解压、编辑器查找替换与多编码、高级同步干跑与 CSV 导出、Files 偏好设置及 View Options。"
+  en: "Version 0.3.0 delivers deep Transmit 5 parity: FTP Active/ASCII modes and Raw Command Console, S3 presets / ListBuckets / AWS STS AssumeRole + MFA, bookmark importers (FileZilla/Cyberduck/Transmit/SSH/AWS), safe Zip extraction, editor Find & Replace + multi-encoding, Sync dry-run & CSV export, Files preferences, and View Options."
 hero:
   eyebrow: { zh: 文件传输 · 原生 Mac, en: File transfer · Native Mac }
   title: { zh: "文件两端，\n尽在掌握。", en: "Two sides.\nOne clear workspace." }
@@ -38,31 +38,31 @@ features:
     zh: 以下均为当前版本已包含、经过单元测试与本地隔离协议集成测试验证的能力。
     en: Everything below ships in the current version and is covered by unit tests and local loopback protocol integration tests.
   items:
-    - kicker: { zh: 协议, en: Protocols }
-      title: { zh: 传统服务器与云对象存储全覆盖, en: "Servers and cloud object storage in one place" }
+    - kicker: { zh: 协议与控制台, en: Protocols & Console }
+      title: { zh: "传统服务器、云对象存储与原始命令", en: "Servers, cloud storage, and raw command console" }
       body:
-        zh: 支持 SFTP、FTP、隐式 FTPS、显式 FTPS (AUTH TLS)、WebDAV / WebDAV HTTPS、Amazon S3 / Cloudflare R2 / MinIO（SigV4 与分段上传）、Backblaze B2、Microsoft Azure Blob 与 OpenStack Swift。
-        en: Supports SFTP, FTP, Implicit FTPS, Explicit FTPS (AUTH TLS), WebDAV / WebDAV HTTPS, Amazon S3 / Cloudflare R2 / MinIO (SigV4 and multipart upload), Backblaze B2, Microsoft Azure Blob, and OpenStack Swift.
-    - kicker: { zh: 浏览, en: Browse }
-      title: { zh: 多种视图、启动台与灵活双栏, en: "Four views, Launchpad, and flexible panes" }
+        zh: 支持 SFTP、FTP（Active/Passive 与 ASCII/Binary/Auto）、隐式与显式 FTPS (AUTH TLS)、WebDAV / HTTPS、Amazon S3（含服务商预设、ListBuckets 与 AWS STS AssumeRole + MFA）/ Cloudflare R2 / MinIO、Backblaze B2、Azure Blob 与 OpenStack Swift，并内置脱敏的 Raw FTP/SFTP 命令控制台。
+        en: Supports SFTP, FTP (Active/Passive and ASCII/Binary/Auto), Implicit and Explicit FTPS (AUTH TLS), WebDAV / HTTPS, Amazon S3 (provider presets, ListBuckets, and AWS STS AssumeRole + MFA) / Cloudflare R2 / MinIO, Backblaze B2, Azure Blob, and OpenStack Swift, plus a sanitized Raw FTP/SFTP Command Console.
+    - kicker: { zh: 浏览与视图, en: Browse & Views }
+      title: { zh: "多种视图、View Options 与启动台", en: "Four views, View Options, and Launchpad" }
       body:
-        zh: 提供列表、级联 Miller 分栏、缩略图网格与画廊预览视图，支持聚焦模式、本地⇄本地及服务器⇄服务器双栏传输。Servers Launchpad 支持颜色标签筛选、文件夹关联与自定义常用位置，多标签独立保留连接快照。
-        en: Switch between List, cascading Miller Columns, resizable Thumbnail Grid, and Gallery Split views, with Focus Mode and Local⇄Local or Server⇄Server pane switching. Servers Launchpad adds color tags, Folder Linking, and Custom Places alongside per-tab connection snapshots.
+        zh: 提供列表、级联 Miller 分栏、缩略图网格与画廊预览视图，支持 View Options（⌘J）图标与列定制、聚焦模式及本地⇄本地 / 服务器⇄服务器双栏传输。Servers Launchpad 支持颜色标签筛选、文件夹关联、常用位置与 FileZilla/Cyberduck/Transmit/SSH/AWS 书签导入。
+        en: Switch between List, cascading Miller Columns, resizable Thumbnail Grid, and Gallery Split views with View Options (⌘J), Focus Mode, and Local⇄Local or Server⇄Server pane switching. Servers Launchpad adds color tags, Folder Linking, Custom Places, and bookmark importers for FileZilla, Cyberduck, Transmit, SSH, and AWS.
     - kicker: { zh: 传输与日志, en: Transfer & Log }
-      title: { zh: 可靠队列与严格脱敏协议日志, en: "Reliable queue and redacted transcripts" }
+      title: { zh: 可靠队列、守护与脱敏协议日志, en: "Reliable queue, transfer guard, and redacted transcripts" }
       body:
-        zh: 有界并发队列支持暂停、取消、置顶、一键重试、限速、Merge 文件夹合并与断点续传。底部抽屉集成可筛选的协议日志（Transcript），自动脱敏密码、Token 与 URL 凭据。
-        en: A bounded concurrent queue supports pause, cancel, move to top, retry all failed, bandwidth limits, folder merge, and verified resume. The bottom drawer includes a searchable Transcript log that automatically redacts passwords, tokens, and URL userinfo.
+        zh: 有界并发队列支持暂停、取消、置顶、一键重试、限速、Merge 文件夹合并、断点续传、安全 Zip 解压（防 Zip-Slip）与活跃传输关闭/断连守护。底部抽屉集成可筛选的协议日志（Transcript），自动脱敏密码、Token 与 URL 凭据。
+        en: A bounded concurrent queue supports pause, cancel, move to top, retry all failed, bandwidth limits, folder merge, verified resume, Zip-Slip-safe archive extraction, and active-transfer close/disconnect guards. The bottom drawer includes a searchable Transcript log that automatically redacts passwords, tokens, and URL userinfo.
     - kicker: { zh: 同步与规则, en: Sync & Rules }
-      title: { zh: 谓词规则过滤，先预览再同步, en: "Rule-filtered sync with item-by-item preview" }
+      title: { zh: "先模拟后同步，支持时差补偿与 CSV 报告", en: "Dry-run sync with time offset, filters, and CSV export" }
       body:
-        zh: 单向或双向比较生成预览计划并支持 Markdown 报告导出，默认不删除远程多余文件。自定义 Skip Rules 谓词与 ASCII 扩展名可统一作用于浏览、传输与同步。
-        en: Build one-way or two-way sync plans with Markdown report export while preserving remote extras by default. Custom Skip Rules predicates and ASCII extensions apply consistently across browsing, transfers, and sync.
+        zh: 单向或双向比较支持时间偏移补偿与自动估算、最近修改时间窗口、跟随符号链接、Simulate 干跑预览及 Markdown / CSV 报告导出，默认不删除远程多余文件。自定义 Skip Rules 谓词与 ASCII 扩展名可统一作用于浏览、传输与同步。
+        en: Build one-way or two-way sync plans with time-offset compensation and auto-detection, modified-within filters, follow-symlinks, Simulate dry-run mode, and Markdown/CSV export while preserving remote extras by default. Custom Skip Rules predicates and ASCII extensions apply across browsing, transfers, and sync.
     - kicker: { zh: 检查器与编辑, en: Inspector & Edit }
-      title: { zh: 三标签检查器与外部编辑回传, en: "3-tab Inspector and live external editor" }
+      title: { zh: "三标签检查器、多编码查找替换与自定义编辑器", en: "3-tab Inspector, multi-encoding editor, and custom apps" }
       body:
-        zh: 检查器（⌘I）提供文件夹大小计算、分块 SHA-256 / MD5 校验、递归 POSIX 权限修改、云端对象元数据编辑与 Presigned / SAS 临时签名链接；支持内置编辑器及外部编辑器保存后自动回传，联动 ApexTerm 或「终端」。
-        en: The 3-tab Inspector (⌘I) provides Folder Size calculation, chunked SHA-256 / MD5 checksums, recursive POSIX chmod, cloud metadata editing, and Presigned / SAS URLs. Edit with the built-in editor or watch external editors to auto-upload on save, and open ApexTerm or Terminal at the current path.
+        zh: 检查器（⌘I）提供文件夹大小计算、分块 SHA-256 / MD5 校验、递归 POSIX 权限、云端元数据与 Presigned / SAS 链接；内置编辑器支持查找替换（⌘F）与 UTF-8/UTF-16/ISO-8859-1/GB18030 编码，Files 偏好支持按扩展名指定外部编辑器并保存自动回传。
+        en: The 3-tab Inspector (⌘I) provides Folder Size calculation, chunked SHA-256 / MD5 checksums, recursive POSIX chmod, cloud metadata, and Presigned / SAS URLs. The built-in editor adds Find & Replace (⌘F) with UTF-8, UTF-16, ISO-8859-1, and GB18030 support, while Files preferences configure per-extension external editors with auto-upload on save.
     - kicker: { zh: 安全与自动化, en: Security & Automation }
       title: { zh: 密钥管理、Droplets 与加密书签同步, en: "SSH keys, Droplets, and encrypted vault" }
       body:
