@@ -68,6 +68,6 @@
 - 门禁与验证（2026-11-25）：
   - `./scripts/test_core.sh`：XCTest 72 项执行（17 项夹具门禁跳过，0 失败）；Swift Testing 44 项全部通过（0 失败）。
   - `./scripts/test_protocols.sh`：17 项真实本地回环集成测试全部通过（0 失败），覆盖全部 8 大协议家族（FTP、隐式 FTPS、显式 FTPS、SFTP + 符号链接/chmod/主机密钥拒绝、WebDAV/HTTPS、S3、Backblaze B2、Azure Blob、OpenStack Swift），夹具无残留进程。
-  - `VERSION=0.2.0 BUILD_NUMBER=2026112501 ./scripts/build_app.sh`：Release 构建与独立 arm64 打包通过，Developer ID Application（`5984KQD4D7`）签名与 `codesign --verify --deep --strict` 通过，`otool -L` 校验主程序及 12 个内嵌 dylib 均无 `/opt/homebrew` 或 `/usr/local` 依赖；捆绑 `cacert.pem`、`AppIcon.icns`、许可证文本及 `CFBundleURLTypes`；`SHA256SUMS.txt` 校验通过（DMG `c3a01172...`，ZIP `b7b81782...`）。
-  - 运行态检查：启动 `outputs/AetherTransfer.app` 后主窗口（`1280x820`）正常上屏且无崩溃日志，AppleScript 正常退出；非交互式代理 Shell 未获 macOS 屏幕录制/辅助功能 TCC 权限，窗口截图留待维护者补充。
-- 阻塞项：`xcrun notarytool history --keychain-profile AetherTransfer` 返回缺少 Keychain 凭据配置（`No Keychain password item found for profile: AetherTransfer`，退出码 69）。按发布规范尚未合并 `main`、未打 `v0.2.0` 标签、未发布 GitHub Release 且未推送官网更新；待维护者配置公证凭据并完成公证、窗口截图与 `v0.1.2 -> v0.2.0` 升级验收后执行最终发布与磁盘清理。
+  - `NOTARY_PROFILE=AetherRoute-Notary VERSION=0.2.0 BUILD_NUMBER=2026112501 ./scripts/build_app.sh`：Release 构建与独立 arm64 打包通过，Developer ID Application（`5984KQD4D7`）签名、Apple 公证（Accepted）与票据装订（`xcrun stapler validate`）均通过；`spctl -a -vvv` 对 DMG（`-t install`）与 `.app`（`-t exec`）均显示 `Notarized Developer ID`；`codesign --verify --deep --strict` 通过，`otool -L` 校验主程序及 12 个内嵌 dylib 均无 `/opt/homebrew` 或 `/usr/local` 依赖；捆绑 `cacert.pem`、`AppIcon.icns`、许可证文本及 `CFBundleURLTypes`；`SHA256SUMS.txt` 校验通过（DMG `e3905a5a...`，ZIP `2c48f313...`）。
+  - 运行态检查：启动已公证的 `outputs/AetherTransfer.app` 后主窗口（`1280x820`）正常上屏且无崩溃日志，AppleScript 正常退出；非交互式代理 Shell 未获 macOS 屏幕录制/辅助功能 TCC 权限，窗口截图留待维护者补充。
+- 正式发布：合并 `feat/transmit-parity` 至 `main` 并打标签 `v0.2.0` 推送，发布 GitHub Release `v0.2.0`（附 DMG、ZIP、`SHA256SUMS.txt`、`appcast.json`），同步更新官网产品页与版本记录并完成发布后磁盘清理。
