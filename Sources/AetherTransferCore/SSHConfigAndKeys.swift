@@ -1,4 +1,5 @@
 import Foundation
+import CryptoKit
 
 // MARK: - OpenSSH ~/.ssh/config Parser
 public struct SSHConfigHostEntry: Identifiable, Hashable, Sendable {
@@ -8,13 +9,22 @@ public struct SSHConfigHostEntry: Identifiable, Hashable, Sendable {
     public var user: String?
     public var port: Int?
     public var identityFile: String?
+    public var proxyJump: String?
 
-    public init(alias: String, hostName: String? = nil, user: String? = nil, port: Int? = nil, identityFile: String? = nil) {
+    public init(
+        alias: String,
+        hostName: String? = nil,
+        user: String? = nil,
+        port: Int? = nil,
+        identityFile: String? = nil,
+        proxyJump: String? = nil
+    ) {
         self.alias = alias
         self.hostName = hostName
         self.user = user
         self.port = port
         self.identityFile = identityFile
+        self.proxyJump = proxyJump
     }
 
     public func toServerProfile() -> ServerProfile {
@@ -68,6 +78,7 @@ public enum SSHConfigParser {
         var currentUser: String?
         var currentPort: Int?
         var currentIdentityFile: String?
+        var currentProxyJump: String?
 
         func flushCurrent() {
             for alias in currentAliases where !alias.contains("*") && !alias.contains("?") && !alias.isEmpty {
@@ -76,7 +87,8 @@ public enum SSHConfigParser {
                     hostName: currentHostName,
                     user: currentUser,
                     port: currentPort,
-                    identityFile: currentIdentityFile.map(expandTilde)
+                    identityFile: currentIdentityFile.map(expandTilde),
+                    proxyJump: currentProxyJump
                 ))
             }
         }
@@ -89,8 +101,11 @@ public enum SSHConfigParser {
             let parts = trimmed.split(maxSplits: 1, whereSeparator: { $0.isWhitespace || $0 == "=" })
             guard parts.count == 2 else { continue }
             let key = parts[0].lowercased()
-            let value = String(parts[1]).trimmingCharacters(in: .whitespacesAndNewlines)
-                .trimmingCharacters(in: CharacterSet(charactersIn: "\""))
+            var rawValue = String(parts[1]).trimmingCharacters(in: .whitespacesAndNewlines)
+            if rawValue.hasPrefix("=") {
+                rawValue = String(rawValue.dropFirst()).trimmingCharacters(in: .whitespacesAndNewlines)
+            }
+            let value = rawValue.trimmingCharacters(in: CharacterSet(charactersIn: "\"'"))
 
             switch key {
             case "host":
@@ -100,15 +115,24 @@ public enum SSHConfigParser {
                 currentUser = nil
                 currentPort = nil
                 currentIdentityFile = nil
+                currentProxyJump = nil
             case "hostname":
                 currentHostName = value
             case "user":
                 currentUser = value
             case "port":
-                currentPort = Int(value)
+                if let parsedPort = Int(value), (1...65535).contains(parsedPort) {
+                    currentPort = parsedPort
+                }
             case "identityfile":
                 if currentIdentityFile == nil {
                     currentIdentityFile = value
+                }
+            case "proxyjump":
+                if value.lowercased() == "none" || value.isEmpty {
+                    currentProxyJump = nil
+                } else {
+                    currentProxyJump = value
                 }
             default:
                 break
@@ -240,5 +264,96 @@ public enum SSHKeyManager {
             publicKeyPath: pubURL.path,
             publicKeyContent: pubContent
         )
+    }
+}
+
+// MARK: - Trusted SSH Host Keys (Known Hosts Manager)
+
+public struct TrustedHostKeyEntry: Identifiable, Hashable, Sendable {
+    public var id: UUID { profileId }
+    public let profileId: UUID
+    public let profileName: String
+    public let host: String
+    public let port: Int
+    public let protocolKind: TransferProtocol
+    public let rawHostKey: String
+    public let fingerprint: String
+
+    public init(
+        profileId: UUID,
+        profileName: String,
+        host: String,
+        port: Int,
+        protocolKind: TransferProtocol,
+        rawHostKey: String,
+        fingerprint: String
+    ) {
+        self.profileId = profileId
+        self.profileName = profileName
+        self.host = host
+        self.port = port
+        self.protocolKind = protocolKind
+        self.rawHostKey = rawHostKey
+        self.fingerprint = fingerprint
+    }
+}
+
+public enum KnownHostsManager {
+    public static func listTrustedHosts(from profiles: [ServerProfile]) -> [TrustedHostKeyEntry] {
+        profiles.compactMap { profile in
+            guard let rawKey = profile.trustedHostKey?.trimmingCharacters(in: .whitespacesAndNewlines),
+                  !rawKey.isEmpty else {
+                return nil
+            }
+            let displayName = profile.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                ? profile.host
+                : profile.name
+            return TrustedHostKeyEntry(
+                profileId: profile.id,
+                profileName: displayName,
+                host: profile.host,
+                port: profile.port,
+                protocolKind: profile.protocolKind,
+                rawHostKey: rawKey,
+                fingerprint: formattedFingerprint(rawKey)
+            )
+        }
+        .sorted {
+            let lhsName = $0.profileName
+            let rhsName = $1.profileName
+            let cmp = lhsName.localizedStandardCompare(rhsName)
+            if cmp != .orderedSame { return cmp == .orderedAscending }
+            return $0.host.localizedStandardCompare($1.host) == .orderedAscending
+        }
+    }
+
+    @discardableResult
+    public static func revokeHostKey(profileId: UUID, in profiles: inout [ServerProfile]) -> Bool {
+        guard let index = profiles.firstIndex(where: { $0.id == profileId }),
+              profiles[index].trustedHostKey != nil else {
+            return false
+        }
+        profiles[index].trustedHostKey = nil
+        return true
+    }
+
+    public static func formattedFingerprint(_ rawKey: String) -> String {
+        let trimmed = rawKey.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return "Invalid key" }
+        if trimmed.hasPrefix("SHA256:") {
+            return trimmed
+        }
+        let base64Candidate: String
+        let tokens = trimmed.split(whereSeparator: { $0.isWhitespace })
+        if tokens.count >= 2 && (tokens[0].hasPrefix("ssh-") || tokens[0].hasPrefix("ecdsa-")) {
+            base64Candidate = String(tokens[1])
+        } else {
+            base64Candidate = trimmed
+        }
+        guard let data = Data(base64Encoded: base64Candidate), !data.isEmpty else {
+            return "Invalid key"
+        }
+        let digest = Data(SHA256.hash(data: data)).base64EncodedString().replacingOccurrences(of: "=", with: "")
+        return "SHA256:\(digest)"
     }
 }

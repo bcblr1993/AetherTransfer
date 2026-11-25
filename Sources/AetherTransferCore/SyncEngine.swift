@@ -177,17 +177,60 @@ public enum SyncEngine {
         direction: SyncDirection = .localToRemote,
         rule: SyncComparisonRule = .sizeAndDate,
         deleteOrphans: Bool = false,
-        ignorePatterns: [String] = []
+        ignorePatterns: [String] = [],
+        skipRules: [SkipRule] = []
     ) -> SyncPlan {
         let normalizedRemoteRoot = RemotePath.normalize(remoteRoot)
+        let enabledRules = skipRules.filter { $0.isEnabled && $0.scope.appliesToSync }
+
+        // Pre-pass directory skip set for local & remote so child ordering does not matter
+        var skippedLocalDirs: Set<String> = []
+        if !enabledRules.isEmpty {
+            for item in localFiles where item.isDirectory {
+                var rel = item.relativePath
+                if rel.hasPrefix("/") { rel.removeFirst() }
+                guard !rel.isEmpty else { continue }
+                let name = (rel as NSString).lastPathComponent
+                if enabledRules.contains(where: {
+                    $0.matches(name: name, relativePath: rel, isDirectory: true, size: item.size, modified: item.modified)
+                }) {
+                    skippedLocalDirs.insert(rel)
+                }
+            }
+        }
 
         // Build index of local files keyed by relative path
         var localDict: [String: LocalFileItem] = [:]
         for item in localFiles {
             var rel = item.relativePath
             if rel.hasPrefix("/") { rel.removeFirst() }
-            if !rel.isEmpty && !SyncIgnoreFilter.shouldIgnore(relativePath: rel, patterns: ignorePatterns) {
+            guard !rel.isEmpty else { continue }
+            if !shouldSkipSyncItem(
+                relativePath: rel,
+                isDirectory: item.isDirectory,
+                size: item.size,
+                modified: item.modified,
+                ignorePatterns: ignorePatterns,
+                enabledRules: enabledRules,
+                skippedDirectoryPrefixes: skippedLocalDirs
+            ) {
                 localDict[rel] = item
+            }
+        }
+
+        var skippedRemoteDirs: Set<String> = []
+        if !enabledRules.isEmpty {
+            for entry in remoteFiles where entry.isDirectory {
+                let normalized = RemotePath.normalize(entry.path)
+                guard normalized.hasPrefix(normalizedRemoteRoot) else { continue }
+                var rel = String(normalized.dropFirst(normalizedRemoteRoot.count))
+                if rel.hasPrefix("/") { rel.removeFirst() }
+                guard !rel.isEmpty else { continue }
+                if enabledRules.contains(where: {
+                    $0.matches(name: entry.name, relativePath: rel, isDirectory: true, size: entry.size, modified: entry.modified)
+                }) {
+                    skippedRemoteDirs.insert(rel)
+                }
             }
         }
 
@@ -198,7 +241,16 @@ public enum SyncEngine {
             guard normalized.hasPrefix(normalizedRemoteRoot) else { continue }
             var rel = String(normalized.dropFirst(normalizedRemoteRoot.count))
             if rel.hasPrefix("/") { rel.removeFirst() }
-            if !rel.isEmpty && !SyncIgnoreFilter.shouldIgnore(relativePath: rel, patterns: ignorePatterns) {
+            guard !rel.isEmpty else { continue }
+            if !shouldSkipSyncItem(
+                relativePath: rel,
+                isDirectory: entry.isDirectory,
+                size: entry.size,
+                modified: entry.modified,
+                ignorePatterns: ignorePatterns,
+                enabledRules: enabledRules,
+                skippedDirectoryPrefixes: skippedRemoteDirs
+            ) {
                 remoteDict[rel] = entry
             }
         }
@@ -441,5 +493,44 @@ public enum SyncEngine {
         }
 
         return SyncPlan(direction: direction, rule: rule, deleteOrphans: deleteOrphans, items: plannedItems)
+    }
+
+    private static func shouldSkipSyncItem(
+        relativePath: String,
+        isDirectory: Bool,
+        size: Int64,
+        modified: Date?,
+        ignorePatterns: [String],
+        enabledRules: [SkipRule],
+        skippedDirectoryPrefixes: Set<String>
+    ) -> Bool {
+        if SyncIgnoreFilter.shouldIgnore(relativePath: relativePath, patterns: ignorePatterns) {
+            return true
+        }
+        guard !enabledRules.isEmpty else { return false }
+
+        let components = relativePath.split(separator: "/").map(String.init)
+        let itemName = components.last ?? relativePath
+
+        var prefix = ""
+        for idx in 0..<max(0, components.count - 1) {
+            let component = components[idx]
+            prefix = prefix.isEmpty ? component : "\(prefix)/\(component)"
+            if skippedDirectoryPrefixes.contains(prefix) {
+                return true
+            }
+            for rule in enabledRules where rule.canEvaluateAncestorDirectoriesSafely {
+                if rule.matches(name: component, relativePath: prefix, isDirectory: true, size: 0, modified: nil) {
+                    return true
+                }
+            }
+        }
+
+        for rule in enabledRules {
+            if rule.matches(name: itemName, relativePath: relativePath, isDirectory: isDirectory, size: size, modified: modified) {
+                return true
+            }
+        }
+        return false
     }
 }
