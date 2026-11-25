@@ -8,7 +8,11 @@ import AetherTransferCore
         WindowGroup("AetherTransfer") {
             MainView(workspace: workspace)
                 .frame(minWidth: 1040, minHeight: 680)
+                .onOpenURL { url in
+                    workspace.handleIncomingURL(url)
+                }
         }
+        .handlesExternalEvents(matching: ["*"])
         .defaultSize(width: 1280, height: 820)
         .commands {
             CommandGroup(after: .appInfo) {
@@ -40,6 +44,10 @@ import AetherTransferCore
                         workspace.closeTab(tab.id)
                     }
                 }.keyboardShortcut("w")
+                Button(L10n.tr("新建空文件…", "New Empty File…")) {
+                    workspace.requestNewEmptyFile()
+                }
+                .keyboardShortcut("n", modifiers: [.command, .option])
                 Divider()
                 Button(L10n.tr("复制所选项目", "Copy Selection")) {
                     workspace.copySelection(remote: !workspace.remoteSelection.isEmpty)
@@ -96,11 +104,22 @@ import AetherTransferCore
                 }
                 Toggle(L10n.tr("检查器面板", "Inspector"), isOn: $workspace.showInspector)
                     .keyboardShortcut("i")
+                Toggle(
+                    L10n.tr("传输日志", "Transcript"),
+                    isOn: Binding(
+                        get: { workspace.rulesAndTranscriptStore.isTranscriptVisible },
+                        set: { workspace.rulesAndTranscriptStore.setTranscriptVisible($0) }
+                    )
+                )
+                .keyboardShortcut("l", modifiers: [.command, .shift])
             }
             CommandMenu(L10n.tr("转到", "Go")) {
                 Button(L10n.tr("后退", "Back")) { workspace.goBack(remote: workspace.connectedProfile != nil) }.keyboardShortcut("[")
                 Button(L10n.tr("前进", "Forward")) { workspace.goForward(remote: workspace.connectedProfile != nil) }.keyboardShortcut("]")
                 Button(L10n.tr("上一级文件夹", "Enclosing Folder")) { workspace.parent(remote: workspace.connectedProfile != nil) }.keyboardShortcut(.upArrow, modifiers: [.command])
+                Button(L10n.tr("前往文件夹…", "Go to Folder…")) { workspace.requestGoToFolder() }
+                    .keyboardShortcut("g", modifiers: [.command, .shift])
+                Divider()
                 Button(L10n.tr("在终端中打开", "Open in Terminal")) { workspace.openTerminal(remote: workspace.connectedProfile != nil) }
             }
         }

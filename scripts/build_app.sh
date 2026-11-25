@@ -59,6 +59,11 @@ cat > "$APP/Contents/Info.plist" <<PLIST
 <key>NSAppleEventsUsageDescription</key><string>AetherTransfer 需要控制「终端」以在当前本地目录或远程 SSH 会话中快速打开命令行窗口。</string>
 <key>ATUpdateFeedURL</key><string>${FEED_URL}</string>
 <key>CFBundleLocalizations</key><array><string>en</string><string>zh-Hans</string></array>
+<key>CFBundleURLTypes</key><array><dict>
+<key>CFBundleTypeRole</key><string>Editor</string>
+<key>CFBundleURLName</key><string>com.aethernative.AetherTransfer.url</string>
+<key>CFBundleURLSchemes</key><array><string>aethertransfer</string><string>sftp</string><string>ftp</string><string>ftps</string></array>
+</dict></array>
 <key>UTExportedTypeDeclarations</key><array><dict>
 <key>UTTypeIdentifier</key><string>com.aethernative.aethertransfer.item</string>
 <key>UTTypeDescription</key><string>AetherTransfer Item</string>

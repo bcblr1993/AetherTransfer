@@ -165,44 +165,7 @@ enum LaunchpadInspectorHelpers {
 
     /// Maps a remote file/folder path to the profile's configured public `siteURL`.
     static func siteWebURL(for remotePath: String, isDirectory: Bool, profile: ServerProfile) -> URL? {
-        let rawSite = profile.siteURL.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !rawSite.isEmpty else { return nil }
-
-        let candidate = rawSite.contains("://") ? rawSite : "https://\(rawSite)"
-        guard var components = URLComponents(string: candidate),
-              let scheme = components.scheme?.lowercased(),
-              scheme == "http" || scheme == "https",
-              let host = components.host, !host.isEmpty else {
-            return nil
-        }
-
-        let normalizedRemote = RemotePath.normalize(remotePath)
-        let normalizedRoot = RemotePath.normalize(profile.initialPath)
-
-        let relative: String
-        if normalizedRoot == "/" {
-            relative = normalizedRemote == "/" ? "" : String(normalizedRemote.dropFirst())
-        } else if normalizedRemote == normalizedRoot {
-            relative = ""
-        } else if normalizedRemote.hasPrefix(normalizedRoot + "/") {
-            relative = String(normalizedRemote.dropFirst(normalizedRoot.count + 1))
-        } else {
-            relative = normalizedRemote == "/" ? "" : String(normalizedRemote.dropFirst())
-        }
-
-        var basePath = components.path
-        while basePath.hasSuffix("/") && basePath.count > 1 {
-            basePath.removeLast()
-        }
-        if basePath == "/" { basePath = "" }
-
-        if relative.isEmpty {
-            components.path = basePath.isEmpty ? (isDirectory ? "/" : "") : (isDirectory && !basePath.hasSuffix("/") ? basePath + "/" : basePath)
-        } else {
-            let joined = "\(basePath)/\(relative)"
-            components.path = isDirectory && !joined.hasSuffix("/") ? joined + "/" : joined
-        }
-        return components.url
+        FileClipboard.siteWebURL(for: remotePath, isDirectory: isDirectory, profile: profile)
     }
 
     /// Parses user-entered octal text (e.g. "0755" or "755") into `POSIXPermissions`.
@@ -270,109 +233,28 @@ enum LaunchpadInspectorHelpers {
     }
 
     /// Exports a standalone macOS `.app` Droplet bundle at `destinationAppURL`.
-    // Wave 3 Integrator: delegate to DropletExporter.exportDroplet(for: profile, remotePath: remotePath, destinationAppURL: destinationAppURL)
     static func exportDropletBundle(for profile: ServerProfile, remotePath: String, destinationAppURL: URL) throws {
-        let fm = FileManager.default
-        let appURL: URL
-        if destinationAppURL.pathExtension.lowercased() == "app" {
-            appURL = destinationAppURL
-        } else {
-            appURL = destinationAppURL.appendingPathExtension("app")
-        }
-
-        if fm.fileExists(atPath: appURL.path) {
-            try fm.removeItem(at: appURL)
-        }
-
-        let contentsURL = appURL.appendingPathComponent("Contents", isDirectory: true)
-        let macOSURL = contentsURL.appendingPathComponent("MacOS", isDirectory: true)
-        let resourcesURL = contentsURL.appendingPathComponent("Resources", isDirectory: true)
-        try fm.createDirectory(at: macOSURL, withIntermediateDirectories: true)
-        try fm.createDirectory(at: resourcesURL, withIntermediateDirectories: true)
-
-        let rawName = profile.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? profile.host : profile.name
-        let displayName = rawName.isEmpty ? "AetherTransfer Droplet" : rawName
-        let shortId = String(profile.id.uuidString.prefix(8)).lowercased()
-        let executableName = "AetherDroplet"
-
-        var plist: [String: Any] = [
-            "CFBundleName": displayName,
-            "CFBundleDisplayName": displayName,
-            "CFBundleIdentifier": "com.aethernative.AetherTransfer.droplet.\(shortId)",
-            "CFBundleVersion": "1.0",
-            "CFBundleShortVersionString": "1.0",
-            "CFBundlePackageType": "APPL",
-            "CFBundleExecutable": executableName,
-            "LSMinimumSystemVersion": "15.0",
-            "CFBundleDocumentTypes": [[
-                "CFBundleTypeName": "Dropped Files and Folders",
-                "CFBundleTypeRole": "Viewer",
-                "LSHandlerRank": "Alternate",
-                "LSItemContentTypes": ["public.item", "public.data", "public.folder"]
-            ]]
-        ]
-
-        if let appIcon = Bundle.main.url(forResource: "AppIcon", withExtension: "icns") {
-            let dstIcon = resourcesURL.appendingPathComponent("AppIcon.icns")
-            try? fm.copyItem(at: appIcon, to: dstIcon)
-            plist["CFBundleIconFile"] = "AppIcon"
-        }
-
-        let plistData = try PropertyListSerialization.data(fromPropertyList: plist, format: .xml, options: 0)
-        try plistData.write(to: contentsURL.appendingPathComponent("Info.plist"), options: .atomic)
-
-        var components = URLComponents()
-        components.scheme = "aethertransfer"
-        components.host = "upload"
-        components.queryItems = [
-            URLQueryItem(name: "profileId", value: profile.id.uuidString),
-            URLQueryItem(name: "remotePath", value: RemotePath.normalize(remotePath))
-        ]
-        let baseDeepLink = components.url?.absoluteString ?? "aethertransfer://upload?profileId=\(profile.id.uuidString)"
-        let quotedLink = ShellEscape.singleQuoted(baseDeepLink)
-
-        let launcherScript = """
-        #!/bin/zsh
-        set -euo pipefail
-        if [[ $# -gt 0 ]]; then
-            /usr/bin/open -b com.aethernative.AetherTransfer "$@"
-            /usr/bin/open \(quotedLink) --args "$@"
-        else
-            /usr/bin/open \(quotedLink)
-        fi
-        """
-        let execURL = macOSURL.appendingPathComponent(executableName)
-        try launcherScript.write(to: execURL, atomically: true, encoding: .utf8)
-        try fm.setAttributes([.posixPermissions: 0o755], ofItemAtPath: execURL.path)
+        let appURL = destinationAppURL.pathExtension.lowercased() == "app"
+            ? destinationAppURL
+            : destinationAppURL.appendingPathExtension("app")
+        try DropletExporter.exportDroplet(
+            for: profile,
+            remotePath: remotePath,
+            destinationAppURL: appURL
+        )
     }
 }
 
 // MARK: - Workspace Extension for Launchpad, Folder Linking, Inspector & Known Hosts
 
 extension Workspace {
-    /// Connects to a profile while applying Transmit 5 Folder Linking (`defaultLocalPath`) if configured and present on disk.
+    /// Connects to a profile (Folder Linking is handled automatically inside `Workspace.connect(_:credentials:)`).
     func connectApplyingFolderLink(_ profile: ServerProfile, credentials: Credentials) {
-        let localTarget = profile.defaultLocalPath.trimmingCharacters(in: .whitespacesAndNewlines)
-        if !localTarget.isEmpty {
-            var isDir: ObjCBool = false
-            if FileManager.default.fileExists(atPath: localTarget, isDirectory: &isDir), isDir.boolValue {
-                navigateLocal(to: localTarget)
-            }
-        }
         connect(profile, credentials: credentials)
     }
 
     func connectSavedApplyingFolderLink(_ profile: ServerProfile) {
-        do {
-            let saved = try CredentialStore.loadCredentials(id: profile.id)
-            if profile.needsPasswordPrompt(for: saved) {
-                passwordPrompt = profile
-                return
-            }
-            connectApplyingFolderLink(profile, credentials: saved)
-        } catch {
-            self.error = error.localizedDescription
-        }
+        connectSaved(profile)
     }
 
     /// Exports a standalone macOS `.app` droplet for a saved bookmark.
@@ -385,18 +267,30 @@ extension Workspace {
         panel.allowedContentTypes = [.applicationBundle]
         panel.canCreateDirectories = true
 
-        guard panel.runModal() == .OK, let destinationURL = panel.url else { return }
-        do {
-            let targetRemote = profile.initialPath.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "/" : profile.initialPath
-            // Wave 3 Integrator: delegate to DropletExporter.exportDroplet(for: profile, remotePath: targetRemote, destinationAppURL: destinationURL)
-            try LaunchpadInspectorHelpers.exportDropletBundle(
-                for: profile,
-                remotePath: targetRemote,
-                destinationAppURL: destinationURL
-            )
-            flashNotice(L10n.tr("已保存 Droplet：\(destinationURL.lastPathComponent)", "Saved Droplet: \(destinationURL.lastPathComponent)"))
-        } catch {
-            self.error = L10n.tr("保存 Droplet 失败：\(error.localizedDescription)", "Failed to save Droplet: \(error.localizedDescription)")
+        guard panel.runModal() == .OK, let selectedURL = panel.url else { return }
+        let destinationURL = selectedURL.pathExtension.lowercased() == "app"
+            ? selectedURL
+            : selectedURL.appendingPathExtension("app")
+        let targetRemote = profile.initialPath.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "/" : profile.initialPath
+
+        Task { @MainActor [weak self] in
+            do {
+                let exportedURL = try await Task.detached(priority: .userInitiated) {
+                    try DropletExporter.exportDroplet(
+                        for: profile,
+                        remotePath: targetRemote,
+                        destinationAppURL: destinationURL
+                    )
+                }.value
+                self?.rulesAndTranscriptStore.appendTranscript(
+                    for: profile,
+                    category: .command,
+                    message: "Exported Droplet app '\(exportedURL.lastPathComponent)' -> \(targetRemote)"
+                )
+                self?.flashNotice(L10n.tr("已保存 Droplet：\(exportedURL.lastPathComponent)", "Saved Droplet: \(exportedURL.lastPathComponent)"))
+            } catch {
+                self?.error = L10n.tr("保存 Droplet 失败：\(error.localizedDescription)", "Failed to save Droplet: \(error.localizedDescription)")
+            }
         }
     }
 

@@ -184,6 +184,7 @@ public enum DefaultConflictPreference: String, CaseIterable, Identifiable, Senda
     private var localTask: Task<Void, Never>?
     private var localGeneration = UUID()
     private var remoteGeneration = UUID()
+    private var pendingDropletUpload: (urls: [URL], profile: ServerProfile, remotePath: String)?
 
     struct HostChallenge: Identifiable {
         let id = UUID()
@@ -318,6 +319,7 @@ public enum DefaultConflictPreference: String, CaseIterable, Identifiable, Senda
         }
 
         refreshLocal()
+        _ = rulesAndTranscriptStore
 
         if autoCheckDefault {
             Task { @MainActor [weak self] in
@@ -475,6 +477,11 @@ public enum DefaultConflictPreference: String, CaseIterable, Identifiable, Senda
             do { try CredentialStore.save(password, id: profile.id) }
             catch { self.error = error.localizedDescription }
         }
+        if let pending = pendingDropletUpload, pending.profile.id == profile.id {
+            pendingDropletUpload = nil
+            enqueueDropletUpload(pending.urls, to: profile, credentials: credentials, remotePath: pending.remotePath)
+            return
+        }
         connect(profile, credentials: credentials)
     }
 
@@ -484,17 +491,48 @@ public enum DefaultConflictPreference: String, CaseIterable, Identifiable, Senda
         selectedServer = profile.id; remotePath = RemotePath.normalize(profile.initialPath)
         remoteHistory = NavigationHistory(initialPath: remotePath)
         remoteFiles = []; connecting = true
+
+        let linkedLocal = profile.defaultLocalPath.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !linkedLocal.isEmpty {
+            var isDir: ObjCBool = false
+            if FileManager.default.fileExists(atPath: linkedLocal, isDirectory: &isDir), isDir.boolValue {
+                let normalizedLinked = URL(fileURLWithPath: linkedLocal).standardizedFileURL.path
+                if URL(fileURLWithPath: localPath).standardizedFileURL.path != normalizedLinked {
+                    localHistory.navigateTo(normalizedLinked)
+                    localPath = localHistory.currentPath
+                    refreshLocal()
+                }
+            }
+        }
+
         let title = profile.name.isEmpty ? profile.host : profile.name
         tabManager.updateActiveTab(localPath: localPath, remotePath: remotePath, profileId: profile.id, profileName: title, title: title)
         syncNavManager.updateRoots(localRoot: localPath, remoteRoot: remotePath)
+
+        let endpoint = profile.host.isEmpty ? title : "\(profile.host):\(profile.port)"
+        let userLabel = profile.username.isEmpty ? "-" : profile.username
+        rulesAndTranscriptStore.appendTranscript(
+            for: profile,
+            category: .connect,
+            message: "Connecting (\(profile.protocolKind.title)) user=\(userLabel) host=\(endpoint) path=\(remotePath)"
+        )
         refreshRemote()
     }
 
     func disconnect() {
+        let previousProfile = connectedProfile
         browseTask?.cancel(); remoteGeneration = UUID(); connectedProfile = nil; remoteFiles = []
         remoteSelection = []; connecting = false; loadingRemote = false
         tabManager.clearActiveConnection(fallbackTitle: L10n.tr("本地工作区", "Local Workspace"))
         saveActiveTabSnapshot()
+        if let previousProfile {
+            let label = previousProfile.name.isEmpty ? previousProfile.host : previousProfile.name
+            rulesAndTranscriptStore.appendTranscript(
+                for: previousProfile,
+                category: .connect,
+                message: "Disconnected from \(label)"
+            )
+        }
     }
 
     func approveHostKey() {
@@ -578,14 +616,29 @@ public enum DefaultConflictPreference: String, CaseIterable, Identifiable, Senda
         browseTask?.cancel()
         let path = remotePath, generation = UUID()
         remoteGeneration = generation; loadingRemote = true
+        rulesAndTranscriptStore.appendTranscript(
+            for: client.profile,
+            category: .command,
+            message: "LIST \(path)"
+        )
         browseTask = Task {
             do {
                 let files = try await client.list(path)
                 guard generation == remoteGeneration else { return }
                 remoteFiles = files; remoteSelection = []
+                rulesAndTranscriptStore.appendTranscript(
+                    for: client.profile,
+                    category: .response,
+                    message: "Listed \(files.count) item(s) in \(path)"
+                )
             } catch let failure as TransferError {
                 guard generation == remoteGeneration else { return }
                 if case .hostKeyRequired(let key, let changed) = failure, !changed {
+                    rulesAndTranscriptStore.appendTranscript(
+                        for: client.profile,
+                        category: .connect,
+                        message: "Host key verification required for \(client.profile.host)"
+                    )
                     hostChallenge = HostChallenge(key: key, profile: client.profile)
                 } else { error = failure.localizedDescription }
             } catch is CancellationError { }
@@ -621,6 +674,11 @@ public enum DefaultConflictPreference: String, CaseIterable, Identifiable, Senda
         guard let client else { error = L10n.tr("请先连接服务器。", "Connect to a server first."); return }
         guard !entries.isEmpty else { return }
         let target = RemotePath.normalize(remoteDirectory ?? remotePath)
+        rulesAndTranscriptStore.appendTranscript(
+            for: client.profile,
+            category: .command,
+            message: "PUT \(entries.count) item(s) -> \(target)"
+        )
         if target == remotePath {
             enqueueUploads(entries, to: target, existing: remoteFiles.map(\.name), client: client)
             return
@@ -647,7 +705,18 @@ public enum DefaultConflictPreference: String, CaseIterable, Identifiable, Senda
         do {
             guard let (targetName, overwrite) = resolveConflict(entry.name, existing: existing) else { return nil }
             let finalTarget = try RemotePath.join(targetDir, targetName)
-            queue.enqueue(name: targetName, direction: .upload) { [weak self] progress in
+            let remoteURL = FileClipboard.preferredUploadURLString(
+                forRemotePath: finalTarget,
+                isDirectory: false,
+                profile: client.profile
+            )
+            let copyURL = rulesAndTranscriptStore.copyURLAfterUpload
+            queue.enqueue(
+                name: targetName,
+                direction: .upload,
+                copyURLOnComplete: copyURL,
+                remoteURLString: remoteURL
+            ) { [weak self] progress in
                 let activeClient = await MainActor.run { self?.client ?? client }
                 let task = try ResumableTransfer(
                     direction: .upload,
@@ -667,11 +736,28 @@ public enum DefaultConflictPreference: String, CaseIterable, Identifiable, Senda
         let rootURL = URL(fileURLWithPath: entry.path)
         guard let (folderName, finalOverwrite) = resolveConflict(entry.name, existing: existing) else { return nil }
         let baseRemoteFolder = RemotePath.normalize(targetDir + "/" + folderName)
+        let includeHidden = showHidden
+        let activeSkipRules = rulesAndTranscriptStore.skipRules
         Task { [weak self] in
             guard let self else { return }
             do {
                 try await client.mkdirRecursive(baseRemoteFolder)
-                let items = try LocalFiles.walk(rootURL, showHidden: showHidden)
+                let rawItems = try await Task.detached(priority: .userInitiated) {
+                    try LocalFiles.walk(rootURL, showHidden: includeHidden)
+                }.value
+                let items = FileRulesStore.filterLocalItems(
+                    rawItems,
+                    rules: activeSkipRules,
+                    scope: .transfersAndSync
+                )
+                let skippedCount = rawItems.count - items.count
+                if skippedCount > 0 {
+                    self.rulesAndTranscriptStore.appendTranscript(
+                        for: client.profile,
+                        category: .transfer,
+                        message: "Skipped \(skippedCount) item(s) in \(folderName) matching Skip Rules"
+                    )
+                }
                 for item in items {
                     let targetRemote = RemotePath.normalize(baseRemoteFolder + "/" + item.relativePath)
                     if item.isDirectory {
@@ -701,7 +787,13 @@ public enum DefaultConflictPreference: String, CaseIterable, Identifiable, Senda
     /// 下载到指定本地目录（默认当前本地目录）。
     func download(_ entries: [FileEntry], to localDirectory: String? = nil) {
         guard let client else { error = L10n.tr("请先连接服务器。", "Connect to a server first."); return }
+        guard !entries.isEmpty else { return }
         let target = localDirectory ?? localPath
+        rulesAndTranscriptStore.appendTranscript(
+            for: client.profile,
+            category: .command,
+            message: "GET \(entries.count) item(s) -> \(URL(fileURLWithPath: target).lastPathComponent)"
+        )
         let localDir = URL(fileURLWithPath: target)
         var names = (try? FileManager.default.contentsOfDirectory(atPath: target)) ?? []
         for entry in entries {
@@ -806,6 +898,23 @@ public enum DefaultConflictPreference: String, CaseIterable, Identifiable, Senda
     func retryTransfer(_ id: UUID) { queue.retry(id: id) }
     func clearCompletedTransfers() { queue.clearCompleted() }
     func cancelAllTransfers() { queue.cancelAll() }
+
+    func queueMoveToTop(_ id: UUID) {
+        queue.moveToTop(id: id)
+        transferTasks = queue.items
+    }
+
+    @discardableResult
+    func queueRetryAllFailed() -> Int {
+        let count = queue.retryAllFailed()
+        transferTasks = queue.items
+        return count
+    }
+
+    func stopExternalEditSession(id: UUID) {
+        externalEditorManager.removeSession(id: id)
+        activeExternalEditSessions = externalEditorManager.activeSessions()
+    }
 
     func createFolder(remote: Bool) {
         guard let name = askName(
@@ -1081,15 +1190,31 @@ public enum DefaultConflictPreference: String, CaseIterable, Identifiable, Senda
     }
 
     // MARK: - External Editor with Auto-Upload on Save (Transmit Parity)
+    private func openFileWithPreferredEditor(_ fileURL: URL) {
+        let editorPath = rulesAndTranscriptStore.preferredExternalEditorPath.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !editorPath.isEmpty && FileManager.default.fileExists(atPath: editorPath) {
+            NSWorkspace.shared.open(
+                [fileURL],
+                withApplicationAt: URL(fileURLWithPath: editorPath),
+                configuration: NSWorkspace.OpenConfiguration()
+            )
+        } else {
+            NSWorkspace.shared.open(fileURL)
+        }
+    }
+
     private func startExternalEditorWatcher() {
         externalEditorWatchTask?.cancel()
+        let manager = externalEditorManager
         externalEditorWatchTask = Task { @MainActor [weak self] in
             while !Task.isCancelled {
                 try? await Task.sleep(nanoseconds: 2_000_000_000)
-                guard let self else { return }
-                let modifiedSessions = self.externalEditorManager.drainModifiedSessions()
+                guard !Task.isCancelled, let self else { return }
+                let modifiedSessions = await Task.detached(priority: .utility) {
+                    manager.drainModifiedSessions()
+                }.value
                 guard !modifiedSessions.isEmpty else { continue }
-                self.activeExternalEditSessions = self.externalEditorManager.activeSessions()
+                self.activeExternalEditSessions = manager.activeSessions()
                 for session in modifiedSessions {
                     let creds = self.loadCredentials(for: session.profile)
                     let sessionClient = RemoteClient(
@@ -1097,12 +1222,29 @@ public enum DefaultConflictPreference: String, CaseIterable, Identifiable, Senda
                         credentials: creds,
                         speedLimitBytesPerSec: self.queue.speedLimitBytesPerSec
                     )
+                    self.rulesAndTranscriptStore.appendTranscript(
+                        for: session.profile,
+                        category: .transfer,
+                        message: "External editor change detected; auto-uploading \(session.entryName) -> \(session.remotePath)"
+                    )
+                    let remoteURL = FileClipboard.preferredUploadURLString(
+                        forRemotePath: session.remotePath,
+                        isDirectory: false,
+                        profile: session.profile
+                    )
                     self.queue.enqueue(
                         name: "\(L10n.tr("外部编辑自动回传", "Auto-Save Upload")): \(session.entryName)",
-                        direction: .upload
+                        direction: .upload,
+                        copyURLOnComplete: false,
+                        remoteURLString: remoteURL
                     ) { [weak self] progress in
                         try await sessionClient.upload(session.localFileURL, to: session.remotePath, overwrite: true, progress: progress)
                         await MainActor.run {
+                            self?.rulesAndTranscriptStore.appendTranscript(
+                                for: session.profile,
+                                category: .transfer,
+                                message: "External editor auto-upload completed: \(session.entryName) -> \(session.remotePath)"
+                            )
                             self?.flashNotice(L10n.tr("已自动回传外部修改：\(session.entryName)", "Auto-uploaded saved changes: \(session.entryName)"))
                             if self?.connectedProfile?.id == session.profile.id {
                                 self?.refreshRemote()
@@ -1114,28 +1256,33 @@ public enum DefaultConflictPreference: String, CaseIterable, Identifiable, Senda
         }
     }
 
-    func openInExternalEditor(_ entry: FileEntry, remote: Bool) {
+    func openInExternalEditor(_ entry: FileEntry, remote: Bool, clientOverride: RemoteClient? = nil) {
         guard !entry.isDirectory else { return }
         if !remote {
-            NSWorkspace.shared.open(URL(fileURLWithPath: entry.path))
+            openFileWithPreferredEditor(URL(fileURLWithPath: entry.path))
             return
         }
-        guard let client else { return }
+        guard let activeClient = clientOverride ?? client else { return }
         let sessionDir = externalEditorManager.stagingRootDirectory
             .appendingPathComponent(UUID().uuidString, isDirectory: true)
         try? FileManager.default.createDirectory(at: sessionDir, withIntermediateDirectories: true)
         let localFileURL = sessionDir.appendingPathComponent(entry.name)
         Task {
             do {
-                try await client.download(entry.path, to: localFileURL, overwrite: true)
+                try await activeClient.download(entry.path, to: localFileURL, overwrite: true)
                 _ = try externalEditorManager.registerSession(
                     entryName: entry.name,
                     remotePath: entry.path,
                     localFileURL: localFileURL,
-                    profile: client.profile
+                    profile: activeClient.profile
                 )
                 self.activeExternalEditSessions = externalEditorManager.activeSessions()
-                NSWorkspace.shared.open(localFileURL)
+                self.openFileWithPreferredEditor(localFileURL)
+                self.rulesAndTranscriptStore.appendTranscript(
+                    for: activeClient.profile,
+                    category: .transfer,
+                    message: "Opened \(entry.name) in external editor (auto-upload active)"
+                )
                 flashNotice(L10n.tr("已在外部编辑器打开 \(entry.name)，保存后将自动回传",
                                     "Opened \(entry.name) in external editor; saving will auto-upload"))
             } catch {
@@ -1284,21 +1431,90 @@ public enum DefaultConflictPreference: String, CaseIterable, Identifiable, Senda
         return decrypted.count
     }
 
-    // MARK: - Menu Bar Droplet Upload (Drop files onto any saved ServerProfile)
-    func uploadDroppedURLs(_ urls: [URL], to profile: ServerProfile) {
+    // MARK: - Menu Bar & Standalone Droplet Upload (Drop files onto any saved ServerProfile)
+    func uploadDroppedURLs(_ urls: [URL], to profile: ServerProfile, remotePath targetRemoteOverride: String? = nil) {
+        guard !urls.isEmpty else { return }
+        let trimmedOverride = targetRemoteOverride?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let targetRemoteDir = RemotePath.normalize(trimmedOverride.isEmpty ? profile.initialPath : trimmedOverride)
         let creds = loadCredentials(for: profile)
+        if profile.needsPasswordPrompt(for: creds) {
+            pendingDropletUpload = (urls: urls, profile: profile, remotePath: targetRemoteDir)
+            passwordPrompt = profile
+            return
+        }
+        enqueueDropletUpload(urls, to: profile, credentials: creds, remotePath: targetRemoteDir)
+    }
+
+    private func enqueueDropletUpload(_ urls: [URL], to profile: ServerProfile, credentials creds: Credentials, remotePath remoteDir: String) {
         let targetClient = RemoteClient(profile: profile, credentials: creds, speedLimitBytesPerSec: queue.speedLimitBytesPerSec)
-        let remoteDir = RemotePath.normalize(profile.initialPath)
+        let serverLabel = profile.name.isEmpty ? profile.host : profile.name
+        let includeHidden = showHidden
+        let activeSkipRules = rulesAndTranscriptStore.skipRules
+        let copyURL = rulesAndTranscriptStore.copyURLAfterUpload
+
+        rulesAndTranscriptStore.appendTranscript(
+            for: profile,
+            category: .command,
+            message: "Droplet upload \(urls.count) item(s) -> \(remoteDir)"
+        )
+
         for url in urls {
             let name = url.lastPathComponent
-            guard let targetRemote = try? RemotePath.join(remoteDir, name) else { continue }
-            queue.enqueue(name: "[\(profile.name.isEmpty ? profile.host : profile.name)] \(name)", direction: .upload) { [weak self] progress in
-                try await targetClient.upload(url, to: targetRemote, overwrite: true, progress: progress)
-                await MainActor.run {
-                    if self?.connectedProfile?.id == profile.id {
-                        self?.refreshRemote()
+            let isDir = (try? url.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true
+            if isDir {
+                guard let baseRemoteFolder = try? RemotePath.join(remoteDir, name) else { continue }
+                Task { [weak self] in
+                    guard let self else { return }
+                    do {
+                        try await targetClient.mkdirRecursive(baseRemoteFolder)
+                        let rawItems = try await Task.detached(priority: .userInitiated) {
+                            try LocalFiles.walk(url, showHidden: includeHidden)
+                        }.value
+                        let items = FileRulesStore.filterLocalItems(rawItems, rules: activeSkipRules, scope: .transfersAndSync)
+                        for item in items {
+                            let itemRemote = RemotePath.normalize(baseRemoteFolder + "/" + item.relativePath)
+                            if item.isDirectory {
+                                try await targetClient.mkdirRecursive(itemRemote)
+                            } else {
+                                try await targetClient.mkdirRecursive(RemotePath.parent(itemRemote))
+                                queue.enqueue(
+                                    name: "[\(serverLabel)] \(name)/\(item.relativePath)",
+                                    direction: .upload
+                                ) { [weak self] progress in
+                                    try await targetClient.upload(item.fileURL, to: itemRemote, overwrite: true, progress: progress)
+                                    await MainActor.run {
+                                        if self?.connectedProfile?.id == profile.id {
+                                            self?.refreshRemote()
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        self.flashNotice(L10n.tr("闪电上传已入队：\(name)", "Droplet folder upload queued: \(name)"))
+                    } catch {
+                        self.error = error.localizedDescription
                     }
-                    self?.flashNotice(L10n.tr("闪电上传完成：\(name)", "Droplet upload completed: \(name)"))
+                }
+            } else {
+                guard let targetRemote = try? RemotePath.join(remoteDir, name) else { continue }
+                let remoteURL = FileClipboard.preferredUploadURLString(
+                    forRemotePath: targetRemote,
+                    isDirectory: false,
+                    profile: profile
+                )
+                queue.enqueue(
+                    name: "[\(serverLabel)] \(name)",
+                    direction: .upload,
+                    copyURLOnComplete: copyURL,
+                    remoteURLString: remoteURL
+                ) { [weak self] progress in
+                    try await targetClient.upload(url, to: targetRemote, overwrite: true, progress: progress)
+                    await MainActor.run {
+                        if self?.connectedProfile?.id == profile.id {
+                            self?.refreshRemote()
+                        }
+                        self?.flashNotice(L10n.tr("闪电上传完成：\(name)", "Droplet upload completed: \(name)"))
+                    }
                 }
             }
         }
@@ -1346,11 +1562,20 @@ public enum DefaultConflictPreference: String, CaseIterable, Identifiable, Senda
         let currentRule = syncRule
         let currentDelete = syncDeleteOrphans
         let ignorePatterns = SyncIgnoreFilter.parsePatterns(syncIgnorePatternsText)
+        let activeSkipRules = rulesAndTranscriptStore.skipRules
+
+        rulesAndTranscriptStore.appendTranscript(
+            for: client.profile,
+            category: .sync,
+            message: "Analyzing sync: \(currentLocal) <-> \(currentRemote)"
+        )
 
         Task {
             do {
                 let localRoot = URL(fileURLWithPath: currentLocal)
-                let locals = try LocalFiles.walk(localRoot, showHidden: currentHidden)
+                let locals = try await Task.detached(priority: .userInitiated) {
+                    try LocalFiles.walk(localRoot, showHidden: currentHidden)
+                }.value
                 let remotes = try await client.listRecursive(currentRemote)
                 let plan = SyncEngine.generatePlan(
                     localRoot: localRoot,
@@ -1360,7 +1585,8 @@ public enum DefaultConflictPreference: String, CaseIterable, Identifiable, Senda
                     direction: currentDirection,
                     rule: currentRule,
                     deleteOrphans: currentDelete,
-                    ignorePatterns: ignorePatterns
+                    ignorePatterns: ignorePatterns,
+                    skipRules: activeSkipRules
                 )
 
                 await MainActor.run {
@@ -1383,6 +1609,7 @@ public enum DefaultConflictPreference: String, CaseIterable, Identifiable, Senda
     func recalculateSyncPlan() {
         let localRoot = URL(fileURLWithPath: localPath)
         let ignorePatterns = SyncIgnoreFilter.parsePatterns(syncIgnorePatternsText)
+        let activeSkipRules = rulesAndTranscriptStore.skipRules
         self.syncPlan = SyncEngine.generatePlan(
             localRoot: localRoot,
             localFiles: cachedSyncLocalFiles,
@@ -1391,7 +1618,8 @@ public enum DefaultConflictPreference: String, CaseIterable, Identifiable, Senda
             direction: syncDirection,
             rule: syncRule,
             deleteOrphans: syncDeleteOrphans,
-            ignorePatterns: ignorePatterns
+            ignorePatterns: ignorePatterns,
+            skipRules: activeSkipRules
         )
     }
 
@@ -1399,6 +1627,12 @@ public enum DefaultConflictPreference: String, CaseIterable, Identifiable, Senda
         guard let plan = syncPlan, let client else { return }
         showSyncSheet = false
         self.syncPlan = nil
+
+        rulesAndTranscriptStore.appendTranscript(
+            for: client.profile,
+            category: .sync,
+            message: "Executing sync plan: \(plan.uploadItems.count) upload, \(plan.downloadItems.count) download, \(plan.deleteItems.count) delete (deleteOrphans=\(plan.deleteOrphans))"
+        )
 
         Task { [weak self] in
             guard let self else { return }
@@ -1431,12 +1665,30 @@ public enum DefaultConflictPreference: String, CaseIterable, Identifiable, Senda
 
                 case .deleteRemote:
                     if plan.deleteOrphans, let remotePath = item.remotePath {
-                        try? await client.remove(remotePath, directory: item.isDirectory)
+                        do {
+                            try await client.remove(remotePath, directory: item.isDirectory)
+                            rulesAndTranscriptStore.appendTranscript(
+                                for: client.profile,
+                                category: .sync,
+                                message: "Sync deleted remote: \(remotePath)"
+                            )
+                        } catch {
+                            self.error = error.localizedDescription
+                        }
                     }
 
                 case .deleteLocal:
                     if plan.deleteOrphans, let localURL = item.localURL {
-                        try? FileManager.default.removeItem(at: localURL)
+                        do {
+                            try FileManager.default.removeItem(at: localURL)
+                            rulesAndTranscriptStore.appendTranscript(
+                                for: client.profile,
+                                category: .sync,
+                                message: "Sync deleted local: \(item.relativePath)"
+                            )
+                        } catch {
+                            self.error = error.localizedDescription
+                        }
                     }
 
                 case .skipIdentical:
@@ -1444,6 +1696,11 @@ public enum DefaultConflictPreference: String, CaseIterable, Identifiable, Senda
                 }
             }
 
+            rulesAndTranscriptStore.appendTranscript(
+                for: client.profile,
+                category: .sync,
+                message: "Sync execution dispatched (\(plan.activeItems.count) active item(s))"
+            )
             refreshLocal()
             refreshRemote()
         }
@@ -1484,9 +1741,18 @@ public enum DefaultConflictPreference: String, CaseIterable, Identifiable, Senda
     }
 
     @discardableResult
-    func enqueueTransfer(name: String, direction: TransferDirection, operation: @escaping TransferOperation,
+    func enqueueTransfer(name: String, direction: TransferDirection,
+                         copyURLOnComplete: Bool = false, remoteURLString: String? = nil,
+                         operation: @escaping TransferOperation,
                          onFinish: TransferFinishHandler? = nil) -> UUID {
-        return queue.enqueue(name: name, direction: direction, operation: operation, onFinish: onFinish)
+        return queue.enqueue(
+            name: name,
+            direction: direction,
+            copyURLOnComplete: copyURLOnComplete,
+            remoteURLString: remoteURLString,
+            operation: operation,
+            onFinish: onFinish
+        )
     }
 
     // MARK: - Compress and Upload
@@ -1508,12 +1774,13 @@ public enum DefaultConflictPreference: String, CaseIterable, Identifiable, Senda
                 try ArchiveHelper.createZip(from: sourceURLs, destinationZipURL: tempZip)
                 let targetRemote = try RemotePath.join(remotePath, zipName)
                 queue.enqueue(name: "\(L10n.tr("压缩并上传", "Compress & Upload")): \(zipName)", direction: .upload) { [weak self] progress in
+                    defer { try? FileManager.default.removeItem(at: tempZip) }
                     let activeClient = await MainActor.run { self?.client ?? client }
                     try await activeClient.upload(tempZip, to: targetRemote, overwrite: true, progress: progress)
-                    try? FileManager.default.removeItem(at: tempZip)
                     await MainActor.run { self?.refreshRemote() }
                 }
             } catch {
+                try? FileManager.default.removeItem(at: tempZip)
                 await MainActor.run {
                     self.error = L10n.tr("压缩并上传失败: \(error.localizedDescription)",
                                          "Compress and upload failed: \(error.localizedDescription)")

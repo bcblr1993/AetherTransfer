@@ -23,6 +23,7 @@ private enum InspectorTab: String, CaseIterable, Identifiable {
 
 struct FileInspectorView: View {
     let entry: FileEntry?
+    var isRemoteOverride: Bool? = nil
     @ObservedObject var workspace: Workspace
     @State private var activeTab: InspectorTab = .general
 
@@ -44,7 +45,7 @@ struct FileInspectorView: View {
             .padding(.bottom, 10)
 
             if let item = entry {
-                let isRemote = workspace.isRemoteEntry(item)
+                let isRemote = isRemoteOverride ?? workspace.isRemoteEntry(item)
 
                 Picker("", selection: $activeTab) {
                     ForEach(InspectorTab.allCases) { tab in

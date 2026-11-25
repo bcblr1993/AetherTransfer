@@ -8,7 +8,6 @@ struct ActivityQueueDrawer: View {
     @ObservedObject var workspace: Workspace
     @ObservedObject private var store: RulesAndTranscriptStore
 
-    @State private var selectedTab: ActivityDrawerTab = .queue
     @State private var selectedFilter: TransferFilter = .all
     @State private var selectedTranscriptCategory: TranscriptCategory? = nil
     @State private var transcriptSearch: String = ""
@@ -43,7 +42,7 @@ struct ActivityQueueDrawer: View {
         VStack(spacing: 0) {
             drawerHeaderBar
             Divider()
-            if selectedTab == .queue {
+            if store.activeDrawerTab == .queue {
                 queueFilterStrip
                 Divider()
                 queueContent
@@ -59,7 +58,7 @@ struct ActivityQueueDrawer: View {
 
     private var drawerHeaderBar: some View {
         HStack(spacing: 10) {
-            Picker("", selection: $selectedTab) {
+            Picker("", selection: $store.activeDrawerTab) {
                 ForEach(ActivityDrawerTab.allCases) { tab in
                     Text(tab.localizedTitle).tag(tab)
                 }
@@ -69,7 +68,7 @@ struct ActivityQueueDrawer: View {
             .accessibilityLabel(L10n.tr("活动面板视图", "Activity Drawer Mode"))
             .frame(width: 210)
 
-            if selectedTab == .queue {
+            if store.activeDrawerTab == .queue {
                 queueHeaderMetricsAndActions
             } else {
                 transcriptHeaderMetricsAndActions

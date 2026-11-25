@@ -624,11 +624,7 @@ struct ColumnBrowserView: View {
     }
 
     private func activateEntry(_ entry: FileEntry) {
-        if !entry.isDirectory && TextFileHelper.isTextFileName(entry.name) {
-            workspace.openEditorInPane(for: entry, role: role, layout: layout)
-        } else {
-            workspace.openEntry(entry, in: role, layout: layout)
-        }
+        workspace.activateEntry(entry, in: role, layout: layout)
     }
 
     private func handleVerticalKey(delta: Int, proxy: ScrollViewProxy) {
@@ -861,11 +857,7 @@ private struct MillerFilePreviewColumn: View {
 
                     HStack(spacing: 8) {
                         Button {
-                            if role == .leftLocal || role == .primaryRemote {
-                                workspace.openInExternalEditor(entry, remote: role.isRemote)
-                            } else {
-                                workspace.openEditorInPane(for: entry, role: role, layout: layout)
-                            }
+                            workspace.openInExternalEditor(entry, in: role, layout: layout)
                         } label: {
                             Label(L10n.tr("外部编辑", "External Edit"), systemImage: "pencil.and.outline")
                                 .frame(maxWidth: .infinity)

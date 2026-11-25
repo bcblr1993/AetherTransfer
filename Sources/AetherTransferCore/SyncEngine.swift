@@ -507,30 +507,13 @@ public enum SyncEngine {
         if SyncIgnoreFilter.shouldIgnore(relativePath: relativePath, patterns: ignorePatterns) {
             return true
         }
-        guard !enabledRules.isEmpty else { return false }
-
-        let components = relativePath.split(separator: "/").map(String.init)
-        let itemName = components.last ?? relativePath
-
-        var prefix = ""
-        for idx in 0..<max(0, components.count - 1) {
-            let component = components[idx]
-            prefix = prefix.isEmpty ? component : "\(prefix)/\(component)"
-            if skippedDirectoryPrefixes.contains(prefix) {
-                return true
-            }
-            for rule in enabledRules where rule.canEvaluateAncestorDirectoriesSafely {
-                if rule.matches(name: component, relativePath: prefix, isDirectory: true, size: 0, modified: nil) {
-                    return true
-                }
-            }
-        }
-
-        for rule in enabledRules {
-            if rule.matches(name: itemName, relativePath: relativePath, isDirectory: isDirectory, size: size, modified: modified) {
-                return true
-            }
-        }
-        return false
+        return FileRulesStore.shouldSkipItem(
+            relativePath: relativePath,
+            isDirectory: isDirectory,
+            size: size,
+            modified: modified,
+            enabledRules: enabledRules,
+            skippedDirectoryPrefixes: skippedDirectoryPrefixes
+        )
     }
 }

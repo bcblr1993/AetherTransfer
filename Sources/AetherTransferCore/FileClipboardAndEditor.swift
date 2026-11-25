@@ -53,6 +53,58 @@ public enum FileClipboard {
         }
         return (try? profile.url(path: entry.path, directory: entry.isDirectory)) ?? entry.path
     }
+
+    /// Maps a remote path to the bookmark's configured public `siteURL`, if valid.
+    public static func siteWebURL(for remotePath: String, isDirectory: Bool = false, profile: ServerProfile) -> URL? {
+        let rawSite = profile.siteURL.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !rawSite.isEmpty else { return nil }
+
+        let candidate = rawSite.contains("://") ? rawSite : "https://\(rawSite)"
+        guard var components = URLComponents(string: candidate),
+              let scheme = components.scheme?.lowercased(),
+              scheme == "http" || scheme == "https",
+              let host = components.host, !host.isEmpty else {
+            return nil
+        }
+
+        let normalizedRemote = RemotePath.normalize(remotePath)
+        let normalizedRoot = RemotePath.normalize(profile.initialPath)
+
+        let relative: String
+        if normalizedRoot == "/" {
+            relative = normalizedRemote == "/" ? "" : String(normalizedRemote.dropFirst())
+        } else if normalizedRemote == normalizedRoot {
+            relative = ""
+        } else if normalizedRemote.hasPrefix(normalizedRoot + "/") {
+            relative = String(normalizedRemote.dropFirst(normalizedRoot.count + 1))
+        } else {
+            relative = normalizedRemote == "/" ? "" : String(normalizedRemote.dropFirst())
+        }
+
+        var basePath = components.path
+        while basePath.hasSuffix("/") && basePath.count > 1 {
+            basePath.removeLast()
+        }
+        if basePath == "/" { basePath = "" }
+
+        if relative.isEmpty {
+            components.path = basePath.isEmpty ? (isDirectory ? "/" : "") : (isDirectory && !basePath.hasSuffix("/") ? basePath + "/" : basePath)
+        } else {
+            let joined = "\(basePath)/\(relative)"
+            components.path = isDirectory && !joined.hasSuffix("/") ? joined + "/" : joined
+        }
+        return components.url
+    }
+
+    /// Returns the sanitized `siteURL`-mapped URL if configured, otherwise the remote protocol URL.
+    public static func preferredUploadURLString(forRemotePath remotePath: String, isDirectory: Bool = false, profile: ServerProfile) -> String {
+        if let webURL = siteWebURL(for: remotePath, isDirectory: isDirectory, profile: profile) {
+            return TranscriptRedactor.sanitize(webURL.absoluteString)
+        }
+        let normalized = RemotePath.normalize(remotePath)
+        let entry = FileEntry(name: (normalized as NSString).lastPathComponent, path: normalized, isDirectory: isDirectory)
+        return TranscriptRedactor.sanitize(remoteURLString(for: entry, profile: profile))
+    }
 }
 
 // MARK: - External Editor Live File Watcher & Auto-Upload Manager

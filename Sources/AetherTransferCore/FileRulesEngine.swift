@@ -612,10 +612,62 @@ public final class FileRulesStore: @unchecked Sendable {
         scope: RuleScope = .transfersAndSync,
         referenceDate: Date = Date()
     ) -> Bool {
-        for rule in rules where rule.isEnabled && rule.scope.applies(to: scope) {
+        let enabledRules = rules.filter { $0.isEnabled && $0.scope.applies(to: scope) }
+        return shouldSkipItem(
+            relativePath: relativePath,
+            isDirectory: isDirectory,
+            size: size,
+            modified: modified,
+            enabledRules: enabledRules,
+            skippedDirectoryPrefixes: [],
+            referenceDate: referenceDate
+        )
+    }
+
+    /// Evaluates whether an item (or any of its ancestor directories) matches `enabledRules`.
+    public static func shouldSkipItem(
+        relativePath: String,
+        isDirectory: Bool,
+        size: Int64,
+        modified: Date?,
+        enabledRules: [SkipRule],
+        skippedDirectoryPrefixes: Set<String> = [],
+        referenceDate: Date = Date()
+    ) -> Bool {
+        guard !enabledRules.isEmpty else { return false }
+
+        var cleanRel = relativePath
+        if cleanRel.hasPrefix("/") { cleanRel.removeFirst() }
+        guard !cleanRel.isEmpty else { return false }
+
+        let components = cleanRel.split(separator: "/").map(String.init)
+        let itemName = components.last ?? cleanRel
+
+        var prefix = ""
+        for idx in 0..<max(0, components.count - 1) {
+            let component = components[idx]
+            prefix = prefix.isEmpty ? component : "\(prefix)/\(component)"
+            if skippedDirectoryPrefixes.contains(prefix) {
+                return true
+            }
+            for rule in enabledRules where rule.canEvaluateAncestorDirectoriesSafely {
+                if rule.matches(
+                    name: component,
+                    relativePath: prefix,
+                    isDirectory: true,
+                    size: 0,
+                    modified: nil,
+                    referenceDate: referenceDate
+                ) {
+                    return true
+                }
+            }
+        }
+
+        for rule in enabledRules {
             if rule.matches(
-                name: name,
-                relativePath: relativePath,
+                name: itemName,
+                relativePath: cleanRel,
                 isDirectory: isDirectory,
                 size: size,
                 modified: modified,
@@ -625,5 +677,48 @@ public final class FileRulesStore: @unchecked Sendable {
             }
         }
         return false
+    }
+
+    /// Filters a walked local file tree against active skip rules, excluding skipped directories and their descendants.
+    public static func filterLocalItems(
+        _ items: [LocalFileItem],
+        rules: [SkipRule],
+        scope: RuleScope = .transfersAndSync,
+        referenceDate: Date = Date()
+    ) -> [LocalFileItem] {
+        let enabledRules = rules.filter { $0.isEnabled && $0.scope.applies(to: scope) }
+        guard !enabledRules.isEmpty else { return items }
+
+        var skippedDirs: Set<String> = []
+        for item in items where item.isDirectory {
+            var rel = item.relativePath
+            if rel.hasPrefix("/") { rel.removeFirst() }
+            guard !rel.isEmpty else { continue }
+            let name = (rel as NSString).lastPathComponent
+            if enabledRules.contains(where: {
+                $0.matches(
+                    name: name,
+                    relativePath: rel,
+                    isDirectory: true,
+                    size: item.size,
+                    modified: item.modified,
+                    referenceDate: referenceDate
+                )
+            }) {
+                skippedDirs.insert(rel)
+            }
+        }
+
+        return items.filter { item in
+            !shouldSkipItem(
+                relativePath: item.relativePath,
+                isDirectory: item.isDirectory,
+                size: item.size,
+                modified: item.modified,
+                enabledRules: enabledRules,
+                skippedDirectoryPrefixes: skippedDirs,
+                referenceDate: referenceDate
+            )
+        }
     }
 }

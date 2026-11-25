@@ -854,6 +854,41 @@ extension Workspace {
         }
     }
 
+    func openInExternalEditor(_ entry: FileEntry, in role: BrowserPaneRole, layout: PaneLayoutController) {
+        if !role.isRemote {
+            openInExternalEditor(entry, remote: false)
+        } else if role == .secondRemote {
+            guard let secondClient = layout.secondRemoteClient(speedLimit: speedLimit) else { return }
+            openInExternalEditor(entry, remote: true, clientOverride: secondClient)
+        } else {
+            openInExternalEditor(entry, remote: true)
+        }
+    }
+
+    func activateEntry(_ entry: FileEntry, in role: BrowserPaneRole, layout: PaneLayoutController) {
+        if entry.isDirectory {
+            openEntry(entry, in: role, layout: layout)
+            return
+        }
+        switch rulesAndTranscriptStore.doubleClickAction {
+        case .openOrEdit:
+            if TextFileHelper.isTextFileName(entry.name) || fileRulesStore.isAsciiTransferFile(entry.name) {
+                openEditorInPane(for: entry, role: role, layout: layout)
+            } else {
+                openEntry(entry, in: role, layout: layout)
+            }
+        case .transfer:
+            let action = BrowserTransferRouter.oppositeAction(from: role, workspace: self, layout: layout)
+            if action.isEnabled {
+                action.perform([entry])
+            } else {
+                openEntry(entry, in: role, layout: layout)
+            }
+        case .externalEditor:
+            openInExternalEditor(entry, in: role, layout: layout)
+        }
+    }
+
     func openEntry(_ entry: FileEntry, in role: BrowserPaneRole, layout: PaneLayoutController) {
         if entry.isDirectory {
             navigatePane(to: entry.path, role: role, layout: layout)
@@ -1229,6 +1264,8 @@ extension Workspace {
         let normalizedTarget = RemotePath.normalize(remoteDir)
         let showHiddenFlag = showHidden
         let conflictPref = defaultConflictPreference
+        let activeSkipRules = rulesAndTranscriptStore.skipRules
+        let copyURL = rulesAndTranscriptStore.copyURLAfterUpload
 
         Task { [weak self] in
             guard let self else { return }
@@ -1246,9 +1283,10 @@ extension Workspace {
                         let baseRemote = try RemotePath.join(normalizedTarget, targetName)
                         try await targetClient.mkdirRecursive(baseRemote)
                         let entryURL = URL(fileURLWithPath: entry.path)
-                        let items = try await Task.detached(priority: .userInitiated) {
+                        let rawItems = try await Task.detached(priority: .userInitiated) {
                             try LocalFiles.walk(entryURL, showHidden: showHiddenFlag)
                         }.value
+                        let items = FileRulesStore.filterLocalItems(rawItems, rules: activeSkipRules, scope: .transfersAndSync)
                         for item in items {
                             let itemRemote = RemotePath.normalize(baseRemote + "/" + item.relativePath)
                             if item.isDirectory {
@@ -1270,7 +1308,17 @@ extension Workspace {
                         }
                     } else {
                         let remoteDest = try RemotePath.join(normalizedTarget, targetName)
-                        _ = self.enqueueTransfer(name: targetName, direction: .upload) { [weak self] progress in
+                        let remoteURL = FileClipboard.preferredUploadURLString(
+                            forRemotePath: remoteDest,
+                            isDirectory: false,
+                            profile: targetClient.profile
+                        )
+                        _ = self.enqueueTransfer(
+                            name: targetName,
+                            direction: .upload,
+                            copyURLOnComplete: copyURL,
+                            remoteURLString: remoteURL
+                        ) { [weak self] progress in
                             let task = try ResumableTransfer(
                                 direction: .upload,
                                 local: URL(fileURLWithPath: entry.path),

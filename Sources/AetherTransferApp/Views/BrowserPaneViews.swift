@@ -288,9 +288,9 @@ struct BrowserEntryContextMenu: View {
                 }
             }
 
-            if !entry.isDirectory && (role == .leftLocal || role == .primaryRemote) {
+            if !entry.isDirectory {
                 Button(L10n.tr("在外部编辑器中打开 (保存自动回传)", "Open in External Editor (Auto-Upload on Save)")) {
-                    workspace.openInExternalEditor(entry, remote: role == .primaryRemote)
+                    workspace.openInExternalEditor(entry, in: role, layout: layout)
                 }
             }
 
@@ -455,11 +455,16 @@ struct BrowserBackgroundContextMenu: View {
 
 struct MainView: View {
     @ObservedObject var workspace: Workspace
+    @ObservedObject private var rulesStore: RulesAndTranscriptStore
     @StateObject private var appearance = PaneAppearanceState()
     @StateObject private var layout = PaneLayoutController()
     @State private var showConnect = false
-    @State private var showActivities = true
     @State private var query = ""
+
+    init(workspace: Workspace) {
+        self.workspace = workspace
+        self._rulesStore = ObservedObject(wrappedValue: workspace.rulesAndTranscriptStore)
+    }
 
     private var activeLeftRole: BrowserPaneRole {
         (layout.leftPaneSource == .primaryRemote && workspace.connectedProfile != nil)
@@ -514,13 +519,20 @@ struct MainView: View {
         }
     }
 
-    private var inspectedEntry: FileEntry? {
-        if layout.activePaneSide == .right {
-            if let entry = rightSelectedEntries.first { return entry }
+    private var inspectedTarget: (entry: FileEntry, isRemote: Bool)? {
+        if layout.activePaneSide == .right, let entry = rightSelectedEntries.first {
+            return (entry, activeRightRole.isRemote)
         }
-        if let entry = leftSelectedEntries.first { return entry }
-        if let entry = rightSelectedEntries.first { return entry }
-        return workspace.selectedEntry
+        if let entry = leftSelectedEntries.first {
+            return (entry, activeLeftRole.isRemote)
+        }
+        if let entry = rightSelectedEntries.first {
+            return (entry, activeRightRole.isRemote)
+        }
+        if let entry = workspace.selectedEntry {
+            return (entry, workspace.isRemoteEntry(entry))
+        }
+        return nil
     }
 
     var body: some View {
@@ -534,20 +546,8 @@ struct MainView: View {
                     Divider()
 
                     paneWorkspaceView
-                        .background {
-                            // Global pane-aware keyboard shortcuts for Go to Folder (⇧⌘G) & New Empty File (⌥⌘N)
-                            Group {
-                                Button("") { openFocusedGoToFolder() }
-                                    .keyboardShortcut("g", modifiers: [.command, .shift])
-                                Button("") { workspace.createNewFile(in: focusedPaneRole, layout: layout) }
-                                    .keyboardShortcut("n", modifiers: [.command, .option])
-                            }
-                            .frame(width: 0, height: 0)
-                            .opacity(0.001)
-                            .accessibilityHidden(true)
-                        }
 
-                    if showActivities {
+                    if rulesStore.isActivityDrawerVisible {
                         Divider()
                         ActivityQueueDrawer(workspace: workspace)
                             .frame(height: 190)
@@ -559,9 +559,13 @@ struct MainView: View {
 
                 if workspace.showInspector {
                     Divider()
-                    FileInspectorView(entry: inspectedEntry, workspace: workspace)
-                        .frame(width: 290)
-                        .background(.ultraThinMaterial)
+                    FileInspectorView(
+                        entry: inspectedTarget?.entry,
+                        isRemoteOverride: inspectedTarget?.isRemote,
+                        workspace: workspace
+                    )
+                    .frame(width: 290)
+                    .background(.ultraThinMaterial)
                 }
             }
         }
@@ -668,7 +672,7 @@ struct MainView: View {
                 }
                 .help(L10n.tr("显示文件检查器 (⌘I)", "Toggle File Inspector (⌘I)"))
 
-                Button(action: { showActivities.toggle() }) {
+                Button(action: { rulesStore.isActivityDrawerVisible.toggle() }) {
                     HStack(spacing: 4) {
                         Image(systemName: "list.bullet.rectangle")
                         if workspace.activeTransferCount > 0 {
@@ -769,6 +773,18 @@ struct MainView: View {
         .sheet(item: $layout.secondRemoteEditingFile) { ctx in
             SecondRemoteQuickEditorSheet(workspace: workspace, layout: layout, context: ctx)
         }
+        .onAppear {
+            appearance.syncFromWorkspaceViewMode(workspace.viewMode)
+            if workspace.connectedProfile != nil && rulesStore.defaultFocusPane == .remoteWhenConnected {
+                layout.activePaneSide = .right
+            }
+        }
+        .onChange(of: rulesStore.goToFolderRequestCounter) { _, _ in
+            openFocusedGoToFolder()
+        }
+        .onChange(of: rulesStore.newEmptyFileRequestCounter) { _, _ in
+            workspace.createNewFile(in: focusedPaneRole, layout: layout)
+        }
         .onChange(of: workspace.showHidden) { _, _ in
             workspace.refreshLocal()
             if layout.rightPaneSource == .secondLocal {
@@ -792,6 +808,8 @@ struct MainView: View {
                 if layout.leftPaneSource == .primaryRemote {
                     layout.leftPaneSource = .local
                 }
+            } else if rulesStore.defaultFocusPane == .remoteWhenConnected {
+                layout.activePaneSide = .right
             }
         }
     }
@@ -905,7 +923,7 @@ struct MainView: View {
                 VStack(spacing: 0) {
                     RightPaneSourceHeaderBar(layout: layout, workspace: workspace)
                     Divider()
-                    DisconnectedStateView(showConnect: $showConnect) {
+                    DisconnectedStateView(showConnect: $showConnect, workspace: workspace) {
                         workspace.error = L10n.tr("请先连接服务器，再把文件拖到这里上传。",
                                                   "Connect to a server first, then drop files here to upload.")
                     }
@@ -2227,11 +2245,7 @@ struct FilePaneView: View {
     }
 
     private func activateEntry(_ entry: FileEntry) {
-        if !entry.isDirectory && TextFileHelper.isTextFileName(entry.name) {
-            workspace.openEditorInPane(for: entry, role: role, layout: layout)
-        } else {
-            workspace.openEntry(entry, in: role, layout: layout)
-        }
+        workspace.activateEntry(entry, in: role, layout: layout)
     }
 
     private func toggleSortForRole(_ field: FileSortField) {

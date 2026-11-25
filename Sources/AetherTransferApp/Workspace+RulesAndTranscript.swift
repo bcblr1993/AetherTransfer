@@ -174,17 +174,38 @@ final class RulesAndTranscriptStore: ObservableObject {
     @Published var lastUploadedURLString: String?
     @Published private(set) var detectedTerminal: (kind: TerminalAppKind, appURL: URL?)
 
-    // Queue & External Edit & Sync helpers
-    @Published private var prioritizedQueuedIDs: [UUID] = []
-    @Published private var stoppedExternalEditSessionIDs: Set<UUID> = []
+    @Published var isActivityDrawerVisible: Bool = true {
+        didSet { workspace?.objectWillChange.send() }
+    }
+    @Published var activeDrawerTab: ActivityDrawerTab = .queue {
+        didSet { workspace?.objectWillChange.send() }
+    }
+    @Published var goToFolderRequestCounter: Int = 0
+    @Published var newEmptyFileRequestCounter: Int = 0
+
+    var isTranscriptVisible: Bool {
+        isActivityDrawerVisible && activeDrawerTab == .transcript
+    }
+
+    func setTranscriptVisible(_ visible: Bool) {
+        if visible {
+            isActivityDrawerVisible = true
+            activeDrawerTab = .transcript
+        } else if activeDrawerTab == .transcript {
+            isActivityDrawerVisible = false
+        }
+    }
+
+    func requestGoToFolder() {
+        goToFolderRequestCounter &+= 1
+    }
+
+    func requestNewEmptyFile() {
+        newEmptyFileRequestCounter &+= 1
+    }
 
     private var knownTransferStates: [UUID: TransferState] = [:]
     private var resolvedUploadURLs: [UUID: String] = [:]
-    private var previousConnectedProfile: ServerProfile?
-    private var previousRemotePath: String = "/"
-    private var previousLoadingRemote: Bool = false
-    private var baseSyncPlan: SyncPlan?
-    private var lastAppliedFilteredItemIDs: [UUID]?
     private var cancellables: Set<AnyCancellable> = []
     private var transcriptRefreshScheduled = false
 
@@ -226,16 +247,13 @@ final class RulesAndTranscriptStore: ObservableObject {
         self.asciiExtensions = rulesStore.loadAsciiExtensions()
         self.detectedTerminal = TerminalIntegration.detectPreferredTerminal()
 
-        self.previousConnectedProfile = workspace.connectedProfile
-        self.previousRemotePath = workspace.remotePath
-        self.previousLoadingRemote = workspace.loadingRemote
-        self.baseSyncPlan = workspace.syncPlan
         for item in workspace.transferTasks {
             self.knownTransferStates[item.id] = item.state
             if let url = item.remoteURLString, !url.isEmpty {
-                self.resolvedUploadURLs[item.id] = url
+                let sanitized = TranscriptRedactor.sanitize(url)
+                self.resolvedUploadURLs[item.id] = sanitized
                 if item.state == .completed && item.direction == .upload {
-                    self.lastUploadedURLString = url
+                    self.lastUploadedURLString = sanitized
                 }
             }
         }
@@ -261,46 +279,6 @@ final class RulesAndTranscriptStore: ObservableObject {
     }
 
     private func bindWorkspaceObservers(_ workspace: Workspace) {
-        workspace.$connectedProfile
-            .dropFirst()
-            .receive(on: DispatchQueue.main)
-            .sink { [weak self] newProfile in
-                self?.handleConnectedProfileChange(newProfile)
-            }
-            .store(in: &cancellables)
-
-        workspace.$remotePath
-            .dropFirst()
-            .receive(on: DispatchQueue.main)
-            .sink { [weak self] newPath in
-                guard let self, let profile = self.workspace?.connectedProfile else { return }
-                guard newPath != self.previousRemotePath else { return }
-                self.previousRemotePath = newPath
-                self.appendTranscript(
-                    for: profile,
-                    category: .command,
-                    message: "LIST \(newPath)"
-                )
-            }
-            .store(in: &cancellables)
-
-        workspace.$loadingRemote
-            .dropFirst()
-            .receive(on: DispatchQueue.main)
-            .sink { [weak self] isLoading in
-                guard let self, let workspace = self.workspace else { return }
-                let wasLoading = self.previousLoadingRemote
-                self.previousLoadingRemote = isLoading
-                if wasLoading && !isLoading, let profile = workspace.connectedProfile, workspace.error == nil {
-                    self.appendTranscript(
-                        for: profile,
-                        category: .response,
-                        message: "Listed \(workspace.remoteFiles.count) item(s) in \(workspace.remotePath)"
-                    )
-                }
-            }
-            .store(in: &cancellables)
-
         workspace.$error
             .dropFirst()
             .receive(on: DispatchQueue.main)
@@ -326,54 +304,24 @@ final class RulesAndTranscriptStore: ObservableObject {
             .dropFirst()
             .receive(on: DispatchQueue.main)
             .sink { [weak self] plan in
-                self?.handleExternalSyncPlanUpdate(plan)
-            }
-            .store(in: &cancellables)
-
-        workspace.$activeExternalEditSessions
-            .dropFirst()
-            .receive(on: DispatchQueue.main)
-            .sink { [weak self] sessions in
-                guard let self else { return }
-                let activeIDs = Set(sessions.map(\.id))
-                self.stoppedExternalEditSessionIDs = self.stoppedExternalEditSessionIDs.intersection(activeIDs)
-            }
-            .store(in: &cancellables)
-    }
-
-    private func handleConnectedProfileChange(_ newProfile: ServerProfile?) {
-        if let profile = newProfile {
-            let previous = previousConnectedProfile
-            if previous?.id != profile.id || previous?.host != profile.host || previous?.port != profile.port {
-                let endpoint = profile.host.isEmpty ? profile.name : "\(profile.host):\(profile.port)"
-                appendTranscript(
-                    for: profile,
-                    category: .connect,
-                    message: "Connected (\(profile.protocolKind.title)) user=\(profile.username) host=\(endpoint) path=\(profile.initialPath)"
+                guard let self, let activePlan = plan else { return }
+                self.appendTranscript(
+                    for: self.workspace?.connectedProfile,
+                    category: .sync,
+                    message: "Sync plan ready: \(activePlan.uploadItems.count) upload, \(activePlan.downloadItems.count) download, \(activePlan.deleteItems.count) delete, \(activePlan.skipItems.count) skip"
                 )
             }
-            previousRemotePath = workspace?.remotePath ?? profile.initialPath
-        } else if let old = previousConnectedProfile {
-            appendTranscript(
-                for: old,
-                category: .connect,
-                message: "Disconnected from \(old.name.isEmpty ? old.host : old.name)"
-            )
-        }
-        previousConnectedProfile = newProfile
+            .store(in: &cancellables)
     }
 
     private func handleTransferTasksUpdate(_ tasks: [TransferTaskItem]) {
-        let activeQueuedIDs = Set(tasks.filter { $0.state == .queued }.map(\.id))
-        prioritizedQueuedIDs.removeAll { !activeQueuedIDs.contains($0) }
-
         for item in tasks {
             let previousState = knownTransferStates[item.id]
             if previousState == item.state { continue }
             knownTransferStates[item.id] = item.state
 
             if let explicitURL = item.remoteURLString, !explicitURL.isEmpty {
-                resolvedUploadURLs[item.id] = explicitURL
+                resolvedUploadURLs[item.id] = TranscriptRedactor.sanitize(explicitURL)
             }
 
             let profile = workspace?.connectedProfile
@@ -421,7 +369,8 @@ final class RulesAndTranscriptStore: ObservableObject {
         resolvedUploadURLs[item.id] = urlString
         lastUploadedURLString = urlString
 
-        if item.copyURLOnComplete || copyURLAfterUpload {
+        let isSingleFileUpload = item.remoteURLString != nil && !item.name.contains("/")
+        if item.copyURLOnComplete || (copyURLAfterUpload && isSingleFileUpload) {
             NSPasteboard.general.clearContents()
             NSPasteboard.general.setString(urlString, forType: .string)
             appendTranscript(
@@ -441,52 +390,13 @@ final class RulesAndTranscriptStore: ObservableObject {
             return cached
         }
         guard let workspace, let profile = workspace.connectedProfile else { return nil }
-        // Avoid guessing paths for prefixed droplet or auto-save task titles.
-        if item.name.hasPrefix("[") || item.name.contains(": ") {
+        if item.name.hasPrefix("[") || item.name.contains(": ") || item.name.contains("/") {
             return nil
         }
         let cleanName = item.name.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !cleanName.isEmpty else { return nil }
         let candidatePath = RemotePath.normalize(workspace.remotePath + "/" + cleanName)
-        if let webURL = mappedSiteWebURL(remotePath: candidatePath, profile: profile) {
-            return TranscriptRedactor.sanitize(webURL.absoluteString)
-        }
-        let entry = FileEntry(name: (cleanName as NSString).lastPathComponent, path: candidatePath, isDirectory: false)
-        let rawURL = FileClipboard.remoteURLString(for: entry, profile: profile)
-        return TranscriptRedactor.sanitize(rawURL)
-    }
-
-    private func mappedSiteWebURL(remotePath: String, profile: ServerProfile) -> URL? {
-        let rawSite = profile.siteURL.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !rawSite.isEmpty else { return nil }
-        let candidate = rawSite.contains("://") ? rawSite : "https://\(rawSite)"
-        guard var components = URLComponents(string: candidate),
-              let scheme = components.scheme?.lowercased(),
-              scheme == "http" || scheme == "https",
-              let host = components.host, !host.isEmpty else {
-            return nil
-        }
-
-        let normalizedRemote = RemotePath.normalize(remotePath)
-        let normalizedRoot = RemotePath.normalize(profile.initialPath)
-        let relative: String
-        if normalizedRoot == "/" {
-            relative = normalizedRemote == "/" ? "" : String(normalizedRemote.dropFirst())
-        } else if normalizedRemote == normalizedRoot {
-            relative = ""
-        } else if normalizedRemote.hasPrefix(normalizedRoot + "/") {
-            relative = String(normalizedRemote.dropFirst(normalizedRoot.count + 1))
-        } else {
-            relative = normalizedRemote == "/" ? "" : String(normalizedRemote.dropFirst())
-        }
-
-        var basePath = components.path
-        while basePath.hasSuffix("/") && basePath.count > 1 {
-            basePath.removeLast()
-        }
-        if basePath == "/" { basePath = "" }
-        components.path = relative.isEmpty ? (basePath.isEmpty ? "/" : basePath) : "\(basePath)/\(relative)"
-        return components.url
+        return FileClipboard.preferredUploadURLString(forRemotePath: candidatePath, isDirectory: false, profile: profile)
     }
 
     // MARK: - General Preferences Helpers
@@ -592,18 +502,17 @@ final class RulesAndTranscriptStore: ObservableObject {
 
     func filteredTransferTasks(_ filter: TransferFilter) -> [TransferTaskItem] {
         guard let tasks = workspace?.transferTasks else { return [] }
-        let ordered = orderedTransferTasks(tasks)
         switch filter {
         case .all:
-            return ordered
+            return tasks
         case .active:
-            return ordered.filter { $0.state == .queued || $0.state == .inProgress }
+            return tasks.filter { $0.state == .queued || $0.state == .inProgress }
         case .completed:
-            return ordered.filter { $0.state == .completed }
+            return tasks.filter { $0.state == .completed }
         case .failed:
-            return ordered.filter { $0.state == .failed }
+            return tasks.filter { $0.state == .failed }
         case .cancelled:
-            return ordered.filter { $0.state == .cancelled }
+            return tasks.filter { $0.state == .cancelled }
         }
     }
 
@@ -611,29 +520,10 @@ final class RulesAndTranscriptStore: ObservableObject {
         filteredTransferTasks(filter).count
     }
 
-    private func orderedTransferTasks(_ tasks: [TransferTaskItem]) -> [TransferTaskItem] {
-        guard !prioritizedQueuedIDs.isEmpty else { return tasks }
-        var remaining = tasks
-        var promoted: [TransferTaskItem] = []
-        for id in prioritizedQueuedIDs {
-            if let idx = remaining.firstIndex(where: { $0.id == id && $0.state == .queued }) {
-                promoted.append(remaining.remove(at: idx))
-            }
-        }
-        return promoted + remaining
-    }
-
     func moveQueuedTransferToTop(_ id: UUID) {
         guard let workspace else { return }
-        guard let idx = workspace.transferTasks.firstIndex(where: { $0.id == id && $0.state == .queued }) else { return }
-        let item = workspace.transferTasks[idx]
-        prioritizedQueuedIDs.removeAll { $0 == id }
-        prioritizedQueuedIDs.insert(id, at: 0)
-        // Wave 3 Integrator: delegate directly to queue.moveToTop(id: id) in Workspace.swift
-        var updated = workspace.transferTasks
-        let moved = updated.remove(at: idx)
-        updated.insert(moved, at: 0)
-        workspace.transferTasks = updated
+        guard let item = workspace.transferTasks.first(where: { $0.id == id && $0.state == .queued }) else { return }
+        workspace.queueMoveToTop(id)
         appendTranscript(
             for: workspace.connectedProfile,
             category: .transfer,
@@ -644,18 +534,14 @@ final class RulesAndTranscriptStore: ObservableObject {
     @discardableResult
     func retryAllFailedTransfers() -> Int {
         guard let workspace else { return 0 }
-        let failedIDs = workspace.transferTasks.filter { $0.state == .failed }.reversed().map(\.id)
-        guard !failedIDs.isEmpty else { return 0 }
-        // Wave 3 Integrator: delegate directly to queue.retryAllFailed() in Workspace.swift
-        for id in failedIDs {
-            workspace.retryTransfer(id)
-        }
+        let count = workspace.queueRetryAllFailed()
+        guard count > 0 else { return 0 }
         appendTranscript(
             for: workspace.connectedProfile,
             category: .transfer,
-            message: "Retrying \(failedIDs.count) failed transfer(s)"
+            message: "Retrying \(count) failed transfer(s)"
         )
-        return failedIDs.count
+        return count
     }
 
     func resolvedURLString(for item: TransferTaskItem) -> String? {
@@ -707,13 +593,17 @@ final class RulesAndTranscriptStore: ObservableObject {
 
     func resetRulesToDefaults() {
         skipRules = rulesStore.resetRulesToDefaults()
-        applySkipRulesToSyncPreview()
+        if workspace?.syncPlan != nil {
+            workspace?.recalculateSyncPlan()
+        }
         workspace?.flashNotice(L10n.tr("已恢复默认跳过规则", "Restored default skip rules"))
     }
 
     private func persistRulesAndRefreshSync() {
         rulesStore.saveRules(skipRules)
-        applySkipRulesToSyncPreview()
+        if workspace?.syncPlan != nil {
+            workspace?.recalculateSyncPlan()
+        }
     }
 
     func addAsciiExtensions(_ rawInput: String) {
@@ -746,92 +636,9 @@ final class RulesAndTranscriptStore: ObservableObject {
 
     // MARK: - Sync Rules Integration
 
-    private func handleExternalSyncPlanUpdate(_ newPlan: SyncPlan?) {
-        guard let newPlan else {
-            baseSyncPlan = nil
-            lastAppliedFilteredItemIDs = nil
-            return
-        }
-        let incomingIDs = newPlan.items.map(\.id)
-        if incomingIDs == lastAppliedFilteredItemIDs {
-            if var base = baseSyncPlan {
-                let enabledByID = Dictionary(uniqueKeysWithValues: newPlan.items.map { ($0.id, $0.isEnabled) })
-                for idx in base.items.indices {
-                    if let updated = enabledByID[base.items[idx].id] {
-                        base.items[idx].isEnabled = updated
-                    }
-                }
-                baseSyncPlan = base
-            }
-            return
-        }
-        baseSyncPlan = newPlan
-        applySkipRulesToSyncPreview()
-
-        if let activePlan = workspace?.syncPlan {
-            appendTranscript(
-                for: workspace?.connectedProfile,
-                category: .sync,
-                message: "Sync plan ready: \(activePlan.uploadItems.count) upload, \(activePlan.downloadItems.count) download, \(activePlan.deleteItems.count) delete, \(activePlan.skipItems.count) skip"
-            )
-        }
-    }
-
     func recalculateSyncPlanWithRules() {
         guard let workspace else { return }
         workspace.recalculateSyncPlan()
-        // Wave 3 Integrator: pass active skipRules directly into SyncEngine.generatePlan(..., skipRules:)
-        baseSyncPlan = workspace.syncPlan
-        applySkipRulesToSyncPreview()
-    }
-
-    func applySkipRulesToSyncPreview() {
-        guard let workspace, let basePlan = baseSyncPlan else { return }
-        let enabledRules = skipRules.filter { $0.isEnabled && $0.scope.appliesToSync }
-
-        let filteredItems: [SyncItem]
-        if enabledRules.isEmpty {
-            filteredItems = basePlan.items
-        } else {
-            filteredItems = basePlan.items.filter { item in
-                !matchesAnySyncSkipRule(item: item, rules: enabledRules)
-            }
-        }
-
-        let updatedPlan = SyncPlan(
-            direction: basePlan.direction,
-            rule: basePlan.rule,
-            deleteOrphans: basePlan.deleteOrphans,
-            items: filteredItems
-        )
-        lastAppliedFilteredItemIDs = updatedPlan.items.map(\.id)
-        workspace.syncPlan = updatedPlan
-    }
-
-    private func matchesAnySyncSkipRule(item: SyncItem, rules: [SkipRule]) -> Bool {
-        var rel = item.relativePath
-        if rel.hasPrefix("/") { rel.removeFirst() }
-        let components = rel.split(separator: "/").map(String.init)
-        let name = components.last ?? rel
-
-        var prefix = ""
-        for idx in 0..<max(0, components.count - 1) {
-            let component = components[idx]
-            prefix = prefix.isEmpty ? component : "\(prefix)/\(component)"
-            for rule in rules where rule.matchMode != .none && rule.predicates.allSatisfy({ $0.field == .name || $0.field == .path }) {
-                if rule.matches(name: component, relativePath: prefix, isDirectory: true, size: 0, modified: nil) {
-                    return true
-                }
-            }
-        }
-
-        let itemDate = item.sourceDate ?? item.targetDate
-        for rule in rules {
-            if rule.matches(name: name, relativePath: rel, isDirectory: item.isDirectory, size: item.size, modified: itemDate) {
-                return true
-            }
-        }
-        return false
     }
 
     func exportSyncReportMarkdown(_ plan: SyncPlan) {
@@ -863,19 +670,11 @@ final class RulesAndTranscriptStore: ObservableObject {
     // MARK: - External Editor Sessions & Terminal Detection
 
     func visibleExternalEditSessions() -> [ExternalEditorSession] {
-        guard let sessions = workspace?.activeExternalEditSessions else { return [] }
-        return sessions.filter { !stoppedExternalEditSessionIDs.contains($0.id) }
+        workspace?.activeExternalEditSessions ?? []
     }
 
     func stopWatchingExternalEditSession(_ session: ExternalEditorSession) {
-        stoppedExternalEditSessionIDs.insert(session.id)
-        workspace?.activeExternalEditSessions.removeAll { $0.id == session.id }
-        // Remove isolated temp staging folder so ExternalEditorManager stops detecting changes;
-        // Wave 3 Integrator: also call externalEditorManager.removeSession(id: session.id)
-        let folder = session.localFileURL.deletingLastPathComponent()
-        if folder.path.contains("AetherExternalEdit") {
-            try? FileManager.default.removeItem(at: folder)
-        }
+        workspace?.stopExternalEditSession(id: session.id)
         appendTranscript(
             for: session.profile,
             category: .transfer,
@@ -971,5 +770,70 @@ extension Workspace {
     @discardableResult
     func retryAllFailedTransfers() -> Int {
         rulesAndTranscriptStore.retryAllFailedTransfers()
+    }
+
+    func requestGoToFolder() {
+        rulesAndTranscriptStore.requestGoToFolder()
+    }
+
+    func requestNewEmptyFile() {
+        rulesAndTranscriptStore.requestNewEmptyFile()
+    }
+
+    /// Handles `aethertransfer://`, `sftp://`, `ftp://`, `ftps://`, and dropped `file://` URLs via `AetherURLCommand`.
+    func handleIncomingURL(_ url: URL) {
+        if url.isFileURL {
+            if let activeProfile = connectedProfile {
+                uploadDroppedURLs([url], to: activeProfile, remotePath: remotePath)
+            } else {
+                let isDir = (try? url.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) == true
+                let targetDir = isDir ? url.path : url.deletingLastPathComponent().path
+                navigateLocal(to: targetDir)
+            }
+            return
+        }
+
+        rulesAndTranscriptStore.appendTranscript(
+            for: connectedProfile,
+            category: .command,
+            message: "Open URL: \(url.absoluteString)"
+        )
+
+        do {
+            let command = try AetherURLCommand.parse(url, savedProfiles: profiles)
+            switch command {
+            case .upload(let profileId, let targetRemotePath, let localURLs):
+                guard var profile = profiles.first(where: { $0.id == profileId }) else {
+                    self.error = L10n.tr("找不到对应的服务器配置 (ID: \(profileId.uuidString))。",
+                                         "Could not find saved server profile (ID: \(profileId.uuidString)).")
+                    return
+                }
+                if localURLs.isEmpty {
+                    profile.initialPath = targetRemotePath
+                    connectSaved(profile)
+                } else {
+                    uploadDroppedURLs(localURLs, to: profile, remotePath: targetRemotePath)
+                }
+
+            case .connect(let parsedProfile):
+                if let saved = profiles.first(where: { $0.id == parsedProfile.id }) {
+                    connectSaved(saved)
+                } else if parsedProfile.needsPasswordPrompt(for: Credentials()) {
+                    passwordPrompt = parsedProfile
+                } else {
+                    connect(parsedProfile, credentials: Credentials())
+                }
+
+            case .connectProfile(let profileId):
+                guard let saved = profiles.first(where: { $0.id == profileId }) else {
+                    self.error = L10n.tr("找不到对应的服务器配置 (ID: \(profileId.uuidString))。",
+                                         "Could not find saved server profile (ID: \(profileId.uuidString)).")
+                    return
+                }
+                connectSaved(saved)
+            }
+        } catch {
+            self.error = error.localizedDescription
+        }
     }
 }
