@@ -170,7 +170,9 @@ extension Workspace {
 
     func sendRawCommand(_ command: String) {
         let store = v3UIStore
-        let containsControlBreaks = command.contains("\n") || command.contains("\r") || command.contains("\0")
+        let containsControlBreaks = command.unicodeScalars.contains {
+            $0 == "\n" || $0 == "\r" || $0 == "\0"
+        }
         let trimmed = command.trimmingCharacters(in: .whitespacesAndNewlines)
 
         guard !containsControlBreaks, !trimmed.isEmpty else {
@@ -523,6 +525,16 @@ extension Workspace {
 
     func v3SaveEditorContent(_ newContent: String, encoding: TextFileEncoding) {
         guard var ctx = editingFile else { return }
+        if ctx.remote, self.client == nil {
+            self.error = L10n.tr(
+                "连接已断开，无法保存远程文件。",
+                "Disconnected from server; cannot save remote file."
+            )
+            ctx.isSaving = false
+            self.editingFile = ctx
+            return
+        }
+
         guard let encodedData = newContent.data(using: encoding.stringEncoding) else {
             self.error = L10n.tr(
                 "当前文本包含无法使用 \(encoding.localizedTitle) 编码保存的字符。",
@@ -541,7 +553,16 @@ extension Workspace {
 
         Task { @MainActor [weak self] in
             guard let self else { return }
-            if ctx.remote, let client = self.client {
+            if ctx.remote {
+                guard let client = self.client else {
+                    self.error = L10n.tr(
+                        "连接已断开，无法保存远程文件。",
+                        "Disconnected from server; cannot save remote file."
+                    )
+                    ctx.isSaving = false
+                    self.editingFile = ctx
+                    return
+                }
                 let tempFile = FileManager.default.temporaryDirectory
                     .appendingPathComponent("aether-save-enc-\(UUID().uuidString)-\(ctx.name)")
                 defer { try? FileManager.default.removeItem(at: tempFile) }

@@ -21,7 +21,9 @@ struct RawCommandSheet: View {
     }
 
     private var hasNewlines: Bool {
-        commandInput.contains("\n") || commandInput.contains("\r") || commandInput.contains("\0")
+        commandInput.unicodeScalars.contains {
+            $0 == "\n" || $0 == "\r" || $0 == "\0"
+        }
     }
 
     private var trimmedCommand: String {
