@@ -485,6 +485,9 @@ struct MainView: View {
     }
 
     private var leftSelectedEntries: [FileEntry] {
+        if appearance.displayMode == .columns, let millerEntry = layout.millerSelectedEntries[activeLeftRole] {
+            return [millerEntry]
+        }
         switch activeLeftRole {
         case .leftLocal:
             return workspace.localFiles.filter { workspace.localSelection.contains($0.id) }
@@ -496,6 +499,9 @@ struct MainView: View {
     }
 
     private var rightSelectedEntries: [FileEntry] {
+        if appearance.displayMode == .columns, let millerEntry = layout.millerSelectedEntries[activeRightRole] {
+            return [millerEntry]
+        }
         switch activeRightRole {
         case .primaryRemote:
             return workspace.remoteFiles.filter { workspace.remoteSelection.contains($0.id) }
@@ -592,16 +598,20 @@ struct MainView: View {
                 Picker(L10n.tr("布局", "Layout"), selection: $layout.focusMode) {
                     Image(systemName: "sidebar.left")
                         .help(L10n.tr("仅显示左侧面板", "Left Pane Only"))
+                        .accessibilityLabel(L10n.tr("仅显示左侧面板", "Left Pane Only"))
                         .tag(WorkspaceFocusMode.localOnly)
                     Image(systemName: "rectangle.split.2x1")
                         .help(L10n.tr("双栏对比布局", "Dual Pane"))
+                        .accessibilityLabel(L10n.tr("双栏对比布局", "Dual Pane"))
                         .tag(WorkspaceFocusMode.dualPane)
                     Image(systemName: "sidebar.right")
                         .help(L10n.tr("仅显示右侧面板", "Right Pane Only"))
+                        .accessibilityLabel(L10n.tr("仅显示右侧面板", "Right Pane Only"))
                         .tag(WorkspaceFocusMode.remoteOnly)
                 }
                 .pickerStyle(.segmented)
                 .frame(width: 108)
+                .accessibilityLabel(L10n.tr("面板布局", "Pane Layout"))
             }
 
             ToolbarItemGroup(placement: .primaryAction) {
@@ -756,6 +766,9 @@ struct MainView: View {
         .sheet(item: $layout.secondRemotePasswordPrompt) { profile in
             SecondRemotePasswordSheet(profile: profile, workspace: workspace, layout: layout)
         }
+        .sheet(item: $layout.secondRemoteEditingFile) { ctx in
+            SecondRemoteQuickEditorSheet(workspace: workspace, layout: layout, context: ctx)
+        }
         .onChange(of: workspace.showHidden) { _, _ in
             workspace.refreshLocal()
             if layout.rightPaneSource == .secondLocal {
@@ -774,8 +787,11 @@ struct MainView: View {
             }
         }
         .onChange(of: workspace.connectedProfile?.id) { _, newID in
-            if newID == nil && layout.leftPaneSource == .primaryRemote {
-                layout.leftPaneSource = .local
+            if newID == nil {
+                layout.millerSelectedEntries.removeValue(forKey: .primaryRemote)
+                if layout.leftPaneSource == .primaryRemote {
+                    layout.leftPaneSource = .local
+                }
             }
         }
     }
@@ -1136,6 +1152,63 @@ private struct SecondRemotePasswordSheet: View {
     }
 }
 
+private struct SecondRemoteQuickEditorSheet: View {
+    @ObservedObject var workspace: Workspace
+    @ObservedObject var layout: PaneLayoutController
+    let context: EditingFileContext
+    @State private var text: String
+
+    init(workspace: Workspace, layout: PaneLayoutController, context: EditingFileContext) {
+        self.workspace = workspace
+        self.layout = layout
+        self.context = context
+        self._text = State(initialValue: context.content)
+    }
+
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack {
+                Label(context.name, systemImage: "doc.text.fill")
+                    .font(.headline)
+
+                Text(L10n.tr("第二远程服务器文件", "Second Remote File"))
+                    .font(.caption2)
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 2)
+                    .background(Color.accentColor.opacity(0.15))
+                    .foregroundStyle(Color.accentColor)
+                    .cornerRadius(4)
+
+                Spacer()
+
+                if context.isSaving {
+                    ProgressView().controlSize(.small)
+                }
+
+                Button(L10n.tr("关闭", "Close")) {
+                    layout.secondRemoteEditingFile = nil
+                }
+                .keyboardShortcut(.cancelAction)
+
+                Button(L10n.tr("保存更改", "Save Changes")) {
+                    layout.saveSecondRemoteEditorContent(text, workspace: workspace)
+                }
+                .buttonStyle(.glassProminent)
+                .keyboardShortcut("s", modifiers: [.command])
+            }
+            .padding(14)
+            .background(.ultraThinMaterial)
+
+            Divider()
+
+            TextEditor(text: $text)
+                .font(.system(.body, design: .monospaced))
+                .padding(10)
+        }
+        .frame(minWidth: 700, minHeight: 520)
+    }
+}
+
 // MARK: - Tab Bar View
 
 struct TabBarView: View {
@@ -1217,7 +1290,7 @@ struct SidebarView: View {
                     }
                     .buttonStyle(.plain)
                     .dropDestination(for: DroppedItem.self) { items, _ in
-                        workspace.handleDrop(items, toRemote: false, directory: place.path)
+                        return workspace.handleDrop(items, to: .leftLocal, directory: place.path, layout: layout)
                     }
                 }
 
@@ -1240,8 +1313,7 @@ struct SidebarView: View {
                     }
                     .buttonStyle(.plain)
                     .dropDestination(for: DroppedItem.self) { items, _ in
-                        _ = handleDropOnCustomPlace(items, place: custom)
-                        return true
+                        return handleDropOnCustomPlace(items, place: custom)
                     }
                     .contextMenu {
                         Button(L10n.tr("打开", "Open")) {
@@ -1294,6 +1366,7 @@ struct SidebarView: View {
                     }
                     .buttonStyle(.borderless)
                     .help(L10n.tr("固定当前本地文件夹", "Pin Current Local Folder"))
+                    .accessibilityLabel(L10n.tr("固定当前本地文件夹", "Pin Current Local Folder"))
                 }
                 .dropDestination(for: DroppedItem.self) { items, _ in
                     return layout.pinDroppedItems(
@@ -1735,23 +1808,27 @@ struct FilePaneView: View {
             }
             .menuStyle(.borderlessButton)
             .help(L10n.tr("排序与列选项", "Sort & Column Options"))
+            .accessibilityLabel(L10n.tr("排序与列选项", "Sort and Column Options"))
 
             Button(action: { workspace.parentPane(role: role, layout: layout) }) {
                 Image(systemName: "arrow.up")
             }
             .help(L10n.tr("上一级文件夹", "Enclosing Folder"))
+            .accessibilityLabel(L10n.tr("上一级文件夹", "Enclosing Folder"))
             .buttonStyle(.borderless)
 
             Button(action: { workspace.createFolder(in: role, layout: layout) }) {
                 Image(systemName: "folder.badge.plus")
             }
             .help(L10n.tr("新建文件夹", "New Folder"))
+            .accessibilityLabel(L10n.tr("新建文件夹", "New Folder"))
             .buttonStyle(.borderless)
 
             Button(action: { workspace.createNewFile(in: role, layout: layout) }) {
                 Image(systemName: "doc.badge.plus")
             }
             .help(L10n.tr("新建空文件 (⌥⌘N)", "New Empty File (⌥⌘N)"))
+            .accessibilityLabel(L10n.tr("新建空文件", "New Empty File"))
             .buttonStyle(.borderless)
 
             if !remote {
@@ -1762,12 +1839,14 @@ struct FilePaneView: View {
                     Image(systemName: "folder")
                 }
                 .help(L10n.tr("选取文件夹…", "Choose Folder…"))
+                .accessibilityLabel(L10n.tr("选取文件夹", "Choose Folder"))
                 .buttonStyle(.borderless)
             } else if role == .secondRemote {
                 Button(action: { layout.disconnectSecondRemote() }) {
                     Image(systemName: "eject")
                 }
                 .help(L10n.tr("断开第二个服务器", "Disconnect Second Server"))
+                .accessibilityLabel(L10n.tr("断开第二个服务器", "Disconnect Second Server"))
                 .buttonStyle(.borderless)
             }
 
@@ -1776,24 +1855,30 @@ struct FilePaneView: View {
                     Image(systemName: "terminal")
                 }
                 .help(L10n.tr("在终端中打开", "Open in Terminal"))
+                .accessibilityLabel(L10n.tr("在终端中打开", "Open in Terminal"))
                 .buttonStyle(.borderless)
             }
 
+            let quickLookTarget: FileEntry? = (appearance.displayMode == .columns ? layout.millerSelectedEntries[role] : nil)
+                ?? selection.first.flatMap { selId in files.first(where: { $0.id == selId }) }
+
             Button(action: {
-                if let selId = selection.first, let entry = files.first(where: { $0.id == selId }) {
+                if let entry = quickLookTarget {
                     workspace.previewEntry(entry, in: role, layout: layout)
                 }
             }) {
                 Image(systemName: "eye")
             }
             .help(L10n.tr("快速查看 (Quick Look)", "Quick Look"))
+            .accessibilityLabel(L10n.tr("快速查看", "Quick Look"))
             .buttonStyle(.borderless)
-            .disabled(selection.isEmpty)
+            .disabled(quickLookTarget == nil)
 
             Button(action: { workspace.refreshPane(role: role, layout: layout) }) {
                 Image(systemName: "arrow.clockwise")
             }
             .help(L10n.tr("刷新", "Refresh"))
+            .accessibilityLabel(L10n.tr("刷新", "Refresh"))
             .buttonStyle(.borderless)
         }
         .padding(.horizontal, 12)
@@ -1856,6 +1941,7 @@ struct FilePaneView: View {
                 }
                 .buttonStyle(.borderless)
                 .help(L10n.tr("前往文件夹… (⇧⌘G)", "Go to Folder… (⇧⌘G)"))
+                .accessibilityLabel(L10n.tr("前往文件夹", "Go to Folder"))
                 .popover(isPresented: $showGoToFolder) {
                     GoToFolderPopover(
                         title: L10n.tr("前往文件夹", "Go to Folder"),
@@ -1878,6 +1964,7 @@ struct FilePaneView: View {
                 }
                 .buttonStyle(.borderless)
                 .help(L10n.tr("手动输入路径", "Edit Path"))
+                .accessibilityLabel(L10n.tr("手动输入路径", "Edit Path"))
             }
         }
         .padding(.horizontal, 10)
@@ -1931,6 +2018,7 @@ struct FilePaneView: View {
                                 .background(Circle().fill(.ultraThinMaterial))
                                 .foregroundStyle(Color.primary)
                                 .offset(x: -3, y: 3)
+                                .accessibilityHidden(true)
                         }
                     }
                     .frame(width: 18, height: 18)
@@ -1944,6 +2032,7 @@ struct FilePaneView: View {
                             .font(.system(size: 9))
                             .foregroundStyle(.secondary)
                             .help(L10n.tr("符号链接", "Symbolic Link"))
+                            .accessibilityLabel(L10n.tr("符号链接", "Symbolic Link"))
                     }
                 }
                 .contentShape(Rectangle())
@@ -2075,6 +2164,7 @@ struct FilePaneView: View {
                 Slider(value: $appearance.gridItemSize, in: 72...160, step: 4)
                     .frame(width: 140)
                     .controlSize(.small)
+                    .accessibilityLabel(L10n.tr("缩略图大小", "Thumbnail Size"))
                 Text("\(Int(appearance.gridItemSize)) pt")
                     .font(.caption2.monospacedDigit())
                     .foregroundStyle(.secondary)
@@ -2352,6 +2442,7 @@ struct FileGridCell: View {
                         .foregroundStyle(Color.primary)
                         .shadow(color: .black.opacity(0.15), radius: 2, y: 1)
                         .offset(x: 3, y: 3)
+                        .accessibilityLabel(L10n.tr("符号链接", "Symbolic Link"))
                 }
             }
 

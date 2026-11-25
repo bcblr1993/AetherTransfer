@@ -421,6 +421,8 @@ enum BrowserPromptHelper {
     @Published var leftPaneSource: LeftPaneSourceKind = .local
     @Published var rightPaneSource: RightPaneSourceKind = .primaryRemote
     @Published var activePaneSide: PaneSide = .left
+    @Published var millerSelectedEntries: [BrowserPaneRole: FileEntry] = [:]
+    @Published var secondRemoteEditingFile: EditingFileContext?
 
     // Go to Folder popovers (⇧⌘G)
     @Published var showLeftGoToFolder: Bool = false
@@ -671,6 +673,8 @@ enum BrowserPromptHelper {
         secondRemoteProfile = nil
         secondRemoteFiles = []
         secondRemoteSelection = []
+        secondRemoteEditingFile = nil
+        millerSelectedEntries.removeValue(forKey: .secondRemote)
         connectingSecondRemote = false
         loadingSecondRemote = false
     }
@@ -739,6 +743,34 @@ enum BrowserPromptHelper {
         } else {
             secondRemoteSortField = field
             secondRemoteSortAscending = true
+        }
+    }
+
+    func saveSecondRemoteEditorContent(_ newContent: String, workspace: Workspace) {
+        guard var ctx = secondRemoteEditingFile,
+              let secondClient = secondRemoteClient(speedLimit: workspace.speedLimit) else { return }
+        ctx.isSaving = true
+        secondRemoteEditingFile = ctx
+        let targetPath = ctx.path
+        let fileName = ctx.name
+        Task { [weak self] in
+            let tempFile = FileManager.default.temporaryDirectory
+                .appendingPathComponent("aether-save2-\(UUID().uuidString)-\(fileName)")
+            defer { try? FileManager.default.removeItem(at: tempFile) }
+            do {
+                try await Task.detached(priority: .userInitiated) {
+                    try newContent.write(to: tempFile, atomically: true, encoding: .utf8)
+                }.value
+                try await secondClient.upload(tempFile, to: targetPath, overwrite: true)
+                self?.refreshSecondRemote(workspace: workspace)
+                self?.secondRemoteEditingFile = nil
+                workspace.flashNotice(L10n.tr("已保存远程文件：\(fileName)", "Saved remote file: \(fileName)"))
+            } catch {
+                workspace.error = L10n.tr("保存远程文件失败：\(error.localizedDescription)",
+                                          "Failed to save remote file: \(error.localizedDescription)")
+                ctx.isSaving = false
+                self?.secondRemoteEditingFile = ctx
+            }
         }
     }
 }
@@ -874,13 +906,15 @@ extension Workspace {
         case .secondRemote:
             guard let secondClient = layout.secondRemoteClient(speedLimit: speedLimit) else { return }
             Task {
+                let tempCache = FileManager.default.temporaryDirectory
+                    .appendingPathComponent("aether-edit2-\(UUID().uuidString)-\(entry.name)")
+                defer { try? FileManager.default.removeItem(at: tempCache) }
                 do {
-                    let tempCache = FileManager.default.temporaryDirectory
-                        .appendingPathComponent("aether-edit2-\(UUID().uuidString)-\(entry.name)")
-                    defer { try? FileManager.default.removeItem(at: tempCache) }
                     try await secondClient.download(entry.path, to: tempCache, overwrite: true)
-                    let text = try String(contentsOf: tempCache, encoding: .utf8)
-                    self.editingFile = EditingFileContext(name: entry.name, path: entry.path, remote: false, content: text)
+                    let text = try await Task.detached(priority: .userInitiated) {
+                        try String(contentsOf: tempCache, encoding: .utf8)
+                    }.value
+                    layout.secondRemoteEditingFile = EditingFileContext(name: entry.name, path: entry.path, remote: true, content: text)
                 } catch {
                     self.error = L10n.tr("无法以文本形式打开此文件：\(error.localizedDescription)",
                                          "Unable to open file as text: \(error.localizedDescription)")
@@ -1211,7 +1245,10 @@ extension Workspace {
                     if entry.isDirectory {
                         let baseRemote = try RemotePath.join(normalizedTarget, targetName)
                         try await targetClient.mkdirRecursive(baseRemote)
-                        let items = try LocalFiles.walk(URL(fileURLWithPath: entry.path), showHidden: showHiddenFlag)
+                        let entryURL = URL(fileURLWithPath: entry.path)
+                        let items = try await Task.detached(priority: .userInitiated) {
+                            try LocalFiles.walk(entryURL, showHidden: showHiddenFlag)
+                        }.value
                         for item in items {
                             let itemRemote = RemotePath.normalize(baseRemote + "/" + item.relativePath)
                             if item.isDirectory {

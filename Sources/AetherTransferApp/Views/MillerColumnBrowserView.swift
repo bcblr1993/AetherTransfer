@@ -204,6 +204,38 @@ import AetherTransferCore
         return state.activePath
     }
 
+    func cancelAllLoads() {
+        for task in loadTasks.values {
+            task.cancel()
+        }
+        loadTasks.removeAll()
+        generations.removeAll()
+    }
+
+    func reset(
+        toPath path: String,
+        role: BrowserPaneRole,
+        workspace: Workspace,
+        layout: PaneLayoutController,
+        showHidden: Bool,
+        sortField: FileSortField,
+        sortAscending: Bool
+    ) {
+        cancelAllLoads()
+        state = MillerColumnState(rootPath: "/", initialPath: path)
+        for col in state.columns {
+            loadColumn(
+                path: col.path,
+                role: role,
+                workspace: workspace,
+                layout: layout,
+                showHidden: showHidden,
+                sortField: sortField,
+                sortAscending: sortAscending
+            )
+        }
+    }
+
     deinit {
         for task in loadTasks.values {
             task.cancel()
@@ -252,6 +284,15 @@ struct ColumnBrowserView: View {
         self.workspace = workspace
         self.layout = layout
         self._controller = StateObject(wrappedValue: MillerColumnController(initialPath: path))
+    }
+
+    private var connectionIdentity: String {
+        switch role {
+        case .leftLocal: return "left-local"
+        case .secondLocal: return "second-local"
+        case .primaryRemote: return "primary:\(workspace.connectedProfile?.id.uuidString ?? "none")"
+        case .secondRemote: return "second:\(layout.secondRemoteProfile?.id.uuidString ?? "none")"
+        }
     }
 
     var body: some View {
@@ -323,6 +364,24 @@ struct ColumnBrowserView: View {
                     sortField: sortField,
                     sortAscending: sortAscending
                 )
+                layout.millerSelectedEntries[role] = controller.state.selectedEntry
+                scrollToNewest(proxy: horizontalProxy)
+            }
+            .onDisappear {
+                controller.cancelAllLoads()
+                layout.millerSelectedEntries.removeValue(forKey: role)
+            }
+            .onChange(of: connectionIdentity) { _, _ in
+                layout.millerSelectedEntries.removeValue(forKey: role)
+                controller.reset(
+                    toPath: path,
+                    role: role,
+                    workspace: workspace,
+                    layout: layout,
+                    showHidden: workspace.showHidden,
+                    sortField: sortField,
+                    sortAscending: sortAscending
+                )
                 scrollToNewest(proxy: horizontalProxy)
             }
             .onChange(of: path) { _, newPath in
@@ -335,12 +394,19 @@ struct ColumnBrowserView: View {
                     sortField: sortField,
                     sortAscending: sortAscending
                 )
+                layout.millerSelectedEntries[role] = controller.state.selectedEntry
                 scrollToNewest(proxy: horizontalProxy)
             }
             .onChange(of: files) { _, newFiles in
                 // Keep active directory column immediately synced with pane reloads (e.g. create/delete/rename).
                 let sorted = FileEntry.sorted(newFiles, by: sortField, ascending: sortAscending, foldersFirst: true)
                 controller.updateEntries(sorted, forColumnAt: path)
+                // Restore Miller selection if an ancestor navigation refresh cleared `selection`.
+                if let currentSelected = controller.state.selectedEntry,
+                   newFiles.contains(where: { $0.id == currentSelected.id }),
+                   selection != [currentSelected.id] {
+                    selection = [currentSelected.id]
+                }
             }
             .onChange(of: workspace.showHidden) { _, _ in
                 controller.reloadAllColumns(
@@ -538,6 +604,7 @@ struct ColumnBrowserView: View {
             sortAscending: sortAscending
         )
         selection = [entry.id]
+        layout.millerSelectedEntries[role] = entry
         if let opened {
             syncPanePathIfNeeded(opened)
         } else {
@@ -552,6 +619,7 @@ struct ColumnBrowserView: View {
         isMillerFocused = true
         let newPath = controller.focusColumn(at: index)
         selection = []
+        layout.millerSelectedEntries.removeValue(forKey: role)
         syncPanePathIfNeeded(newPath)
     }
 
@@ -573,7 +641,9 @@ struct ColumnBrowserView: View {
             sortField: sortField,
             sortAscending: sortAscending
         ) {
-            if let id = controller.state.selectedEntry?.id {
+            let selected = controller.state.selectedEntry
+            layout.millerSelectedEntries[role] = selected
+            if let id = selected?.id {
                 selection = [id]
             }
             syncPanePathIfNeeded(nextPath)
@@ -590,7 +660,9 @@ struct ColumnBrowserView: View {
             sortField: sortField,
             sortAscending: sortAscending
         ) {
-            if let id = controller.state.selectedEntry?.id {
+            let selected = controller.state.selectedEntry
+            layout.millerSelectedEntries[role] = selected
+            if let id = selected?.id {
                 selection = [id]
             } else {
                 selection = []
@@ -602,7 +674,9 @@ struct ColumnBrowserView: View {
 
     private func handleLeftKey(proxy: ScrollViewProxy) {
         if let nextPath = controller.stepOutToParentColumn() {
-            if let id = controller.state.selectedEntry?.id {
+            let selected = controller.state.selectedEntry
+            layout.millerSelectedEntries[role] = selected
+            if let id = selected?.id {
                 selection = [id]
             } else {
                 selection = []
@@ -666,6 +740,7 @@ private struct MillerColumnRow: View {
                         .background(Circle().fill(.ultraThinMaterial))
                         .foregroundStyle(useLightText ? Color.white : Color.primary)
                         .offset(x: -2, y: 2)
+                        .accessibilityLabel(L10n.tr("符号链接", "Symbolic Link"))
                 }
             }
             .frame(width: 18, height: 18)
