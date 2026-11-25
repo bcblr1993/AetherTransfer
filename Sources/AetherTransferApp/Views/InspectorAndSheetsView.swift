@@ -140,6 +140,10 @@ private struct FileInspectorDetailContent: View {
     @State private var isGeneratingPresigned = false
     @State private var presignedError: String?
 
+    @State private var loadMetadataTask: Task<Void, Never>?
+    @State private var saveMetadataTask: Task<Void, Never>?
+    @State private var presignedTask: Task<Void, Never>?
+
     var body: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 14) {
@@ -163,9 +167,16 @@ private struct FileInspectorDetailContent: View {
             }
         }
         .onDisappear {
-            folderSizeTask?.cancel()
-            checksumTask?.cancel()
+            cancelAllTasks()
         }
+    }
+
+    private func cancelAllTasks() {
+        folderSizeTask?.cancel()
+        checksumTask?.cancel()
+        loadMetadataTask?.cancel()
+        saveMetadataTask?.cancel()
+        presignedTask?.cancel()
     }
 
     // MARK: - General Tab
@@ -319,28 +330,35 @@ private struct FileInspectorDetailContent: View {
             Divider()
 
             VStack(alignment: .leading, spacing: 8) {
-                HStack {
-                    Text(L10n.tr("文件校验和 (64 KiB 流式计算)", "Checksums (64 KiB Streaming)"))
-                        .font(.caption2.bold())
-                        .foregroundStyle(.secondary)
-                    Spacer()
+                Text(L10n.tr("文件校验和 (64 KiB 流式计算)", "Checksums (64 KiB Streaming)"))
+                    .font(.caption2.bold())
+                    .foregroundStyle(.secondary)
+
+                HStack(spacing: 8) {
+                    Button {
+                        calculateChecksums()
+                    } label: {
+                        Label(
+                            isCalculatingChecksums
+                                ? L10n.tr("正在计算…", "Calculating…")
+                                : (checksums == nil
+                                    ? L10n.tr("计算 SHA-256 / MD5 校验和", "Calculate Checksums")
+                                    : L10n.tr("重新计算校验和", "Recalculate Checksums")),
+                            systemImage: "number.square"
+                        )
+                    }
+                    .controlSize(.small)
+                    .disabled(isCalculatingChecksums)
+
                     if isCalculatingChecksums {
                         ProgressView().controlSize(.small)
+                        Button(L10n.tr("取消", "Cancel")) {
+                            checksumTask?.cancel()
+                            isCalculatingChecksums = false
+                        }
+                        .controlSize(.mini)
                     }
                 }
-
-                Button {
-                    calculateChecksums()
-                } label: {
-                    Label(
-                        checksums == nil
-                            ? L10n.tr("计算 SHA-256 / MD5 校验和", "Calculate Checksums")
-                            : L10n.tr("重新计算校验和", "Recalculate Checksums"),
-                        systemImage: "number.square"
-                    )
-                }
-                .controlSize(.small)
-                .disabled(isCalculatingChecksums)
 
                 if let checksums {
                     checksumRow(label: "SHA-256", digest: checksums.sha256)
@@ -503,6 +521,17 @@ private struct FileInspectorDetailContent: View {
                     Spacer()
                     if isLoadingMetadata || isSavingMetadata {
                         ProgressView().controlSize(.small)
+                        Button(L10n.tr("取消", "Cancel")) {
+                            if isLoadingMetadata {
+                                loadMetadataTask?.cancel()
+                                isLoadingMetadata = false
+                            }
+                            if isSavingMetadata {
+                                saveMetadataTask?.cancel()
+                                isSavingMetadata = false
+                            }
+                        }
+                        .controlSize(.mini)
                     }
                     Button(L10n.tr("加载元数据", "Load Metadata")) {
                         loadMetadata()
@@ -613,6 +642,11 @@ private struct FileInspectorDetailContent: View {
 
                             if isGeneratingPresigned {
                                 ProgressView().controlSize(.small)
+                                Button(L10n.tr("取消", "Cancel")) {
+                                    presignedTask?.cancel()
+                                    isGeneratingPresigned = false
+                                }
+                                .controlSize(.mini)
                             }
                         }
 
@@ -646,6 +680,11 @@ private struct FileInspectorDetailContent: View {
                     loadMetadata()
                 }
             }
+            .onDisappear {
+                loadMetadataTask?.cancel()
+                saveMetadataTask?.cancel()
+                presignedTask?.cancel()
+            }
         } else {
             Divider()
             ContentUnavailableView {
@@ -671,14 +710,16 @@ private struct FileInspectorDetailContent: View {
     }
 
     private func loadMetadata() {
+        loadMetadataTask?.cancel()
         metadataError = nil
         metadataNotice = nil
         isLoadingMetadata = true
         let remotePath = entry.path
 
-        Task {
+        loadMetadataTask = Task {
             do {
                 let meta = try await workspace.loadRemoteMetadata(for: remotePath)
+                guard !Task.isCancelled else { return }
                 contentType = meta.contentType ?? ""
                 cacheControl = meta.cacheControl ?? ""
                 storageClass = meta.storageClass ?? ""
@@ -689,6 +730,8 @@ private struct FileInspectorDetailContent: View {
                     .map { CustomMetadataRow(key: $0.key, value: $0.value) }
                 metadataLoaded = true
                 isLoadingMetadata = false
+            } catch is CancellationError {
+                isLoadingMetadata = false
             } catch {
                 metadataError = error.localizedDescription
                 isLoadingMetadata = false
@@ -697,6 +740,7 @@ private struct FileInspectorDetailContent: View {
     }
 
     private func saveMetadata() {
+        saveMetadataTask?.cancel()
         metadataError = nil
         metadataNotice = nil
         isSavingMetadata = true
@@ -720,12 +764,15 @@ private struct FileInspectorDetailContent: View {
             modified: entry.modified
         )
 
-        Task {
+        saveMetadataTask = Task {
             do {
                 try await workspace.saveRemoteMetadata(updated, for: remotePath)
+                guard !Task.isCancelled else { return }
                 isSavingMetadata = false
                 metadataNotice = L10n.tr("元数据已保存", "Metadata saved")
                 workspace.flashNotice(L10n.tr("已更新对象元数据：\(entry.name)", "Updated object metadata for \(entry.name)"))
+            } catch is CancellationError {
+                isSavingMetadata = false
             } catch {
                 metadataError = error.localizedDescription
                 isSavingMetadata = false
@@ -734,15 +781,19 @@ private struct FileInspectorDetailContent: View {
     }
 
     private func generatePresigned() {
+        presignedTask?.cancel()
         presignedError = nil
         isGeneratingPresigned = true
         let remotePath = entry.path
         let expires = presignedExpiry.rawValue
 
-        Task {
+        presignedTask = Task {
             do {
                 let url = try await workspace.generatePresignedURL(for: remotePath, expiresIn: expires)
+                guard !Task.isCancelled else { return }
                 presignedURLString = url.absoluteString
+                isGeneratingPresigned = false
+            } catch is CancellationError {
                 isGeneratingPresigned = false
             } catch {
                 presignedError = error.localizedDescription
@@ -786,6 +837,7 @@ struct PermissionsEditor: View {
     @State private var octalText: String
     @State private var octalInvalid = false
     @State private var isApplyingRecursive = false
+    @State private var recursiveApplyTask: Task<Void, Never>?
     @State private var statusNotice: String?
     @State private var errorMessage: String?
 
@@ -911,6 +963,11 @@ struct PermissionsEditor: View {
 
                     if isApplyingRecursive {
                         ProgressView().controlSize(.small)
+                        Button(L10n.tr("取消", "Cancel")) {
+                            recursiveApplyTask?.cancel()
+                            isApplyingRecursive = false
+                        }
+                        .controlSize(.mini)
                     }
                 }
             }
@@ -918,6 +975,9 @@ struct PermissionsEditor: View {
         .padding(10)
         .background(Color.primary.opacity(0.03))
         .cornerRadius(8)
+        .onDisappear {
+            recursiveApplyTask?.cancel()
+        }
     }
 
     private func permissionRow(title: String, triad: Binding<PermissionTriad>) -> some View {
@@ -946,19 +1006,24 @@ struct PermissionsEditor: View {
         alert.addButton(withTitle: L10n.tr("取消", "Cancel"))
 
         guard alert.runModal() == .alertFirstButtonReturn else { return }
+        recursiveApplyTask?.cancel()
         errorMessage = nil
         isApplyingRecursive = true
         let targetPermissions = permissions
 
-        Task {
+        recursiveApplyTask = Task {
             do {
                 let count = try await workspace.applyPermissionsRecursively(
                     to: entry,
                     permissions: targetPermissions,
                     remote: isRemote
                 )
+                guard !Task.isCancelled else { return }
                 isApplyingRecursive = false
                 flashStatus(L10n.tr("已递归更新 \(count) 项", "Updated \(count) item(s)"))
+            } catch is CancellationError {
+                isApplyingRecursive = false
+                flashStatus(L10n.tr("已取消", "Cancelled"))
             } catch {
                 errorMessage = error.localizedDescription
                 isApplyingRecursive = false
