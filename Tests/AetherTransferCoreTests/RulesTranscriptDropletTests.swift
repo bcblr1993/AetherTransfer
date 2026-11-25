@@ -156,7 +156,13 @@ import Testing
         "QueryPassSecret",
         "UserInfoSecretPass!",
         "FtpSecretPass99",
-        "KeyPassphraseSecret88"
+        "KeyPassphraseSecret88",
+        "QuotedPassSecret123",
+        "QuotedJwtSecretVal",
+        "AzureSasJsonSecret",
+        "XAuthEqTokSecret",
+        "XAuthEqKeySecret",
+        "DigestNonceSecretDeadBeef"
     ]
 
     let rawLog = """
@@ -164,16 +170,27 @@ import Testing
     Authorization: Bearer \(secrets[1])
     Authorization: AWS4-HMAC-SHA256 Credential=AKIA123/20261125/us-east-1/s3/aws4_request, SignedHeaders=host, Signature=\(secrets[2])
     Authorization: SharedKey myacct:\(secrets[3])
+    Authorization: Digest username="alice", realm="dav", response="\(secrets[19])"
+    curl -H 'Authorization: Digest username="alice", response="\(secrets[19])"'
     X-Amz-Security-Token: \(secrets[4])
     X-Amz-Signature: \(secrets[5])
     X-Auth-Token: \(secrets[6])
     X-Auth-Key: \(secrets[7])
+    X-Auth-Token=\(secrets[17])&X-Auth-Key=\(secrets[18])
+    password="\(secrets[14])" token='\(secrets[15])'
+    {"query":"sig=\(secrets[16])&sv=2022"}
     GET https://bucket.s3.amazonaws.com/f.zip?X-Amz-Signature=\(secrets[8])&X-Amz-Security-Token=\(secrets[4])&sig=\(secrets[8])&token=\(secrets[9])&password=\(secrets[10])&keep=visible
     Connecting sftp://deploy:\(secrets[11])@prod.example.com:22/var/www
     Connecting sftp://deploy@readonly.example.com:22/var/www
     > PASS \(secrets[12])
     Please pass the public key path
     Enter passphrase for key '/Users/dev/.ssh/id_ed25519': \(secrets[13])
+    Authorization: Bearer 
+    Host: safe-next-header.example.com
+    X-Amz-Security-Token: 
+    Content-Type: text/plain
+    password: 
+    Accept: application/json
     """
 
     let sanitized = TranscriptRedactor.sanitize(rawLog)
@@ -184,11 +201,19 @@ import Testing
     #expect(sanitized.contains("Authorization: Bearer [REDACTED]"))
     #expect(sanitized.contains("Authorization: AWS4-HMAC-SHA256 [REDACTED]"))
     #expect(sanitized.contains("Authorization: SharedKey [REDACTED]"))
+    #expect(sanitized.contains("Authorization: Digest [REDACTED]"))
+    #expect(sanitized.contains("curl -H 'Authorization: Digest [REDACTED]'"))
+    #expect(sanitized.contains("X-Auth-Token=[REDACTED]&X-Auth-Key=[REDACTED]"))
+    #expect(sanitized.contains("password=\"[REDACTED]\" token='[REDACTED]'"))
+    #expect(sanitized.contains("{\"query\":\"sig=[REDACTED]&sv=2022\"}"))
     #expect(sanitized.contains("sftp://deploy:***@prod.example.com:22/var/www"))
     #expect(sanitized.contains("sftp://deploy@readonly.example.com:22/var/www"))
     #expect(sanitized.contains("&keep=visible"))
     #expect(sanitized.contains("> PASS [REDACTED]"))
     #expect(sanitized.contains("Please pass the public key path"))
+    #expect(sanitized.contains("Host: safe-next-header.example.com"))
+    #expect(sanitized.contains("Content-Type: text/plain"))
+    #expect(sanitized.contains("Accept: application/json"))
 
     // Bounded ring buffer eviction & thread-safe concurrent appends
     let logger = TranscriptLogger(maxEntries: 3)

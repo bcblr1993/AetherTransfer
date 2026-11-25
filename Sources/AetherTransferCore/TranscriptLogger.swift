@@ -73,34 +73,88 @@ public enum TranscriptRedactor {
         }
     }
 
-    // Order is significant: URL userinfo and query parameters run before generic header/kv rules.
+    // Order is significant: URL userinfo and query/kv parameters run before header/line rules.
+    // Whitespace inside header/kv matchers uses [ \t] (never \s) so patterns never bleed across newlines.
     private static let rules: [Rule] = [
         // 1. URL userinfo: scheme://user:secret@host -> scheme://user:***@host
         Rule(
             #"([A-Za-z][A-Za-z0-9+.-]*://[^/\s:@?#"']*:)[^/\s@?#"']*(@)"#,
             replacement: "$1***$2"
         ),
-        // 2. Sensitive URL query parameters (preserves trailing &other=... params)
+        // 2a. Quoted sensitive key=value parameters (e.g. password="...", token='...', X-Auth-Token="...")
         Rule(
-            #"((?:^|[?&;\s,(])(?:X-Amz-Signature|X-Amz-Security-Token|sig|token|password|passphrase|access_token|client_secret|sas_token)\s*=)[^&\s#"'>)]+"#,
+            #"((?:^|[?&;\s,("'])(?:X-Amz-Signature|X-Amz-Security-Token|X-Auth-Token|X-Auth-Key|sig|token|password|passphrase|access_token|client_secret|sas_token)[ \t]*=[ \t]*")[^"\r\n]+(")"#,
+            options: [.caseInsensitive],
+            replacement: "$1[REDACTED]$2"
+        ),
+        Rule(
+            #"((?:^|[?&;\s,("'])(?:X-Amz-Signature|X-Amz-Security-Token|X-Auth-Token|X-Auth-Key|sig|token|password|passphrase|access_token|client_secret|sas_token)[ \t]*=[ \t]*')[^'\r\n]+(')"#,
+            options: [.caseInsensitive],
+            replacement: "$1[REDACTED]$2"
+        ),
+        // 2b. Unquoted URL query / key=value parameters (preserves trailing &other=... params and closing quotes)
+        Rule(
+            #"((?:^|[?&;\s,("'])(?:X-Amz-Signature|X-Amz-Security-Token|X-Auth-Token|X-Auth-Key|sig|token|password|passphrase|access_token|client_secret|sas_token)[ \t]*=[ \t]*)[^&\s#"'>)]+"#,
             options: [.caseInsensitive],
             replacement: "$1[REDACTED]"
         ),
-        // 3. Authorization headers (Basic, Bearer, AWS4-HMAC-SHA256, SharedKey, etc.)
+        // 3a. Quoted Authorization headers (JSON {"Authorization": "..."} or curl -H "..." / -H '...')
         Rule(
-            #"(Authorization["']?\s*:\s*["']?(?:(?:AWS4-HMAC-SHA256|Basic|Bearer|SharedKey|Token|Digest|Negotiate)\s+)?)[^\r\n"']+"#,
+            #"("Authorization"[ \t]*:[ \t]*"(?:(?:AWS4-HMAC-SHA256|Basic|Bearer|SharedKey|Token|Digest|Negotiate)[ \t]+)?)[^"\r\n]+(")"#,
+            options: [.caseInsensitive],
+            replacement: "$1[REDACTED]$2"
+        ),
+        Rule(
+            #"('Authorization'[ \t]*:[ \t]*'(?:(?:AWS4-HMAC-SHA256|Basic|Bearer|SharedKey|Token|Digest|Negotiate)[ \t]+)?)[^'\r\n]+(')"#,
+            options: [.caseInsensitive],
+            replacement: "$1[REDACTED]$2"
+        ),
+        Rule(
+            #"("Authorization[ \t]*:[ \t]*(?:(?:AWS4-HMAC-SHA256|Basic|Bearer|SharedKey|Token|Digest|Negotiate)[ \t]+)?)[^"\r\n]+(")"#,
+            options: [.caseInsensitive],
+            replacement: "$1[REDACTED]$2"
+        ),
+        Rule(
+            #"('Authorization[ \t]*:[ \t]*(?:(?:AWS4-HMAC-SHA256|Basic|Bearer|SharedKey|Token|Digest|Negotiate)[ \t]+)?)[^'\r\n]+(')"#,
+            options: [.caseInsensitive],
+            replacement: "$1[REDACTED]$2"
+        ),
+        // 3b. Unquoted HTTP Authorization headers (handles Digest with internal quotes to EOL without bleeding across newlines)
+        Rule(
+            #"((?:^|(?<=[^"'\w]))Authorization[ \t]*:[ \t]*(?:(?:AWS4-HMAC-SHA256|Basic|Bearer|SharedKey|Token|Digest|Negotiate)[ \t]+)?)[^\r\n]+"#,
             options: [.caseInsensitive],
             replacement: "$1[REDACTED]"
         ),
-        // 4. Sensitive cloud/auth HTTP headers
+        // 4a. Quoted cloud/auth HTTP headers
         Rule(
-            #"((?:X-Amz-Security-Token|X-Amz-Signature|X-Auth-Token|X-Auth-Key)["']?\s*:\s*["']?)[^\r\n"']+"#,
+            #"("(?:X-Amz-Security-Token|X-Amz-Signature|X-Auth-Token|X-Auth-Key)"[ \t]*:[ \t]*")[^"\r\n]+(")"#,
+            options: [.caseInsensitive],
+            replacement: "$1[REDACTED]$2"
+        ),
+        Rule(
+            #"('(?:X-Amz-Security-Token|X-Amz-Signature|X-Auth-Token|X-Auth-Key)'[ \t]*:[ \t]*')[^'\r\n]+(')"#,
+            options: [.caseInsensitive],
+            replacement: "$1[REDACTED]$2"
+        ),
+        Rule(
+            #"("(?:X-Amz-Security-Token|X-Amz-Signature|X-Auth-Token|X-Auth-Key)[ \t]*:[ \t]*)[^"\r\n]+(")"#,
+            options: [.caseInsensitive],
+            replacement: "$1[REDACTED]$2"
+        ),
+        Rule(
+            #"('(?:X-Amz-Security-Token|X-Amz-Signature|X-Auth-Token|X-Auth-Key)[ \t]*:[ \t]*)[^'\r\n]+(')"#,
+            options: [.caseInsensitive],
+            replacement: "$1[REDACTED]$2"
+        ),
+        // 4b. Unquoted cloud/auth HTTP headers
+        Rule(
+            #"((?:^|(?<=[^"'\w]))(?:X-Amz-Security-Token|X-Amz-Signature|X-Auth-Token|X-Auth-Key)[ \t]*:[ \t]*)[^\r\n]+"#,
             options: [.caseInsensitive],
             replacement: "$1[REDACTED]"
         ),
         // 5a. FTP/SFTP PASS lines at line or trace prompt start (case-insensitive)
         Rule(
-            #"^(\s*(?:(?:>|C:|FTP|SFTP|CMD|\[[^\]]+\])\s*:?\s*)?PASS[ \t]+)[^\r\n]+"#,
+            #"^([ \t]*(?:(?:>|C:|FTP|SFTP|CMD|\[[^\]]+\])[ \t]*:?[ \t]*)?PASS[ \t]+)[^\r\n]+"#,
             options: [.caseInsensitive, .anchorsMatchLines],
             replacement: "$1[REDACTED]"
         ),
@@ -109,14 +163,20 @@ public enum TranscriptRedactor {
             #"(\bPASS[ \t]+)[^\r\n]+"#,
             replacement: "$1[REDACTED]"
         ),
-        // 6. Private key passphrases & password key/value lines
+        // 6a. Quoted passphrase / password JSON/kv fields
         Rule(
-            #"((?:private[\s_-]*key[\s_-]*)?passphrase(?:\s+for\s+[^\r\n:]+)?["']?\s*[:=]\s*["']?)[^\r\n"']+"#,
+            #"("(?:(?:private[ \t_-]*key[ \t_-]*)?passphrase|password)"[ \t]*:[ \t]*")[^"\r\n]+(")"#,
             options: [.caseInsensitive],
-            replacement: "$1[REDACTED]"
+            replacement: "$1[REDACTED]$2"
         ),
         Rule(
-            #"(password["']?\s*:\s*["']?)[^\r\n"']+"#,
+            #"('(?:(?:private[ \t_-]*key[ \t_-]*)?passphrase|password)'[ \t]*:[ \t]*')[^'\r\n]+(')"#,
+            options: [.caseInsensitive],
+            replacement: "$1[REDACTED]$2"
+        ),
+        // 6b. Unquoted private key passphrases & password colon lines
+        Rule(
+            #"((?:^|(?<=[^"'\w]))(?:(?:private[ \t_-]*key[ \t_-]*)?passphrase(?:[ \t]+for[ \t]+[^\r\n:]+)?|password)[ \t]*:[ \t]*)[^\r\n]+"#,
             options: [.caseInsensitive],
             replacement: "$1[REDACTED]"
         )
