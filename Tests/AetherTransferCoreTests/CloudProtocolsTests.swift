@@ -1179,3 +1179,59 @@ private func makeHTTPResponse(url: URL, status: Int, headers: [String: String] =
     }
 }
 
+@Test func s3NestedListRecursiveExcludesAncestorsAndSwiftCopyEncodesContainer() async throws {
+    let copyFromValues = Recorder<String>()
+    let session = MockURLProtocol.makeSession { req, _ in
+        let url = req.url!
+        let method = req.httpMethod ?? "GET"
+        if url.host == "s3.us-east-1.amazonaws.com" || url.host == "bkt.s3.us-east-1.amazonaws.com" {
+            let xml = """
+            <?xml version="1.0" encoding="UTF-8"?>
+            <ListBucketResult>
+              <IsTruncated>false</IsTruncated>
+              <Contents><Key>docs/sub/</Key><Size>0</Size></Contents>
+              <Contents><Key>docs/sub/a/file.txt</Key><Size>12</Size></Contents>
+              <Contents><Key>docs/sub/b.txt</Key><Size>34</Size></Contents>
+            </ListBucketResult>
+            """.data(using: .utf8)!
+            return (makeHTTPResponse(url: url, status: 200), xml)
+        }
+        if url.host == "swift.enc.local" {
+            if url.path == "/auth/v1.0" {
+                return (makeHTTPResponse(url: url, status: 200, headers: [
+                    "X-Auth-Token": "tk-enc",
+                    "X-Storage-Url": "https://swift.enc.local/v1/AUTH_p"
+                ]), Data())
+            }
+            if method == "PUT", let copyFrom = req.value(forHTTPHeaderField: "X-Copy-From") {
+                copyFromValues.append(copyFrom)
+                return (makeHTTPResponse(url: url, status: 201), Data())
+            }
+            if method == "DELETE" {
+                return (makeHTTPResponse(url: url, status: 204), Data())
+            }
+        }
+        return (makeHTTPResponse(url: url, status: 404), Data())
+    }
+
+    let s3Profile = ServerProfile(host: "s3.amazonaws.com", username: "AK", protocolKind: .s3, s3Bucket: "bkt", s3PathStyle: true)
+    let s3Client = S3Client(profile: s3Profile, credentials: Credentials(password: "SK"), session: session)
+    let recursive = try await s3Client.listRecursive("/docs/sub")
+    let paths = recursive.map(\.path)
+    #expect(!paths.contains("/docs"))
+    #expect(!paths.contains("/docs/sub"))
+    #expect(paths == ["/docs/sub/a", "/docs/sub/a/file.txt", "/docs/sub/b.txt"])
+
+    let swiftProfile = ServerProfile(
+        host: "swift.enc.local",
+        username: "u",
+        protocolKind: .openstackSwift,
+        swiftAuthURL: "https://swift.enc.local/auth/v1.0",
+        swiftContainer: "my container"
+    )
+    let swiftClient = SwiftStorageClient(profile: swiftProfile, credentials: Credentials(password: "p"), session: session)
+    try await swiftClient.rename("/old name.txt", to: "/new name.txt")
+    #expect(copyFromValues.snapshot() == ["/my%20container/old%20name.txt"])
+}
+
+

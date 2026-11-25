@@ -2103,7 +2103,7 @@ public final class SwiftStorageClient: RemoteTransport, @unchecked Sendable {
         var req = URLRequest(url: dstURL, timeoutInterval: 60)
         req.httpMethod = "PUT"
         req.setValue(auth.token, forHTTPHeaderField: "X-Auth-Token")
-        req.setValue("/\(container)/\(HTTPStreamingHelper.percentEncodePath(srcKey))", forHTTPHeaderField: "X-Copy-From")
+        req.setValue("/\(encodedContainer)/\(HTTPStreamingHelper.percentEncodePath(srcKey))", forHTTPHeaderField: "X-Copy-From")
         req.setValue("0", forHTTPHeaderField: "Content-Length")
         req.httpBody = Data()
         let (_, response) = try await HTTPStreamingHelper.performData(session: session, request: req)

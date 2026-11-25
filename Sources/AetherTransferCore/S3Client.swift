@@ -176,6 +176,7 @@ public struct S3Client: RemoteTransport, Sendable {
         try Task.checkCancellation()
         let normalized = RemotePath.normalize(remotePath)
         let prefix = Self.s3ObjectKey(for: normalized, isDirectory: true)
+        let childPrefix = normalized == "/" ? "/" : normalized + "/"
         let objects = try await listAllObjectEntries(withPrefix: prefix)
 
         var results: [FileEntry] = []
@@ -195,7 +196,7 @@ public struct S3Client: RemoteTransport, Sendable {
             for idx in 0..<dirDepth {
                 built += "/" + relParts[idx]
                 let dirPath = RemotePath.normalize(built)
-                if dirPath != normalized && seenPaths.insert(dirPath).inserted {
+                if dirPath != normalized && dirPath.hasPrefix(childPrefix) && seenPaths.insert(dirPath).inserted {
                     results.append(FileEntry(
                         name: relParts[idx],
                         path: dirPath,
@@ -209,7 +210,7 @@ public struct S3Client: RemoteTransport, Sendable {
 
             if !isDir {
                 let fullPath = RemotePath.normalize("/" + cleanRelative)
-                if seenPaths.insert(fullPath).inserted {
+                if fullPath.hasPrefix(childPrefix) && seenPaths.insert(fullPath).inserted {
                     results.append(FileEntry(
                         name: relParts.last ?? cleanRelative,
                         path: fullPath,
