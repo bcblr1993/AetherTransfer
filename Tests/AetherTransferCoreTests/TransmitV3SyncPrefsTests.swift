@@ -167,6 +167,14 @@ struct TransmitV3SyncPrefsTests {
                 isEnabled: true
             ),
             SyncItem(
+                relativePath: "docs/line1\r\nline2.txt",
+                actionType: .upload,
+                size: 64,
+                sourceDate: srcDate,
+                targetDate: nil,
+                isEnabled: true
+            ),
+            SyncItem(
                 relativePath: "unchanged.txt",
                 actionType: .skipIdentical,
                 size: 512,
@@ -179,12 +187,15 @@ struct TransmitV3SyncPrefsTests {
         let csv = plan.exportReportCSV()
         let lines = csv.components(separatedBy: "\n")
 
-        #expect(lines.count == 3)
+        #expect(lines.count == 5)
         #expect(lines[0] == "RelativePath,Action,SizeBytes,SourceDate,TargetDate,Enabled")
         #expect(lines[1].hasPrefix("\"docs/a, \"\"quoted\"\".txt\","))
         #expect(lines[1].hasSuffix(",true"))
-        #expect(lines[2].hasPrefix("unchanged.txt,"))
-        #expect(lines[2].hasSuffix(",false"))
+        #expect(lines[2] == "\"docs/line1\r")
+        #expect(lines[3].hasPrefix("line2.txt\","))
+        #expect(lines[3].hasSuffix(",true"))
+        #expect(lines[4].hasPrefix("unchanged.txt,"))
+        #expect(lines[4].hasSuffix(",false"))
     }
 
     @MainActor

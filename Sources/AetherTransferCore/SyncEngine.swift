@@ -165,7 +165,7 @@ public struct SyncPlan: Sendable {
     }
 
     private func escapeCSVField(_ field: String) -> String {
-        if field.contains(",") || field.contains("\"") || field.contains("\n") || field.contains("\r") {
+        if field.unicodeScalars.contains(where: { $0 == "," || $0 == "\"" || $0 == "\n" || $0 == "\r" }) {
             let doubled = field.replacingOccurrences(of: "\"", with: "\"\"")
             return "\"\(doubled)\""
         }
