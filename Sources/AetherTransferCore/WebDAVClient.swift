@@ -1,14 +1,21 @@
 import Foundation
 
-public struct WebDAVClient: Sendable {
+public struct WebDAVClient: RemoteTransport, Sendable {
     public let profile: ServerProfile
     public let credentials: Credentials
     public let session: URLSession
+    public let speedLimitBytesPerSec: Int64?
 
-    public init(profile: ServerProfile, credentials: Credentials, session: URLSession = .shared) {
+    public init(
+        profile: ServerProfile,
+        credentials: Credentials,
+        session: URLSession = .shared,
+        speedLimitBytesPerSec: Int64? = nil
+    ) {
         self.profile = profile
         self.credentials = credentials
         self.session = session
+        self.speedLimitBytesPerSec = speedLimitBytesPerSec
     }
 
     private func buildURL(for remotePath: String, directory: Bool = false) throws -> URL {
@@ -20,7 +27,7 @@ public struct WebDAVClient: Sendable {
     }
 
     private func authorizedRequest(url: URL, method: String) -> URLRequest {
-        var req = URLRequest(url: url, timeoutInterval: 30)
+        var req = URLRequest(url: url, timeoutInterval: 60)
         req.httpMethod = method
         if !profile.username.isEmpty || !credentials.password.isEmpty {
             let authPair = "\(profile.username):\(credentials.password)"
@@ -51,81 +58,85 @@ public struct WebDAVClient: Sendable {
         """
         req.httpBody = propfindBody.data(using: .utf8)
 
-        let (data, response) = try await session.data(for: req)
+        let (data, response) = try await HTTPStreamingHelper.performData(session: session, request: req)
         guard let http = response as? HTTPURLResponse else {
             throw TransferError.remote(L10n.tr("WebDAV 响应无效。", "Invalid WebDAV response."))
         }
         guard (200...299).contains(http.statusCode) else {
-            throw TransferError.remote("WebDAV HTTP \(http.statusCode)")
+            throw TransferError.remote("WebDAV PROPFIND HTTP \(http.statusCode)")
         }
         return try Self.parsePropfindXML(data, requestedPath: normalized)
     }
 
-    public func download(_ remote: String, to destination: URL, overwrite: Bool = false,
-                         offset: Int64? = nil, stagingURL: URL? = nil,
-                         progress: @escaping @Sendable (TransferProgress) -> Void = { _ in }) async throws {
+    public func download(
+        _ remote: String,
+        to destination: URL,
+        overwrite: Bool = false,
+        offset: Int64? = nil,
+        stagingURL: URL? = nil,
+        progress: @escaping @Sendable (TransferProgress) -> Void = { _ in }
+    ) async throws {
         try Task.checkCancellation()
-        let fm = FileManager.default
-        if fm.fileExists(atPath: destination.path) && !overwrite {
-            throw TransferError.conflict(destination.lastPathComponent)
-        }
         let url = try buildURL(for: remote, directory: false)
         var req = authorizedRequest(url: url, method: "GET")
         if let offset, offset > 0 {
             req.setValue("bytes=\(offset)-", forHTTPHeaderField: "Range")
         }
-
-        let temporary = stagingURL ?? destination.deletingLastPathComponent().appendingPathComponent(".aethertransfer-\(UUID().uuidString).part")
-        defer {
-            if stagingURL == nil { try? fm.removeItem(at: temporary) }
-        }
-
-        let (tempDownloadedURL, response) = try await session.download(for: req)
-        guard let http = response as? HTTPURLResponse, (200...299).contains(http.statusCode) else {
-            let status = (response as? HTTPURLResponse)?.statusCode ?? -1
-            throw TransferError.remote("WebDAV GET HTTP \(status)")
-        }
-        try Task.checkCancellation()
-        if fm.fileExists(atPath: temporary.path) {
-            try? fm.removeItem(at: temporary)
-        }
-        try fm.moveItem(at: tempDownloadedURL, to: temporary)
-        let attrs = try? fm.attributesOfItem(atPath: temporary.path)
-        let size = (attrs?[.size] as? Int64) ?? 0
-        progress(TransferProgress(completed: size, total: size))
-        try await LocalFileCommit.commit(temporary, to: destination, overwrite: overwrite)
+        try await HTTPStreamingHelper.streamDownload(
+            session: session,
+            request: req,
+            destination: destination,
+            overwrite: overwrite,
+            offset: offset,
+            stagingURL: stagingURL,
+            speedLimitBytesPerSec: speedLimitBytesPerSec,
+            preserveModificationDate: profile.preserveModificationDate,
+            protocolLabel: "WebDAV",
+            progress: progress
+        )
     }
 
-    public func upload(_ local: URL, to remote: String, overwrite: Bool = false,
-                       progress: @escaping @Sendable (TransferProgress) -> Void = { _ in }) async throws {
+    public func upload(
+        _ local: URL,
+        to remote: String,
+        overwrite: Bool = false,
+        offset: Int64? = nil,
+        stagingRemotePath: String? = nil,
+        progress: @escaping @Sendable (TransferProgress) -> Void = { _ in }
+    ) async throws {
         try Task.checkCancellation()
-        if !overwrite {
-            let parent = RemotePath.parent(remote)
-            let name = URL(fileURLWithPath: remote).lastPathComponent
-            let existing = (try? await list(parent)) ?? []
-            if existing.contains(where: { $0.name == name }) {
-                throw TransferError.conflict(name)
-            }
+        if let offset, offset > 0 {
+            throw ResumeTransferError.uploadRestartRequired
         }
-        let url = try buildURL(for: remote, directory: false)
-        var req = authorizedRequest(url: url, method: "PUT")
-        let fileData = try Data(contentsOf: local)
-        let total = Int64(fileData.count)
-        req.setValue("\(total)", forHTTPHeaderField: "Content-Length")
-        progress(TransferProgress(completed: 0, total: total))
-        let (_, response) = try await session.upload(for: req, from: fileData)
-        guard let http = response as? HTTPURLResponse, (200...299).contains(http.statusCode) else {
-            let status = (response as? HTTPURLResponse)?.statusCode ?? -1
-            throw TransferError.remote("WebDAV PUT HTTP \(status)")
+        try await HTTPStreamingHelper.checkConflict(transport: self, remote: remote, overwrite: overwrite, offset: offset)
+
+        let targetRemote = stagingRemotePath ?? remote
+        let url = try buildURL(for: targetRemote, directory: false)
+        let req = authorizedRequest(url: url, method: "PUT")
+        let fileSize = try await HTTPStreamingHelper.fileSize(at: local)
+
+        let (_, http) = try await HTTPStreamingHelper.sendStreamedUpload(
+            session: session,
+            request: req,
+            fileURL: local,
+            offset: 0,
+            length: fileSize,
+            speedLimitBytesPerSec: speedLimitBytesPerSec,
+            progress: progress
+        )
+        guard (200...299).contains(http.statusCode) else {
+            throw TransferError.remote("WebDAV PUT HTTP \(http.statusCode)")
         }
-        progress(TransferProgress(completed: total, total: total))
+        if targetRemote != remote {
+            try await rename(targetRemote, to: remote)
+        }
     }
 
     public func mkdir(_ path: String) async throws {
         try Task.checkCancellation()
         let url = try buildURL(for: path, directory: true)
         let req = authorizedRequest(url: url, method: "MKCOL")
-        let (_, response) = try await session.data(for: req)
+        let (_, response) = try await HTTPStreamingHelper.performData(session: session, request: req)
         guard let http = response as? HTTPURLResponse, (200...299).contains(http.statusCode) || http.statusCode == 405 else {
             let status = (response as? HTTPURLResponse)?.statusCode ?? -1
             throw TransferError.remote("WebDAV MKCOL HTTP \(status)")
@@ -139,7 +150,7 @@ public struct WebDAVClient: Sendable {
         var req = authorizedRequest(url: srcURL, method: "MOVE")
         req.setValue(dstURL.absoluteString, forHTTPHeaderField: "Destination")
         req.setValue("T", forHTTPHeaderField: "Overwrite")
-        let (_, response) = try await session.data(for: req)
+        let (_, response) = try await HTTPStreamingHelper.performData(session: session, request: req)
         guard let http = response as? HTTPURLResponse, (200...299).contains(http.statusCode) else {
             let status = (response as? HTTPURLResponse)?.statusCode ?? -1
             throw TransferError.remote("WebDAV MOVE HTTP \(status)")
@@ -150,11 +161,61 @@ public struct WebDAVClient: Sendable {
         try Task.checkCancellation()
         let url = try buildURL(for: path, directory: directory)
         let req = authorizedRequest(url: url, method: "DELETE")
-        let (_, response) = try await session.data(for: req)
+        let (_, response) = try await HTTPStreamingHelper.performData(session: session, request: req)
         guard let http = response as? HTTPURLResponse, (200...299).contains(http.statusCode) else {
             let status = (response as? HTTPURLResponse)?.statusCode ?? -1
             throw TransferError.remote("WebDAV DELETE HTTP \(status)")
         }
+    }
+
+    public func statMetadata(_ remotePath: String) async throws -> RemoteObjectMetadata {
+        try Task.checkCancellation()
+        let url = try buildURL(for: remotePath, directory: false)
+        let headReq = authorizedRequest(url: url, method: "HEAD")
+        let (_, response) = try await HTTPStreamingHelper.performData(session: session, request: headReq)
+        guard let http = response as? HTTPURLResponse else {
+            throw TransferError.remote(L10n.tr("WebDAV 响应无效。", "Invalid WebDAV response."))
+        }
+        if (200...299).contains(http.statusCode) {
+            let sizeHeader = http.value(forHTTPHeaderField: "Content-Length").flatMap(Int64.init)
+            let size = sizeHeader ?? (http.expectedContentLength >= 0 ? http.expectedContentLength : nil)
+            return RemoteObjectMetadata(
+                contentType: http.value(forHTTPHeaderField: "Content-Type"),
+                cacheControl: http.value(forHTTPHeaderField: "Cache-Control"),
+                etag: http.value(forHTTPHeaderField: "ETag"),
+                size: size,
+                modified: HTTPStreamingHelper.parseHTTPDate(http.value(forHTTPHeaderField: "Last-Modified"))
+            )
+        }
+        if http.statusCode == 405 {
+            var propReq = authorizedRequest(url: url, method: "PROPFIND")
+            propReq.setValue("0", forHTTPHeaderField: "Depth")
+            propReq.setValue("application/xml; charset=utf-8", forHTTPHeaderField: "Content-Type")
+            propReq.httpBody = """
+            <?xml version="1.0" encoding="utf-8"?>
+            <D:propfind xmlns:D="DAV:">
+              <D:prop>
+                <D:getcontentlength/>
+                <D:getlastmodified/>
+                <D:getcontenttype/>
+                <D:getetag/>
+              </D:prop>
+            </D:propfind>
+            """.data(using: .utf8)
+            let (data, propResp) = try await HTTPStreamingHelper.performData(session: session, request: propReq)
+            guard let propHTTP = propResp as? HTTPURLResponse, (200...299).contains(propHTTP.statusCode) else {
+                let code = (propResp as? HTTPURLResponse)?.statusCode ?? -1
+                throw TransferError.remote("WebDAV PROPFIND HTTP \(code)")
+            }
+            let normalized = RemotePath.normalize(remotePath)
+            let parent = RemotePath.parent(normalized)
+            let entries = try Self.parsePropfindXML(data, requestedPath: parent)
+            if let entry = entries.first(where: { $0.path == normalized }) {
+                return RemoteObjectMetadata(size: entry.size, modified: entry.modified)
+            }
+            throw TransferError.remote(L10n.tr("未找到远程对象：\(normalized)", "Remote object not found: \(normalized)"))
+        }
+        throw TransferError.remote("WebDAV HEAD HTTP \(http.statusCode)")
     }
 
     // MARK: - RFC 4918 PROPFIND XML Parser
@@ -182,14 +243,6 @@ private final class PropfindXMLParserDelegate: NSObject, XMLParserDelegate {
     private var currentLength = ""
     private var currentLastModified = ""
     private var currentIsDirectory = false
-
-    private static let rfc1123Formatter: DateFormatter = {
-        let f = DateFormatter()
-        f.locale = Locale(identifier: "en_US_POSIX")
-        f.timeZone = TimeZone(secondsFromGMT: 0)
-        f.dateFormat = "EEE, dd MMM yyyy HH:mm:ss zzz"
-        return f
-    }()
 
     init(requestedPath: String) {
         self.requestedPath = requestedPath
@@ -257,7 +310,7 @@ private final class PropfindXMLParserDelegate: NSObject, XMLParserDelegate {
         let isDir = currentIsDirectory || rawHref.hasSuffix("/")
         let size = isDir ? 0 : (Int64(currentLength.trimmingCharacters(in: .whitespacesAndNewlines)) ?? 0)
         let modStr = currentLastModified.trimmingCharacters(in: .whitespacesAndNewlines)
-        let modified: Date? = Self.rfc1123Formatter.date(from: modStr) ?? ISO8601DateFormatter().date(from: modStr)
+        let modified = HTTPStreamingHelper.parseHTTPDate(modStr)
 
         entries.append(FileEntry(
             name: name,
