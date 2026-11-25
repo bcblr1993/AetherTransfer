@@ -3,7 +3,7 @@ heading: { zh: AetherTransfer 隐私政策, en: AetherTransfer privacy policy }
 meta: { zh: 更新于 2026-11-25 · 适用于 0.2.0, en: Updated 2026-11-25 · Applies to 0.2.0 }
 lead: { zh: 文件与连接资料由你掌控。, en: Your files and connections remain under your control. }
 sections:
-  - heading: { zh: 本地配置、凭据与加密备份, en: Local configuration, credentials, and encrypted backup }
+  - heading: { zh: "本地配置、凭据与加密备份", en: "Local configuration, credentials, and encrypted backup" }
     body:
       - { zh: 连接资料、自定义常用位置与规则保存在本机。选择保存的密码、私钥口令与云存储密钥存入系统 Keychain，不写入连接配置文件。使用 `.aethersync` 导出书签备份时，内容会在本地经 HKDF-SHA256 与 AES-GCM-256 加密，主密码与加密文件均由你自行保管，不会上传至任何同步服务器。, en: "Connection profiles, Custom Places, and rules remain on your Mac. Saved passwords, private-key passphrases, and cloud storage secrets use the system Keychain and are never written to profile files. When exporting `.aethersync` bookmark backups, data is encrypted locally with HKDF-SHA256 and AES-GCM-256; both the master password and vault file stay under your control without any cloud sync server." }
   - heading: { zh: 协议日志脱敏与文件传输, en: Redacted transcripts and file transfers }
