@@ -235,12 +235,12 @@ private final class FixtureTLSDelegate: NSObject, URLSessionDelegate, URLSession
 
         let path = "/\(kind.rawValue)-\(UUID().uuidString) 空格"
         try await remote.mkdir(path)
-        let target = try RemotePath.join(path, "中文 # 文件.txt")
+        let target = try RemotePath.join(path, "中文 # 文件.bin")
         try await remote.upload(source, to: target)
 
         let listing = try await remote.list(path)
         XCTAssertEqual(listing.count, 1)
-        XCTAssertEqual(listing[0].name, "中文 # 文件.txt")
+        XCTAssertEqual(listing[0].name, "中文 # 文件.bin")
         XCTAssertEqual(listing[0].size, Int64(data.count))
 
         let download = folder.appendingPathComponent("download")
@@ -294,10 +294,10 @@ private final class FixtureTLSDelegate: NSObject, URLSessionDelegate, URLSession
         let remainingRecords = try await store.records()
         XCTAssertTrue(remainingRecords.isEmpty)
 
-        let renamed = try RemotePath.join(path, "renamed 空格.txt")
+        let renamed = try RemotePath.join(path, "renamed 空格.bin")
         try await remote.rename(target, to: renamed)
         let afterRename = try await remote.list(path)
-        XCTAssertEqual(afterRename.map(\.name), ["renamed 空格.txt"])
+        XCTAssertEqual(afterRename.map(\.name), ["renamed 空格.bin"])
 
         try await remote.remove(renamed, directory: false)
         let empty = try await remote.list(path)
@@ -937,5 +937,176 @@ private final class FixtureTLSDelegate: NSObject, URLSessionDelegate, URLSession
         XCTAssertEqual(meta.size, Int64(payload.count))
 
         try await remote.remove(RemotePath.parent(remotePath), directory: true)
+    }
+
+    // MARK: - v0.3.0 Loopback Protocol Parity Tests
+
+    func testFTPRawCommandSYSTFEATAndRejectsControlCharacters() async throws {
+        let remote = try client(.ftp)
+
+        let syst = try await remote.sendRawCommand("SYST")
+        XCTAssertTrue(syst.succeeded, "SYST command should succeed: \(syst.output)")
+        XCTAssertTrue(
+            syst.output.contains("215") || syst.output.uppercased().contains("UNIX"),
+            "SYST output should include real FTP server response, got: \(syst.output)"
+        )
+
+        let feat = try await remote.sendRawCommand("FEAT")
+        XCTAssertTrue(feat.succeeded, "FEAT command should succeed: \(feat.output)")
+        XCTAssertTrue(
+            feat.output.contains("211") || feat.output.uppercased().contains("UTF8"),
+            "FEAT output should include real FTP server features, got: \(feat.output)"
+        )
+
+        for invalid in ["SYST\nNOOP", "SYST\rNOOP", "SYST\r\nQUIT", "SYST\0"] {
+            do {
+                _ = try await remote.sendRawCommand(invalid)
+                XCTFail("Control character command must be rejected: \(invalid.debugDescription)")
+            } catch TransferError.invalidPath {
+            }
+        }
+    }
+
+    func testFTPASCIIAndBinaryTransferModes() async throws {
+        let port = try envPort("AT_FTP_PORT")
+        let baseProfile = ServerProfile(host: "127.0.0.1", port: port, username: "fixture", protocolKind: .ftp)
+        let creds = Credentials(password: "fixture-only")
+        let asciiClient = RemoteClient(profile: baseProfile, credentials: creds, transferMode: .ascii)
+        let binaryClient = RemoteClient(profile: baseProfile, credentials: creds, transferMode: .binary)
+
+        let dir = try makeTempDir("aether-ftp-mode")
+        defer { try? FileManager.default.removeItem(at: dir) }
+
+        let remoteDir = "/ftp-mode-\(UUID().uuidString)"
+        try await binaryClient.mkdir(remoteDir)
+
+        // 1. Binary mode preserves exact CRLF and arbitrary NUL/high bytes
+        let binaryPayload = Data("alpha\r\nbeta\r\n".utf8) + Data([0x00, 0x01, 0xFE, 0xFF]) + Data("\nend\r\n".utf8)
+        let binarySrc = dir.appendingPathComponent("binary-src.bin")
+        let binaryDst = dir.appendingPathComponent("binary-dst.bin")
+        try binaryPayload.write(to: binarySrc)
+        let remoteBinary = "\(remoteDir)/binary.bin"
+        try await binaryClient.upload(binarySrc, to: remoteBinary, overwrite: true)
+        try await binaryClient.download(remoteBinary, to: binaryDst, overwrite: true)
+        XCTAssertEqual(try Data(contentsOf: binaryDst), binaryPayload)
+
+        // 2. ASCII mode translates CRLF -> LF when downloading CRLF text stored on server, and round-trips LF text
+        let crlfText = Data("line1\r\nline2\r\nline3\r\n".utf8)
+        let crlfSrc = dir.appendingPathComponent("crlf-src.txt")
+        let asciiFromCrlfDst = dir.appendingPathComponent("ascii-from-crlf.txt")
+        try crlfText.write(to: crlfSrc)
+        let remoteCrlf = "\(remoteDir)/crlf.txt"
+        try await binaryClient.upload(crlfSrc, to: remoteCrlf, overwrite: true)
+        try await asciiClient.download(remoteCrlf, to: asciiFromCrlfDst, overwrite: true)
+        XCTAssertEqual(try String(contentsOf: asciiFromCrlfDst, encoding: .utf8), "line1\nline2\nline3\n")
+
+        let lfText = "row-a\nrow-b\nrow-c\n"
+        let lfSrc = dir.appendingPathComponent("lf-src.txt")
+        let lfDst = dir.appendingPathComponent("lf-dst.txt")
+        try Data(lfText.utf8).write(to: lfSrc)
+        let remoteAscii = "\(remoteDir)/ascii.txt"
+        try await asciiClient.upload(lfSrc, to: remoteAscii, overwrite: true)
+        try await asciiClient.download(remoteAscii, to: lfDst, overwrite: true)
+        XCTAssertEqual(try String(contentsOf: lfDst, encoding: .utf8), lfText)
+
+        try await binaryClient.remove(remoteBinary, directory: false)
+        try await binaryClient.remove(remoteCrlf, directory: false)
+        try await binaryClient.remove(remoteAscii, directory: false)
+        try await binaryClient.remove(remoteDir, directory: true)
+    }
+
+    func testS3ListBucketsLoopback() async throws {
+        let session = try makeFixtureSession()
+        defer { session.invalidateAndCancel() }
+        let port = try envPort("AT_S3_PORT")
+
+        let profile = ServerProfile(
+            host: "127.0.0.1",
+            port: port,
+            username: "AKIAFIXTURE",
+            protocolKind: .s3,
+            s3Bucket: "",
+            s3Region: "us-east-1",
+            s3PathStyle: true
+        )
+        let s3 = S3Client(
+            profile: profile,
+            credentials: Credentials(password: "secret-fixture-key"),
+            session: session
+        )
+        let buckets = try await s3.listBuckets()
+        XCTAssertEqual(buckets.map(\.name), ["archive-bucket", "test-bucket"])
+        XCTAssertTrue(buckets.allSatisfy { $0.creationDate != nil })
+    }
+
+    func testAWSSTSAssumeRoleToLoopbackS3() async throws {
+        let session = try makeFixtureSession()
+        defer { session.invalidateAndCancel() }
+        let s3Port = try envPort("AT_S3_PORT")
+        let stsPort = try envPort("AT_STS_PORT")
+
+        let baseProfile = ServerProfile(
+            host: "127.0.0.1",
+            port: s3Port,
+            username: "AKIAFIXTURE",
+            protocolKind: .s3,
+            s3Bucket: "test-bucket",
+            s3Region: "us-east-1",
+            s3PathStyle: true,
+            s3IAMRoleARN: "arn:aws:iam::123456789012:role/AetherFixtureRole",
+            s3STSEndpoint: "https://127.0.0.1:\(stsPort)/"
+        )
+        let baseCreds = Credentials(password: "secret-fixture-key")
+
+        let (ephemeralProfile, tempCreds, stsTemp) = try await AWSSTSClient().assumeRoleProfileAndCredentials(
+            profile: baseProfile,
+            credentials: baseCreds,
+            sessionName: "LoopbackQA",
+            session: session
+        )
+        XCTAssertEqual(stsTemp.accessKeyId, "ASIAFIXTURETEMP")
+        XCTAssertTrue(ephemeralProfile.s3UseSessionToken)
+        XCTAssertFalse(tempCreds.sessionToken.isEmpty)
+
+        // Verify temporary credentials without sessionToken are rejected by S3
+        let missingTokenClient = S3Client(
+            profile: ephemeralProfile,
+            credentials: Credentials(password: tempCreds.password),
+            session: session
+        )
+        do {
+            _ = try await missingTokenClient.list("/")
+            XCTFail("Temporary STS credentials without X-Amz-Security-Token must be rejected")
+        } catch {
+        }
+
+        // Verify temporary credentials with X-Amz-Security-Token work end-to-end against loopback S3
+        let s3WithToken = S3Client(profile: ephemeralProfile, credentials: tempCreds, session: session)
+        let buckets = try await s3WithToken.listBuckets()
+        XCTAssertTrue(buckets.contains(where: { $0.name == "test-bucket" }))
+
+        let remote = RemoteClient(profile: ephemeralProfile, credentials: tempCreds, httpSession: session)
+        let rootEntries = try await remote.list("/")
+        XCTAssertTrue(rootEntries.contains(where: { $0.name == "中文 seed.txt" }))
+
+        let dir = try makeTempDir("aether-sts-s3")
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let payload = Data("sts-assume-role-loopback-ok".utf8)
+        let src = dir.appendingPathComponent("sts.txt")
+        let dst = dir.appendingPathComponent("sts-out.txt")
+        try payload.write(to: src)
+
+        let remotePath = "/sts-qa-\(UUID().uuidString).txt"
+        try await remote.upload(src, to: remotePath, overwrite: true)
+        try await remote.download(remotePath, to: dst, overwrite: true)
+        XCTAssertEqual(try Data(contentsOf: dst), payload)
+
+        let signedURL = try await remote.presignedURL(for: remotePath, expiresIn: 300)
+        XCTAssertTrue(signedURL.absoluteString.contains("X-Amz-Security-Token="))
+        let (signedData, signedResp) = try await session.data(from: signedURL)
+        XCTAssertEqual((signedResp as? HTTPURLResponse)?.statusCode, 200)
+        XCTAssertEqual(signedData, payload)
+
+        try await remote.remove(remotePath, directory: false)
     }
 }

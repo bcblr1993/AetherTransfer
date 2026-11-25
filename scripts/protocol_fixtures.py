@@ -42,6 +42,10 @@ S3_ACCESS_KEY = "AKIAFIXTURE"
 S3_SECRET_KEY = "secret-fixture-key"
 S3_REGION = "us-east-1"
 S3_BUCKET = "test-bucket"
+STS_ACCESS_KEY = "ASIAFIXTURETEMP"
+STS_SECRET_KEY = "sts-temp-secret-fixture-key"
+STS_SESSION_TOKEN = "FwoGZXIvYXdzFixtureSessionToken"
+STS_ROLE_ARN = "arn:aws:iam::123456789012:role/AetherFixtureRole"
 B2_KEY_ID = "b2-key-fixture"
 B2_APP_KEY = "b2-secret-fixture"
 B2_ACCOUNT_ID = "acct-fixture"
@@ -544,6 +548,13 @@ class S3State:
 
 def make_s3_handler(state: S3State):
     class S3Handler(FixtureHTTPHandler):
+        def _resolve_secret(self, access_key: str, session_token: str) -> str | None:
+            if access_key == S3_ACCESS_KEY and not session_token:
+                return S3_SECRET_KEY
+            if access_key == STS_ACCESS_KEY and session_token == STS_SESSION_TOKEN:
+                return STS_SECRET_KEY
+            return None
+
         def _verify_sigv4(self, parsed: urllib.parse.SplitResult) -> bool:
             query_pairs = urllib.parse.parse_qsl(parsed.query, keep_blank_values=True)
             query_dict = dict(query_pairs)
@@ -555,7 +566,10 @@ def make_s3_handler(state: S3State):
                 signed_headers_str = query_dict.get("X-Amz-SignedHeaders", "")
                 provided_sig = query_dict.get("X-Amz-Signature", "")
                 parts = cred.split("/")
-                if len(parts) != 5 or parts[0] != S3_ACCESS_KEY or parts[2] != S3_REGION or parts[3] != "s3":
+                if len(parts) != 5 or parts[2] != S3_REGION or parts[3] != "s3":
+                    return False
+                secret_key = self._resolve_secret(parts[0], query_dict.get("X-Amz-Security-Token", ""))
+                if not secret_key:
                     return False
                 date_stamp = parts[1]
                 signed_headers = [h.strip().lower() for h in signed_headers_str.split(";") if h.strip()]
@@ -584,7 +598,7 @@ def make_s3_handler(state: S3State):
                     hashlib.sha256(canonical_req.encode("utf-8")).hexdigest(),
                 ])
                 expected_sig = hmac.new(
-                    derive_aws4_key(S3_SECRET_KEY, date_stamp, S3_REGION, "s3"),
+                    derive_aws4_key(secret_key, date_stamp, S3_REGION, "s3"),
                     string_to_sign.encode("utf-8"),
                     hashlib.sha256,
                 ).hexdigest()
@@ -598,7 +612,10 @@ def make_s3_handler(state: S3State):
                 k, _, v = part.strip().partition("=")
                 fields[k.strip()] = v.strip()
             cred_parts = fields.get("Credential", "").split("/")
-            if len(cred_parts) != 5 or cred_parts[0] != S3_ACCESS_KEY or cred_parts[2] != S3_REGION or cred_parts[3] != "s3":
+            if len(cred_parts) != 5 or cred_parts[2] != S3_REGION or cred_parts[3] != "s3":
+                return False
+            secret_key = self._resolve_secret(cred_parts[0], self.headers.get("X-Amz-Security-Token") or "")
+            if not secret_key:
                 return False
             date_stamp = cred_parts[1]
             amz_date = self.headers.get("x-amz-date") or ""
@@ -626,7 +643,7 @@ def make_s3_handler(state: S3State):
                 hashlib.sha256(canonical_req.encode("utf-8")).hexdigest(),
             ])
             expected_sig = hmac.new(
-                derive_aws4_key(S3_SECRET_KEY, date_stamp, S3_REGION, "s3"),
+                derive_aws4_key(secret_key, date_stamp, S3_REGION, "s3"),
                 string_to_sign.encode("utf-8"),
                 hashlib.sha256,
             ).hexdigest()
@@ -650,6 +667,27 @@ def make_s3_handler(state: S3State):
             return parsed, q, bucket, key
 
         def do_GET(self):
+            parsed = urllib.parse.urlsplit(self.path)
+            if parsed.path == "/":
+                if not self._verify_sigv4(parsed):
+                    self._send_xml(403, "<Error><Code>SignatureDoesNotMatch</Code></Error>")
+                    return
+                q = dict(urllib.parse.parse_qsl(parsed.query, keep_blank_values=True))
+                if "list-type" not in q:
+                    created = iso8601_z(1735689600)
+                    xml = (
+                        '<?xml version="1.0" encoding="UTF-8"?>'
+                        '<ListAllMyBucketsResult xmlns="http://s3.amazonaws.com/doc/2006-03-01/">'
+                        "<Owner><ID>fixture-owner</ID><DisplayName>fixture</DisplayName></Owner>"
+                        "<Buckets>"
+                        f"<Bucket><Name>{S3_BUCKET}</Name><CreationDate>{created}</CreationDate></Bucket>"
+                        f"<Bucket><Name>archive-bucket</Name><CreationDate>{created}</CreationDate></Bucket>"
+                        "</Buckets>"
+                        "</ListAllMyBucketsResult>"
+                    )
+                    self._send_xml(200, xml)
+                    return
+
             ctx = self._authorize_and_parse()
             if not ctx:
                 return
@@ -913,6 +951,87 @@ def make_s3_handler(state: S3State):
             self._send_bytes(204)
 
     return S3Handler
+
+
+# ---------------------------------------------------------------------------
+# 2b. AWS STS Fixture Server (SigV4 AssumeRole)
+# ---------------------------------------------------------------------------
+
+def make_sts_handler():
+    class STSHandler(FixtureHTTPHandler):
+        def _verify_sts_sigv4(self, parsed: urllib.parse.SplitResult, body: bytes) -> bool:
+            auth = self.headers.get("Authorization") or ""
+            if not auth.startswith("AWS4-HMAC-SHA256 "):
+                return False
+            fields = {}
+            for part in auth[len("AWS4-HMAC-SHA256 "):].split(","):
+                k, _, v = part.strip().partition("=")
+                fields[k.strip()] = v.strip()
+            cred_parts = fields.get("Credential", "").split("/")
+            if len(cred_parts) != 5 or cred_parts[0] != S3_ACCESS_KEY or cred_parts[2] != S3_REGION or cred_parts[3] != "sts":
+                return False
+            date_stamp = cred_parts[1]
+            amz_date = self.headers.get("x-amz-date") or ""
+            payload_hash = self.headers.get("x-amz-content-sha256") or ""
+            if payload_hash != hashlib.sha256(body).hexdigest():
+                return False
+            signed_headers_str = fields.get("SignedHeaders", "")
+            signed_headers = [h.strip().lower() for h in signed_headers_str.split(";") if h.strip()]
+            canonical_headers = "".join(f"{h}:{(self.headers.get(h) or '').strip()}\n" for h in signed_headers)
+            query_pairs = urllib.parse.parse_qsl(parsed.query, keep_blank_values=True)
+            canon_query_pairs = sorted((aws_uri_encode(k, True), aws_uri_encode(v, True)) for k, v in query_pairs)
+            canonical_query = "&".join(f"{k}={v}" for k, v in canon_query_pairs)
+            unquoted_path = urllib.parse.unquote(parsed.path) or "/"
+            canonical_uri = aws_uri_encode(unquoted_path, False)
+            canonical_req = "\n".join([
+                self.command.upper(),
+                canonical_uri,
+                canonical_query,
+                canonical_headers,
+                signed_headers_str,
+                payload_hash,
+            ])
+            scope = f"{date_stamp}/{S3_REGION}/sts/aws4_request"
+            string_to_sign = "\n".join([
+                "AWS4-HMAC-SHA256",
+                amz_date,
+                scope,
+                hashlib.sha256(canonical_req.encode("utf-8")).hexdigest(),
+            ])
+            expected_sig = hmac.new(
+                derive_aws4_key(S3_SECRET_KEY, date_stamp, S3_REGION, "sts"),
+                string_to_sign.encode("utf-8"),
+                hashlib.sha256,
+            ).hexdigest()
+            return hmac.compare_digest(expected_sig, fields.get("Signature", ""))
+
+        def do_POST(self):
+            parsed = urllib.parse.urlsplit(self.path)
+            body = self._read_body()
+            if not self._verify_sts_sigv4(parsed, body):
+                self._send_xml(403, "<ErrorResponse><Error><Code>SignatureDoesNotMatch</Code></Error></ErrorResponse>")
+                return
+            form = urllib.parse.parse_qs(body.decode("utf-8"), keep_blank_values=True)
+            if form.get("Action") != ["AssumeRole"] or form.get("RoleArn") != [STS_ROLE_ARN]:
+                self._send_xml(400, "<ErrorResponse><Error><Code>ValidationError</Code></Error></ErrorResponse>")
+                return
+            expiration = iso8601_z(datetime.datetime.now(datetime.timezone.utc).timestamp() + 3600)
+            xml = (
+                '<?xml version="1.0" encoding="UTF-8"?>'
+                '<AssumeRoleResponse xmlns="https://sts.amazonaws.com/doc/2011-06-15/">'
+                "<AssumeRoleResult>"
+                "<Credentials>"
+                f"<AccessKeyId>{STS_ACCESS_KEY}</AccessKeyId>"
+                f"<SecretAccessKey>{STS_SECRET_KEY}</SecretAccessKey>"
+                f"<SessionToken>{STS_SESSION_TOKEN}</SessionToken>"
+                f"<Expiration>{expiration}</Expiration>"
+                "</Credentials>"
+                "</AssumeRoleResult>"
+                "</AssumeRoleResponse>"
+            )
+            self._send_xml(200, xml)
+
+    return STSHandler
 
 
 # ---------------------------------------------------------------------------
@@ -1968,8 +2087,9 @@ def main() -> int:
         webdav_httpd, webdav_thread, webdav_port = start_http_server(make_webdav_handler(WebDAVState(webdav_root)))
         webdavs_httpd, webdavs_thread, webdavs_port = start_http_server(make_webdav_handler(WebDAVState(webdavs_root)), tls_context=tls_ctx)
 
-        # 6. S3 HTTPS
+        # 6. S3 HTTPS & STS HTTPS
         s3_httpd, s3_thread, s3_port = start_http_server(make_s3_handler(S3State(page_limit=2)), tls_context=tls_ctx)
+        sts_httpd, sts_thread, sts_port = start_http_server(make_sts_handler(), tls_context=tls_ctx)
 
         # 7. Backblaze B2 HTTPS
         b2_port_holder = [0]
@@ -1990,6 +2110,7 @@ def main() -> int:
             (webdav_httpd, webdav_thread),
             (webdavs_httpd, webdavs_thread),
             (s3_httpd, s3_thread),
+            (sts_httpd, sts_thread),
             (b2_httpd, b2_thread),
             (azure_httpd, azure_thread),
             (swift_httpd, swift_thread),
@@ -2006,6 +2127,7 @@ def main() -> int:
             AT_WEBDAV_PORT=str(webdav_port),
             AT_WEBDAVS_PORT=str(webdavs_port),
             AT_S3_PORT=str(s3_port),
+            AT_STS_PORT=str(sts_port),
             AT_B2_PORT=str(b2_port),
             AT_AZURE_PORT=str(azure_port),
             AT_SWIFT_PORT=str(swift_port),

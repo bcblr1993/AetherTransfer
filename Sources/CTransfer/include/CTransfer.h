@@ -13,11 +13,15 @@ int at_transfer_window(ATRequest *request, int64_t offset, int64_t end, int64_t 
 int at_set_speed_limit(ATRequest *request, int64_t bytes_per_sec);
 int at_set_ssh_agent(ATRequest *request, int enabled);
 int at_set_ftps_explicit(ATRequest *request, int enabled);
+int at_set_ascii_mode(ATRequest *request, int enabled);
+int at_set_ftp_active(ATRequest *request, int enabled);
+int at_set_connect_timeout(ATRequest *request, int seconds);
 int64_t at_file_size(ATRequest *request);
 int64_t at_file_time(ATRequest *request);
 // mode: 0 listing, 1 download, 2 upload, 3 quote commands
 int at_perform(ATRequest *request, int mode, const char *local_path, const char *commands,
                ATProgress progress, void *context);
+int at_perform_raw(ATRequest *request, const char *command);
 const char *at_error(ATRequest *request);
 const char *at_result(ATRequest *request);
 const char *at_host_key(ATRequest *request);

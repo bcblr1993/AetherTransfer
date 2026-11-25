@@ -1,6 +1,6 @@
 title: { zh: 隐私政策, en: Privacy policy }
 heading: { zh: AetherTransfer 隐私政策, en: AetherTransfer privacy policy }
-meta: { zh: 更新于 2026-11-25 · 适用于 0.2.0, en: Updated 2026-11-25 · Applies to 0.2.0 }
+meta: { zh: "更新于 2026-11-25 · 适用于 0.3.0", en: "Updated 2026-11-25 · Applies to 0.3.0" }
 lead: { zh: 文件与连接资料由你掌控。, en: Your files and connections remain under your control. }
 sections:
   - heading: { zh: "本地配置、凭据与加密备份", en: "Local configuration, credentials, and encrypted backup" }

@@ -2,8 +2,8 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-VERSION="${VERSION:-0.2.0}"
-BUILD_NUMBER="${BUILD_NUMBER:-2026112501}"
+VERSION="${VERSION:-0.3.0}"
+BUILD_NUMBER="${BUILD_NUMBER:-2026112502}"
 FEED_URL="${FEED_URL:-https://github.com/bcblr1993/AetherTransfer/releases/latest/download/appcast.json}"
 ENTITLEMENTS="scripts/Entitlements.plist"
 
@@ -146,8 +146,8 @@ cat > "outputs/appcast.json" <<JSON
     "sha256": "${ZIP_SHA256}",
     "sizeBytes": ${ZIP_SIZE},
     "minimumSystemVersion": "26.0",
-    "releaseNotesZh": "AetherTransfer v${VERSION}（Transmit 5 深度对齐）：支持显式 FTPS (AUTH TLS)、WebDAV/HTTPS、S3/R2/MinIO、Backblaze B2、Azure Blob 与 OpenStack Swift；新增级联 Miller 分栏与画廊视图、聚焦模式与双栏来源切换、Servers Launchpad（颜色标签、文件夹关联、常用位置）、三标签文件检查器（文件夹大小、SHA-256/MD5、递归权限、云端元数据与 Presigned URL）、Skip Rules 规则与 ASCII 扩展名、脱敏协议日志、Finder Droplets 与 URL Scheme、SSH 密钥管理器、外部编辑器保存自动回传、.aethersync 加密书签同步及菜单栏微件。",
-    "releaseNotesEn": "AetherTransfer v${VERSION} (Transmit 5 Parity): adds Explicit FTPS (AUTH TLS), WebDAV/HTTPS, S3/R2/MinIO, Backblaze B2, Azure Blob, and OpenStack Swift; cascading Miller Columns and Gallery Split views, Focus Mode, and Local/Server pane switching; Servers Launchpad with color tags, Folder Linking, and Custom Places; 3-tab File Inspector (Folder Size, chunked SHA-256/MD5, recursive chmod, cloud metadata and Presigned URLs); Skip Rules and ASCII extensions; redacted Transcript logs; Finder Droplets and URL schemes; SSH Key Manager; External Editor auto-upload on save; .aethersync encrypted vault; and Menu Bar Droplet."
+    "releaseNotesZh": "AetherTransfer v${VERSION}（Transmit 5 深度对齐）：新增 FTP Active/Passive 与 Automatic/ASCII/Binary 传输模式、Raw FTP/SFTP 命令控制台、S3 服务商预设 / ListBuckets 桶发现与 AWS STS AssumeRole + MFA 临时凭据、FileZilla/Cyberduck/Transmit/SSH/AWS 书签导入器、防 Zip-Slip 解压、内置编辑器查找替换（⌘F）与 UTF-8/UTF-16/ISO-8859-1/GB18030 多编码、高级同步（时间偏移补偿、最近修改、跟随符号链接、Simulate 干跑与 CSV 导出）、Files & Editors 偏好设置（按扩展名自定义编辑器）、View Options（⌘J）、活跃传输关闭/断连守护及完整 macOS 菜单快捷键。",
+    "releaseNotesEn": "AetherTransfer v${VERSION} (Deep Transmit 5 Parity): adds FTP Active/Passive and Automatic/ASCII/Binary transfer modes, Raw FTP/SFTP Command Console, S3 provider presets / ListBuckets discovery / AWS STS AssumeRole + MFA temporary credentials, bookmark importers (FileZilla, Cyberduck, Transmit, SSH, AWS), Zip-Slip-safe archive extraction, built-in editor Find & Replace (⌘F) with UTF-8/UTF-16/ISO-8859-1/GB18030 encodings, Sync time offset / modified-within / follow symlinks / Simulate dry-run / CSV export, Files & Editors preferences (per-extension custom editors), View Options (⌘J), active-transfer close/disconnect guard, and complete macOS menu shortcuts."
   }
 }
 JSON

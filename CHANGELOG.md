@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.3.0] - 2026-11-25
+
+- feat(protocols): add FTP Active/Passive toggle (`CURLOPT_FTPPORT`), global/per-profile `TransferMode` (Automatic/ASCII/Binary), Raw FTP/SFTP Command Console (`RemoteClient.sendRawCommand` / `at_perform_raw`) with control-character rejection and `TranscriptRedactor` output sanitization, and custom `connectTimeoutSeconds`.
+- feat(s3-sts): add `S3ProviderPreset` templates (AWS S3, AWS S3 IAM Role/STS, Cloudflare R2, MinIO, DreamObjects, Wasabi, DigitalOcean Spaces), S3 `ListBuckets` (`GET /`) bucket discovery, and `AWSSTSClient` SigV4 `AssumeRole` with External ID, custom STS endpoint, and MFA prompt issuing ephemeral `X-Amz-Security-Token` credentials.
+- feat(importers-archive): add `BookmarkImporters` for FileZilla XML, Cyberduck `.duck` (XML/binary plist), Transmit Favorites/`.inetloc`, `~/.ssh/config`, and `~/.aws/{config,credentials}`, plus safe `ArchiveHelper.extractZip` with Zip-Slip and symlink-escape pre-scan rejection.
+- feat(editor-sync-prefs): add built-in editor Find & Replace (`⌘F`) and multi-encoding support (UTF-8, UTF-16, ISO-8859-1, GB18030); expand `SyncOptions` with Time Offset + auto-detect, Modified-Within filter, Follow Symlinks, Simulate dry-run, and RFC-4180 CSV export (`SyncPlan.exportReportCSV`); add `FilesPreferencesStore` (per-extension custom editors, double-click action, delete confirmation, notifications/sounds), `ViewOptionsPopover` (`⌘J`), active-transfer close/disconnect guard, and complete macOS menu shortcuts.
+- fix(ftp): ensure byte-offset resumed transfers (`offset != nil`) stay in binary mode so server and local offsets match even when `TransferMode.automatic` is active for text extensions.
+- test(protocols): expand loopback `ProtocolIntegrationTests` (`scripts/protocol_fixtures.py`) with real FTP `SYST`/`FEAT` raw commands, FTP ASCII vs Binary transfers, S3 `ListBuckets`, and loopback AWS STS `AssumeRole` -> S3 `X-Amz-Security-Token` end-to-end verification (21 integration tests, 0 failures).
+
 ## [0.2.0] - 2026-11-25
 
 - feat(protocols): add Explicit FTPS (`AUTH TLS`), WebDAV/WebDAVS (`PROPFIND`/`MKCOL`/`MOVE`/`DELETE`), Amazon S3 / Cloudflare R2 / MinIO (AWS SigV4, multipart upload, metadata, presigned URLs), Backblaze B2 Native API, Microsoft Azure Blob (`SharedKey` + SAS URLs), and OpenStack Swift (`X-Auth-Token` + temporary URLs).

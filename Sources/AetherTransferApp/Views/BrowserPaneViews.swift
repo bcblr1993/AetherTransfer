@@ -299,9 +299,32 @@ struct BrowserEntryContextMenu: View {
             }
             .disabled(!opposite.isEnabled)
 
+            if (role == .leftLocal || role == .primaryRemote) && opposite.isEnabled {
+                Button(L10n.tr("忽略规则直接传输", "Transfer Without Rules")) {
+                    workspace.transferWithoutRules([entry], remote: role == .primaryRemote)
+                }
+            }
+
             if opposite.canMove, let moveOp = opposite.performMove {
                 Button(L10n.tr("移动到对侧本地", "Move to Opposite Local")) {
                     moveOp([entry])
+                }
+            }
+
+            if workspace.canPreviewInBrowser(entry, remote: role.isRemote) {
+                Button(L10n.tr("在浏览器中预览", "Preview in Browser")) {
+                    workspace.previewInBrowser(entry, remote: role.isRemote)
+                }
+            }
+
+            if !role.isRemote {
+                Button(L10n.tr("压缩 (Archive.zip)", "Compress (Archive.zip)")) {
+                    workspace.compressLocalEntries([entry], role: role, layout: layout)
+                }
+                if !entry.isDirectory && entry.fileExtension == "zip" {
+                    Button(L10n.tr("解压压缩包…", "Extract Archive…")) {
+                        workspace.extractLocalZip(entry, role: role, layout: layout)
+                    }
                 }
             }
 
@@ -387,6 +410,18 @@ struct BrowserEntryContextMenu: View {
             }
             .disabled(!opposite.isEnabled)
 
+            if (role == .leftLocal || role == .primaryRemote) && opposite.isEnabled {
+                Button(L10n.tr("忽略规则直接传输 (\(entries.count))", "Transfer Without Rules (\(entries.count))")) {
+                    workspace.transferWithoutRules(entries, remote: role == .primaryRemote)
+                }
+            }
+
+            if !role.isRemote {
+                Button(L10n.tr("压缩 (Archive.zip)", "Compress (Archive.zip)")) {
+                    workspace.compressLocalEntries(entries, role: role, layout: layout)
+                }
+            }
+
             if role == .leftLocal {
                 Button(L10n.tr("压缩并上传所选 \(entries.count) 项…", "Compress & Upload \(entries.count) Items…")) {
                     workspace.compressAndUpload(entries)
@@ -456,6 +491,7 @@ struct BrowserBackgroundContextMenu: View {
 struct MainView: View {
     @ObservedObject var workspace: Workspace
     @ObservedObject private var rulesStore: RulesAndTranscriptStore
+    @ObservedObject private var v3Store: TransmitV3UIStore
     @StateObject private var appearance = PaneAppearanceState()
     @StateObject private var layout = PaneLayoutController()
     @State private var showConnect = false
@@ -464,6 +500,7 @@ struct MainView: View {
     init(workspace: Workspace) {
         self.workspace = workspace
         self._rulesStore = ObservedObject(wrappedValue: workspace.rulesAndTranscriptStore)
+        self._v3Store = ObservedObject(wrappedValue: workspace.v3UIStore)
     }
 
     private var activeLeftRole: BrowserPaneRole {
@@ -704,10 +741,17 @@ struct MainView: View {
                 .help(L10n.tr("软件在线更新 (⌘U)", "Software Update (⌘U)"))
 
                 if workspace.connectedProfile != nil {
+                    Button(action: { v3Store.showRawCommandSheet = true }) {
+                        Label(L10n.tr("发送原始命令…", "Send Raw Command…"), systemImage: "apple.terminal")
+                    }
+                    .help(L10n.tr("发送原始服务器命令…", "Send Raw Command…"))
+                    .accessibilityLabel(L10n.tr("发送原始命令", "Send Raw Command"))
+
                     Button(action: { workspace.disconnect() }) {
                         Label(L10n.tr("断开", "Disconnect"), systemImage: "eject.fill")
                     }
                     .help(L10n.tr("断开远程连接", "Disconnect Remote Server"))
+                    .accessibilityLabel(L10n.tr("断开远程连接", "Disconnect Remote Server"))
                 }
             }
         }
@@ -736,6 +780,27 @@ struct MainView: View {
         }
         .sheet(isPresented: $workspace.showEncryptedSyncSheet) {
             EncryptedSyncVaultSheet(workspace: workspace)
+        }
+        .sheet(isPresented: $v3Store.showRawCommandSheet) {
+            RawCommandSheet(workspace: workspace)
+        }
+        .sheet(isPresented: $v3Store.showImportServersSheet) {
+            ImportServersSheet(workspace: workspace)
+        }
+        .sheet(item: $v3Store.mfaChallengeProfile) { profile in
+            MFAPromptSheet(workspace: workspace, profile: profile)
+        }
+        .sheet(
+            isPresented: Binding(
+                get: { v3Store.showBucketPickerSheet && v3Store.bucketPickerOrigin == .main },
+                set: { newValue in
+                    if !newValue && v3Store.bucketPickerOrigin == .main {
+                        v3Store.showBucketPickerSheet = false
+                    }
+                }
+            )
+        ) {
+            S3BucketPickerSheet(workspace: workspace)
         }
         .quickLookPreview($workspace.previewURL)
         .overlay {
@@ -775,6 +840,7 @@ struct MainView: View {
         }
         .onAppear {
             appearance.syncFromWorkspaceViewMode(workspace.viewMode)
+            v3Store.displayMode = appearance.displayMode
             if workspace.connectedProfile != nil && rulesStore.defaultFocusPane == .remoteWhenConnected {
                 layout.activePaneSide = .right
             }
@@ -785,6 +851,30 @@ struct MainView: View {
         .onChange(of: rulesStore.newEmptyFileRequestCounter) { _, _ in
             workspace.createNewFile(in: focusedPaneRole, layout: layout)
         }
+        .onChange(of: v3Store.newFolderRequestCounter) { _, _ in
+            workspace.createFolder(in: focusedPaneRole, layout: layout)
+        }
+        .onChange(of: v3Store.quickConnectRequestCounter) { _, _ in
+            workspace.editingProfile = nil
+            showConnect = true
+        }
+        .onChange(of: v3Store.viewOptionsRequestCounter) { _, _ in
+            let targetRole = focusedPaneRole
+            if v3Store.showViewOptionsPopover && v3Store.viewOptionsPaneRole == targetRole {
+                v3Store.showViewOptionsPopover = false
+            } else {
+                v3Store.viewOptionsPaneRole = targetRole
+                v3Store.showViewOptionsPopover = true
+            }
+        }
+        .onChange(of: v3Store.externalEditRequestCounter) { _, _ in
+            if let target = inspectedTarget, !target.entry.isDirectory {
+                let role: BrowserPaneRole = (target.isRemote == activeRightRole.isRemote) ? activeRightRole : activeLeftRole
+                workspace.openInExternalEditor(target.entry, in: role, layout: layout)
+            } else if let entry = workspace.selectedEntry, !entry.isDirectory {
+                workspace.openInExternalEditor(entry, remote: workspace.isRemoteEntry(entry))
+            }
+        }
         .onChange(of: workspace.showHidden) { _, _ in
             workspace.refreshLocal()
             if layout.rightPaneSource == .secondLocal {
@@ -793,6 +883,16 @@ struct MainView: View {
         }
         .onChange(of: workspace.viewMode) { _, newValue in
             appearance.syncFromWorkspaceViewMode(newValue)
+        }
+        .onChange(of: appearance.displayMode) { _, newMode in
+            if v3Store.displayMode != newMode {
+                v3Store.displayMode = newMode
+            }
+        }
+        .onChange(of: v3Store.displayMode) { _, newMode in
+            if appearance.displayMode != newMode {
+                appearance.applyDisplayMode(newMode, to: workspace)
+            }
         }
         .onChange(of: layout.rightPaneSource) { _, newSource in
             if newSource == .secondLocal {
@@ -868,7 +968,7 @@ struct MainView: View {
             FilePaneView(
                 title: server.name.isEmpty ? server.host : server.name,
                 path: $workspace.remotePath,
-                files: workspace.sortedRemoteFiles,
+                files: workspace.v3SortedRemoteFiles,
                 selection: $workspace.remoteSelection,
                 loading: workspace.loadingRemote,
                 query: query,
@@ -884,7 +984,7 @@ struct MainView: View {
             FilePaneView(
                 title: L10n.tr("本地", "Local"),
                 path: $workspace.localPath,
-                files: workspace.sortedLocalFiles,
+                files: workspace.v3SortedLocalFiles,
                 selection: $workspace.localSelection,
                 loading: workspace.loadingLocal,
                 query: query,
@@ -907,7 +1007,7 @@ struct MainView: View {
                 FilePaneView(
                     title: server.name.isEmpty ? server.host : server.name,
                     path: $workspace.remotePath,
-                    files: workspace.sortedRemoteFiles,
+                    files: workspace.v3SortedRemoteFiles,
                     selection: $workspace.remoteSelection,
                     loading: workspace.loadingRemote,
                     query: query,
@@ -934,7 +1034,7 @@ struct MainView: View {
             FilePaneView(
                 title: L10n.tr("本地 (右侧)", "Local (Right)"),
                 path: $layout.secondLocalPath,
-                files: layout.sortedSecondLocalFiles,
+                files: workspace.v3SortedSecondLocalFiles(layout: layout),
                 selection: $layout.secondLocalSelection,
                 loading: layout.loadingSecondLocal,
                 query: query,
@@ -952,7 +1052,7 @@ struct MainView: View {
                 FilePaneView(
                     title: secondServer.name.isEmpty ? secondServer.host : secondServer.name,
                     path: $layout.secondRemotePath,
-                    files: layout.sortedSecondRemoteFiles,
+                    files: workspace.v3SortedSecondRemoteFiles(layout: layout),
                     selection: $layout.secondRemoteSelection,
                     loading: layout.loadingSecondRemote,
                     query: query,
@@ -1282,6 +1382,7 @@ struct TabBarView: View {
             }
             .buttonStyle(.borderless)
             .help(L10n.tr("新建标签页 (⌘T)", "New Tab (⌘T)"))
+            .accessibilityLabel(L10n.tr("新建标签页", "New Tab"))
         }
         .padding(.horizontal, 10)
         .padding(.vertical, 4)
@@ -1690,11 +1791,57 @@ struct FilePaneView: View {
     @ObservedObject var workspace: Workspace
     @ObservedObject var appearance: PaneAppearanceState
     @ObservedObject var layout: PaneLayoutController
+    @ObservedObject private var v3Store: TransmitV3UIStore
 
     @State private var isEditingPath = false
     @State private var tempPathText = ""
     @State private var dropTargetID: String?
     @State private var isPaneDropTargeted = false
+
+    init(
+        title: String,
+        path: Binding<String>,
+        files: [FileEntry],
+        selection: Binding<Set<String>>,
+        loading: Bool,
+        query: String,
+        remote: Bool,
+        side: PaneSide,
+        role: BrowserPaneRole,
+        showGoToFolder: Binding<Bool>,
+        workspace: Workspace,
+        appearance: PaneAppearanceState,
+        layout: PaneLayoutController
+    ) {
+        self.title = title
+        self._path = path
+        self.files = files
+        self._selection = selection
+        self.loading = loading
+        self.query = query
+        self.remote = remote
+        self.side = side
+        self.role = role
+        self._showGoToFolder = showGoToFolder
+        self.workspace = workspace
+        self.appearance = appearance
+        self.layout = layout
+        self._v3Store = ObservedObject(wrappedValue: workspace.v3UIStore)
+    }
+
+    private var viewOptionsPopoverBinding: Binding<Bool> {
+        Binding(
+            get: { v3Store.showViewOptionsPopover && v3Store.viewOptionsPaneRole == role },
+            set: { isPresented in
+                if isPresented {
+                    v3Store.viewOptionsPaneRole = role
+                    v3Store.showViewOptionsPopover = true
+                } else if v3Store.viewOptionsPaneRole == role {
+                    v3Store.showViewOptionsPopover = false
+                }
+            }
+        )
+    }
 
     var currentSortField: FileSortField {
         switch role {
@@ -1828,6 +1975,18 @@ struct FilePaneView: View {
             .help(L10n.tr("排序与列选项", "Sort & Column Options"))
             .accessibilityLabel(L10n.tr("排序与列选项", "Sort and Column Options"))
 
+            Button {
+                viewOptionsPopoverBinding.wrappedValue.toggle()
+            } label: {
+                Image(systemName: "slider.horizontal.3")
+            }
+            .buttonStyle(.borderless)
+            .help(L10n.tr("显示选项…", "View Options…"))
+            .accessibilityLabel(L10n.tr("显示选项", "View Options"))
+            .popover(isPresented: viewOptionsPopoverBinding) {
+                ViewOptionsPopover(workspace: workspace, appearance: appearance)
+            }
+
             Button(action: { workspace.parentPane(role: role, layout: layout) }) {
                 Image(systemName: "arrow.up")
             }
@@ -1874,6 +2033,15 @@ struct FilePaneView: View {
                 }
                 .help(L10n.tr("在终端中打开", "Open in Terminal"))
                 .accessibilityLabel(L10n.tr("在终端中打开", "Open in Terminal"))
+                .buttonStyle(.borderless)
+            }
+
+            if role == .primaryRemote && workspace.connectedProfile != nil {
+                Button(action: { v3Store.showRawCommandSheet = true }) {
+                    Image(systemName: "apple.terminal")
+                }
+                .help(L10n.tr("发送原始命令…", "Send Raw Command…"))
+                .accessibilityLabel(L10n.tr("发送原始命令", "Send Raw Command"))
                 .buttonStyle(.borderless)
             }
 

@@ -59,6 +59,31 @@ public enum TransferProtocol: String, Codable, CaseIterable, Sendable {
     }
 }
 
+public enum TransferMode: String, Codable, CaseIterable, Identifiable, Sendable {
+    case automatic, ascii, binary
+    public var id: String { rawValue }
+    public var localizedTitle: String {
+        switch self {
+        case .automatic: return L10n.tr("自动", "Automatic")
+        case .ascii: return L10n.tr("ASCII 文本", "ASCII")
+        case .binary: return L10n.tr("二进制", "Binary")
+        }
+    }
+}
+
+public enum DoubleClickAction: String, Codable, CaseIterable, Identifiable, Sendable {
+    case transfer, editBuiltIn, editExternal, doNothing
+    public var id: String { rawValue }
+    public var localizedTitle: String {
+        switch self {
+        case .transfer: return L10n.tr("传输", "Transfer")
+        case .editBuiltIn: return L10n.tr("在内置编辑器中打开", "Edit in Built-in Editor")
+        case .editExternal: return L10n.tr("在外部编辑器中打开", "Edit in External Editor")
+        case .doNothing: return L10n.tr("无操作", "Do Nothing")
+        }
+    }
+}
+
 public struct ServerProfile: Identifiable, Codable, Hashable, Sendable {
     public var id: UUID
     public var name: String
@@ -88,6 +113,13 @@ public struct ServerProfile: Identifiable, Codable, Hashable, Sendable {
     public var swiftContainer: String
     public var swiftTenantOrProject: String
     public var preserveModificationDate: Bool
+    public var ftpPassiveMode: Bool
+    public var connectTimeoutSeconds: Int
+    public var s3IAMRoleARN: String
+    public var s3STSExternalID: String
+    public var s3MFASerial: String
+    public var s3STSEndpoint: String
+    public var defaultTransferMode: TransferMode
 
     public init(id: UUID = UUID(), name: String = "", group: String = "", host: String = "", port: Int? = nil,
                 username: String = "", protocolKind: TransferProtocol = .sftp, initialPath: String = "/",
@@ -98,7 +130,11 @@ public struct ServerProfile: Identifiable, Codable, Hashable, Sendable {
                 b2BucketName: String = "", b2BucketId: String = "",
                 azureAccountName: String = "", azureContainer: String = "", azureUseSAS: Bool = false,
                 swiftAuthURL: String = "", swiftContainer: String = "", swiftTenantOrProject: String = "",
-                preserveModificationDate: Bool = true) {
+                preserveModificationDate: Bool = true,
+                ftpPassiveMode: Bool = true, connectTimeoutSeconds: Int = 15,
+                s3IAMRoleARN: String = "", s3STSExternalID: String = "",
+                s3MFASerial: String = "", s3STSEndpoint: String = "",
+                defaultTransferMode: TransferMode = .automatic) {
         self.id = id; self.name = name; self.group = group; self.host = host; self.port = port ?? protocolKind.defaultPort
         self.username = username; self.protocolKind = protocolKind; self.initialPath = initialPath
         self.privateKeyPath = privateKeyPath; self.trustedHostKey = trustedHostKey
@@ -109,6 +145,13 @@ public struct ServerProfile: Identifiable, Codable, Hashable, Sendable {
         self.azureAccountName = azureAccountName; self.azureContainer = azureContainer; self.azureUseSAS = azureUseSAS
         self.swiftAuthURL = swiftAuthURL; self.swiftContainer = swiftContainer; self.swiftTenantOrProject = swiftTenantOrProject
         self.preserveModificationDate = preserveModificationDate
+        self.ftpPassiveMode = ftpPassiveMode
+        self.connectTimeoutSeconds = connectTimeoutSeconds
+        self.s3IAMRoleARN = s3IAMRoleARN
+        self.s3STSExternalID = s3STSExternalID
+        self.s3MFASerial = s3MFASerial
+        self.s3STSEndpoint = s3STSEndpoint
+        self.defaultTransferMode = defaultTransferMode
     }
 
     enum CodingKeys: String, CodingKey {
@@ -117,6 +160,9 @@ public struct ServerProfile: Identifiable, Codable, Hashable, Sendable {
         case defaultLocalPath, siteURL, colorTag, s3StorageClass, s3UseSessionToken
         case b2BucketName, b2BucketId, azureAccountName, azureContainer, azureUseSAS
         case swiftAuthURL, swiftContainer, swiftTenantOrProject, preserveModificationDate
+        case ftpPassiveMode, connectTimeoutSeconds
+        case s3IAMRoleARN, s3STSExternalID, s3MFASerial, s3STSEndpoint
+        case defaultTransferMode
     }
 
     public init(from decoder: Decoder) throws {
@@ -150,6 +196,13 @@ public struct ServerProfile: Identifiable, Codable, Hashable, Sendable {
         swiftContainer = try c.decodeIfPresent(String.self, forKey: .swiftContainer) ?? ""
         swiftTenantOrProject = try c.decodeIfPresent(String.self, forKey: .swiftTenantOrProject) ?? ""
         preserveModificationDate = try c.decodeIfPresent(Bool.self, forKey: .preserveModificationDate) ?? true
+        ftpPassiveMode = try c.decodeIfPresent(Bool.self, forKey: .ftpPassiveMode) ?? true
+        connectTimeoutSeconds = try c.decodeIfPresent(Int.self, forKey: .connectTimeoutSeconds) ?? 15
+        s3IAMRoleARN = try c.decodeIfPresent(String.self, forKey: .s3IAMRoleARN) ?? ""
+        s3STSExternalID = try c.decodeIfPresent(String.self, forKey: .s3STSExternalID) ?? ""
+        s3MFASerial = try c.decodeIfPresent(String.self, forKey: .s3MFASerial) ?? ""
+        s3STSEndpoint = try c.decodeIfPresent(String.self, forKey: .s3STSEndpoint) ?? ""
+        defaultTransferMode = try c.decodeIfPresent(TransferMode.self, forKey: .defaultTransferMode) ?? .automatic
     }
 
     private var resolvedHost: String {
@@ -175,7 +228,7 @@ public struct ServerProfile: Identifiable, Codable, Hashable, Sendable {
         }
     }
 
-    public func validate() throws {
+    private func validateConnectionBasics() throws {
         let effectiveHost = resolvedHost
         let trimmedUser = username.trimmingCharacters(in: .whitespacesAndNewlines)
         let hasIdentity: Bool
@@ -189,6 +242,16 @@ public struct ServerProfile: Identifiable, Codable, Hashable, Sendable {
         guard !effectiveHost.isEmpty, !effectiveHost.contains(where: { $0.isWhitespace }), !effectiveHost.contains("/"),
               !effectiveHost.contains("@"), !effectiveHost.contains("?"), !effectiveHost.contains("#"), (1...65535).contains(port),
               hasIdentity else { throw TransferError.invalidConnection }
+    }
+
+    /// Validates S3 connection fields (`host`/default `s3.amazonaws.com`, `port`, `username`) even when `s3Bucket` is empty.
+    public func validateForBucketDiscovery() throws {
+        guard protocolKind == .s3 else { throw TransferError.invalidConnection }
+        try validateConnectionBasics()
+    }
+
+    public func validate() throws {
+        try validateConnectionBasics()
 
         switch protocolKind {
         case .s3:

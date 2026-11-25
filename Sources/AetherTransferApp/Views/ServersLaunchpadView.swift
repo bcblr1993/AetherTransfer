@@ -37,7 +37,6 @@ struct DisconnectedStateView: View {
     var workspace: Workspace?
     var onDropWithoutConnection: () -> Void = {}
 
-    // Wave 3 Integrator: pass `workspace: workspace` in BrowserPaneViews.swift -> DisconnectedStateView(showConnect: $showConnect, workspace: workspace)
     init(
         showConnect: Binding<Bool>,
         workspace: Workspace? = nil,
@@ -134,6 +133,7 @@ struct ServersLaunchpadView: View {
             onDropWithoutConnection()
             return false
         }
+        .modifier(LaunchpadBucketSheetModifier(workspace: workspace, origin: .quickConnect))
     }
 
     private var launchpadHeader: some View {
@@ -151,11 +151,23 @@ struct ServersLaunchpadView: View {
                 }
             }
             .pickerStyle(.segmented)
+            .labelsHidden()
+            .accessibilityLabel(L10n.tr("启动台模式", "Launchpad Mode"))
             .frame(width: 210)
 
             Spacer()
 
             if let workspace {
+                Button {
+                    workspace.v3UIStore.showImportServersSheet = true
+                } label: {
+                    Label(L10n.tr("导入服务器…", "Import Servers…"), systemImage: "square.and.arrow.down")
+                }
+                .buttonStyle(.borderless)
+                .font(.caption)
+                .help(L10n.tr("从 FileZilla / Cyberduck / Transmit / ~/.ssh/config / ~/.aws 导入服务器…", "Import Servers…"))
+                .accessibilityLabel(L10n.tr("导入服务器", "Import Servers"))
+
                 Button {
                     workspace.showSSHKeyManager = true
                 } label: {
@@ -163,6 +175,7 @@ struct ServersLaunchpadView: View {
                 }
                 .buttonStyle(.borderless)
                 .help(L10n.tr("SSH 密钥管理器…", "SSH Key Manager…"))
+                .accessibilityLabel(L10n.tr("SSH 密钥管理器", "SSH Key Manager"))
             }
 
             Button {
@@ -174,6 +187,7 @@ struct ServersLaunchpadView: View {
             }
             .buttonStyle(.borderless)
             .help(L10n.tr("添加新服务器书签…", "Add New Server Bookmark…"))
+            .accessibilityLabel(L10n.tr("新建服务器书签", "New Server Bookmark"))
         }
         .padding(.horizontal, 14)
         .padding(.vertical, 8)
@@ -258,6 +272,7 @@ struct ServersLaunchpadView: View {
                                 .font(.caption)
                         }
                         .buttonStyle(.plain)
+                        .accessibilityLabel(L10n.tr("清除搜索", "Clear Search"))
                     }
                 }
                 .padding(.horizontal, 10)
@@ -323,6 +338,11 @@ struct ServersLaunchpadView: View {
                     Button(L10n.tr("快速连接", "Quick Connect")) {
                         activeTab = .quickConnect
                     }
+                    if let workspace {
+                        Button(L10n.tr("导入服务器…", "Import Servers…")) {
+                            workspace.v3UIStore.showImportServersSheet = true
+                        }
+                    }
                     Button(L10n.tr("添加书签…", "Add Bookmark…")) {
                         workspace?.editingProfile = nil
                         showConnect = true
@@ -356,6 +376,8 @@ struct ServersLaunchpadView: View {
                         password: $qcPassword,
                         passphrase: $qcPassphrase,
                         sessionToken: $qcSessionToken,
+                        workspace: workspace,
+                        bucketPickerOrigin: .quickConnect,
                         onOpenKeyManager: workspace.map { ws in { ws.showSSHKeyManager = true } }
                     )
                 }
@@ -476,7 +498,7 @@ struct ServersLaunchpadView: View {
                     }
                     try workspace.save(targetProfile, credentials: creds, remember: qcRememberCredentials)
                 }
-                workspace.connectApplyingFolderLink(targetProfile, credentials: creds)
+                workspace.connectWithOptionalMFAPrompt(targetProfile, credentials: creds)
             } else {
                 showConnect = true
             }
@@ -607,6 +629,48 @@ private struct LaunchpadServerCard: View {
     }
 }
 
+// MARK: - Bucket Picker Sheet Modifier for Optional Workspace
+
+private struct LaunchpadBucketSheetModifier: ViewModifier {
+    var workspace: Workspace?
+    let origin: S3BucketPickerOrigin
+
+    func body(content: Content) -> some View {
+        if let workspace {
+            content.modifier(BoundBucketSheetModifier(workspace: workspace, origin: origin))
+        } else {
+            content
+        }
+    }
+}
+
+private struct BoundBucketSheetModifier: ViewModifier {
+    @ObservedObject var workspace: Workspace
+    @ObservedObject private var v3Store: TransmitV3UIStore
+    let origin: S3BucketPickerOrigin
+
+    init(workspace: Workspace, origin: S3BucketPickerOrigin) {
+        self.workspace = workspace
+        self._v3Store = ObservedObject(wrappedValue: workspace.v3UIStore)
+        self.origin = origin
+    }
+
+    func body(content: Content) -> some View {
+        content.sheet(
+            isPresented: Binding(
+                get: { v3Store.showBucketPickerSheet && v3Store.bucketPickerOrigin == origin },
+                set: { newValue in
+                    if !newValue && v3Store.bucketPickerOrigin == origin {
+                        v3Store.showBucketPickerSheet = false
+                    }
+                }
+            )
+        ) {
+            S3BucketPickerSheet(workspace: workspace)
+        }
+    }
+}
+
 // MARK: - Shared Protocol Fields Form Section (Used by Quick Connect & Bookmark Editor)
 
 private struct ProtocolConnectionFieldsView: View {
@@ -614,7 +678,12 @@ private struct ProtocolConnectionFieldsView: View {
     @Binding var password: String
     @Binding var passphrase: String
     @Binding var sessionToken: String
+    var workspace: Workspace?
+    var bucketPickerOrigin: S3BucketPickerOrigin = .quickConnect
     var onOpenKeyManager: (() -> Void)?
+
+    @State private var selectedS3Preset: S3ProviderPreset = .awsS3
+    @State private var showIAMRoleSection: Bool = false
 
     private static let s3StorageClasses = [
         "STANDARD",
@@ -626,6 +695,44 @@ private struct ProtocolConnectionFieldsView: View {
         "REDUCED_REDUNDANCY"
     ]
 
+    init(
+        profile: Binding<ServerProfile>,
+        password: Binding<String>,
+        passphrase: Binding<String>,
+        sessionToken: Binding<String>,
+        workspace: Workspace? = nil,
+        bucketPickerOrigin: S3BucketPickerOrigin = .quickConnect,
+        onOpenKeyManager: (() -> Void)? = nil
+    ) {
+        self._profile = profile
+        self._password = password
+        self._passphrase = passphrase
+        self._sessionToken = sessionToken
+        self.workspace = workspace
+        self.bucketPickerOrigin = bucketPickerOrigin
+        self.onOpenKeyManager = onOpenKeyManager
+
+        let current = profile.wrappedValue
+        let inferred = Self.inferS3Preset(from: current)
+        self._selectedS3Preset = State(initialValue: inferred)
+        self._showIAMRoleSection = State(
+            initialValue: inferred == .awsS3IAMRole || !current.s3IAMRoleARN.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        )
+    }
+
+    private static func inferS3Preset(from profile: ServerProfile) -> S3ProviderPreset {
+        if !profile.s3IAMRoleARN.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return .awsS3IAMRole
+        }
+        let lowerHost = profile.host.lowercased()
+        if lowerHost.contains("r2.cloudflarestorage.com") { return .cloudflareR2 }
+        if lowerHost.contains("wasabisys.com") { return .wasabi }
+        if lowerHost.contains("digitaloceanspaces.com") { return .digitalOceanSpaces }
+        if lowerHost.contains("dream.io") { return .dreamObjects }
+        if !lowerHost.isEmpty && !lowerHost.contains("amazonaws.com") { return .minio }
+        return .awsS3
+    }
+
     var body: some View {
         Picker(L10n.tr("传输协议", "Protocol"), selection: $profile.protocolKind) {
             ForEach(TransferProtocol.allCases, id: \.self) { kind in
@@ -635,7 +742,31 @@ private struct ProtocolConnectionFieldsView: View {
 
         switch profile.protocolKind {
         case .s3:
-            TextField(L10n.tr("S3 Bucket 名称", "S3 Bucket Name"), text: $profile.s3Bucket, prompt: Text("my-production-bucket"))
+            Picker(L10n.tr("S3 服务预设", "S3 Provider Preset"), selection: $selectedS3Preset) {
+                ForEach(S3ProviderPreset.allCases) { preset in
+                    Text(preset.localizedTitle).tag(preset)
+                }
+            }
+            .onChange(of: selectedS3Preset) { _, newPreset in
+                profile.host = newPreset.defaultHost(region: profile.s3Region)
+                profile.s3PathStyle = newPreset.defaultPathStyle
+                if newPreset == .awsS3IAMRole {
+                    showIAMRoleSection = true
+                }
+            }
+
+            HStack(spacing: 8) {
+                TextField(L10n.tr("S3 Bucket 名称", "S3 Bucket Name"), text: $profile.s3Bucket, prompt: Text("my-production-bucket"))
+                Button(L10n.tr("浏览存储桶…", "Browse Buckets…")) {
+                    guard let workspace else { return }
+                    let creds = Credentials(password: password, passphrase: passphrase, sessionToken: sessionToken)
+                    workspace.browseS3Buckets(for: profile, credentials: creds, origin: bucketPickerOrigin) { chosenBucket in
+                        profile.s3Bucket = chosenBucket
+                    }
+                }
+                .disabled(workspace == nil)
+            }
+
             TextField(L10n.tr("AWS Region 区域", "AWS Region"), text: $profile.s3Region, prompt: Text("us-east-1 / auto"))
             TextField(L10n.tr("Endpoint 终端节点", "Custom Endpoint (Optional)"), text: $profile.host, prompt: Text(L10n.tr("留空默认 AWS S3，或填 R2 / MinIO 域名", "s3.amazonaws.com or <id>.r2.cloudflarestorage.com")))
             TextField(L10n.tr("端口号", "Port"), value: $profile.port, format: .number.grouping(.never))
@@ -652,6 +783,32 @@ private struct ProtocolConnectionFieldsView: View {
             Toggle(L10n.tr("使用临时 STS Session Token", "Use STS Session Token"), isOn: $profile.s3UseSessionToken)
             if profile.s3UseSessionToken {
                 SecureField(L10n.tr("Session Token (存入钥匙串)", "Session Token (Keychain)"), text: $sessionToken)
+            }
+
+            DisclosureGroup(
+                L10n.tr("S3 IAM 角色 / STS 临时凭证 (可选)", "S3 IAM Role (STS)"),
+                isExpanded: $showIAMRoleSection
+            ) {
+                TextField(
+                    L10n.tr("IAM Role ARN", "IAM Role ARN"),
+                    text: $profile.s3IAMRoleARN,
+                    prompt: Text("arn:aws:iam::123456789012:role/MyRole")
+                )
+                TextField(
+                    L10n.tr("STS Endpoint (可选)", "STS Endpoint (Optional)"),
+                    text: $profile.s3STSEndpoint,
+                    prompt: Text("https://sts.amazonaws.com")
+                )
+                TextField(
+                    L10n.tr("External ID (可选)", "External ID (Optional)"),
+                    text: $profile.s3STSExternalID,
+                    prompt: Text(L10n.tr("跨账号外部 ID", "Cross-account External ID"))
+                )
+                TextField(
+                    L10n.tr("MFA 设备序列号 (可选)", "MFA Serial ARN (Optional)"),
+                    text: $profile.s3MFASerial,
+                    prompt: Text("arn:aws:iam::123456789012:mfa/user")
+                )
             }
 
             TextField(L10n.tr("初始前缀路径", "Initial Prefix Path"), text: $profile.initialPath)
@@ -715,15 +872,38 @@ private struct ProtocolConnectionFieldsView: View {
                     }
                 }
                 SecureField(L10n.tr("私钥解密口令 (Passphrase)", "Private Key Passphrase"), text: $passphrase)
-            } else if profile.protocolKind == .ftp {
-                Text(L10n.tr("提示：FTP 会以明文传输凭据和文件内容。生产环境推荐选择 SFTP 或 FTPS。",
-                             "Note: FTP transmits credentials and data in cleartext. Prefer SFTP or FTPS for production."))
-                    .font(.caption)
-                    .foregroundStyle(.orange)
-            } else if profile.protocolKind == .ftpsExplicit {
-                Text(L10n.tr("显式 TLS (AUTH TLS) 通过端口 21 协商加密传输，严格校验证书。",
-                             "Explicit AUTH TLS upgrades port 21 with strict certificate verification."))
-                    .font(.caption)
+            } else if profile.protocolKind == .ftp || profile.protocolKind == .ftps || profile.protocolKind == .ftpsExplicit {
+                Toggle(
+                    L10n.tr("使用被动模式 (PASV / EPSV)", "Use Passive Mode (PASV / EPSV)"),
+                    isOn: $profile.ftpPassiveMode
+                )
+
+                Picker(L10n.tr("默认传输模式", "Default Transfer Mode"), selection: $profile.defaultTransferMode) {
+                    ForEach(TransferMode.allCases) { mode in
+                        Text(mode.localizedTitle).tag(mode)
+                    }
+                }
+
+                if profile.protocolKind == .ftp {
+                    Text(L10n.tr("提示：FTP 会以明文传输凭据和文件内容。生产环境推荐选择 SFTP 或 FTPS。",
+                                 "Note: FTP transmits credentials and data in cleartext. Prefer SFTP or FTPS for production."))
+                        .font(.caption)
+                        .foregroundStyle(.orange)
+                } else if profile.protocolKind == .ftpsExplicit {
+                    Text(L10n.tr("显式 TLS (AUTH TLS) 通过端口 21 协商加密传输，严格校验证书。",
+                                 "Explicit AUTH TLS upgrades port 21 with strict certificate verification."))
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+            }
+        }
+
+        Stepper(value: $profile.connectTimeoutSeconds, in: 5...120, step: 5) {
+            HStack {
+                Text(L10n.tr("连接超时", "Connection Timeout"))
+                Spacer()
+                Text(L10n.tr("\(profile.connectTimeoutSeconds) 秒", "\(profile.connectTimeoutSeconds)s"))
+                    .font(.caption.monospacedDigit())
                     .foregroundStyle(.secondary)
             }
         }
@@ -762,7 +942,7 @@ struct HostChallengeDialog: View {
             HStack {
                 Button(L10n.tr("取消", "Cancel")) {
                     workspace.hostChallenge = nil
-                    workspace.disconnect()
+                    workspace.disconnect(confirmActiveTransfers: false)
                 }
                 .keyboardShortcut(.cancelAction)
 
@@ -877,6 +1057,8 @@ struct ConnectionView: View {
                         password: $password,
                         passphrase: $passphrase,
                         sessionToken: $sessionToken,
+                        workspace: workspace,
+                        bucketPickerOrigin: .connectionSheet,
                         onOpenKeyManager: { workspace.showSSHKeyManager = true }
                     )
                 }
@@ -970,7 +1152,7 @@ struct ConnectionView: View {
                             try workspace.save(profile, credentials: credentials, remember: remember)
                         }
                         workspace.editingProfile = nil
-                        workspace.connectApplyingFolderLink(profile, credentials: credentials)
+                        workspace.connectWithOptionalMFAPrompt(profile, credentials: credentials)
                         dismiss()
                     } catch {
                         self.error = error.localizedDescription
@@ -981,7 +1163,8 @@ struct ConnectionView: View {
             }
             .padding(16)
         }
-        .frame(width: 590, height: 680)
+        .frame(width: 590, height: 700)
+        .modifier(LaunchpadBucketSheetModifier(workspace: workspace, origin: .connectionSheet))
         .onChange(of: profile.protocolKind) { oldKind, newKind in
             if !isEditing || profile.port == oldKind.defaultPort {
                 profile.port = newKind.defaultPort

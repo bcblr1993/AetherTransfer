@@ -2,6 +2,24 @@
 
 依据：本机 Transmit 协议菜单与 Panic 官方功能/协议文档（2026-10-07）。目标是等价的文件传输工作流，使用自己的品牌、代码与原生 macOS 26 Liquid Glass 设计。
 
+## 已完成对齐（v0.3.0 深度对齐）
+
+- **FTP 高级连接选项与原始命令控制台**：
+  - **FTP Active / Passive 模式与传输模式**：支持切换 Passive / Active（`CURLOPT_FTPPORT`）模式、连接超时配置（`connectTimeoutSeconds`），以及按全局/单连接配置的 `TransferMode`（`Automatic` 按 ASCII 扩展名自动判定、`ASCII`、`Binary`，断点续传窗口自动保持二进制字节偏移一致性）。
+  - **Raw FTP / SFTP Command Console**：内置原始命令控制台（`RawCommandSheet`），通过 `RemoteClient.sendRawCommand` / `at_perform_raw` 在后台执行 FTP（`SYST`、`FEAT` 等）与 SFTP 命令，严格拦截 `\0` / `\r` / `\n` 控制字符注入并用 `TranscriptRedactor` 脱敏输出。
+- **S3 服务商预设、桶列表发现与 AWS STS 临时凭据**：
+  - **S3 Provider Presets**：内置 Amazon S3、Amazon S3 (IAM Role / STS)、Cloudflare R2、MinIO / 兼容 S3、DreamObjects、Wasabi 与 DigitalOcean Spaces 预设（自动填充默认端点与 Path-Style）。
+  - **S3 `ListBuckets` 与 AWS STS `AssumeRole`**：支持留空 Bucket 自动列举账户下所有存储桶（`GET /`）；支持配置 IAM Role ARN、External ID、自定义 STS 端点与 MFA 验证码弹窗，通过 `AWSSTSClient` SigV4 调用 `AssumeRole` 获取临时 `AccessKeyId` / `SecretAccessKey` / `X-Amz-Security-Token` 会话凭据而不改动持久化密钥。
+- **跨客户端书签导入器与安全 Zip 解压**：
+  - **Bookmark Importers**：支持一键扫描并导入 FileZilla XML、Cyberduck `.duck`（XML 与二进制 Plist）、Transmit Favorites / `.inetloc`、`~/.ssh/config` 与 `~/.aws/config` + `~/.aws/credentials`，并安全写入系统 Keychain。
+  - **安全 Zip 解压**：支持本地 `.zip` 安全解压（`ArchiveHelper.extractZip`），在解压前预扫描条目并拒绝 `..` 路径穿越（Zip-Slip）与符号链接逃逸。
+- **内置编辑器查找替换与多字符编码**：
+  - 支持在内置编辑器中按 `⌘F` 展开查找与替换栏（单次替换 / 全部替换），并支持切换 **UTF-8、UTF-16、ISO-8859-1（ISO Latin 1）与 GB18030** 字符编码读写文件。
+- **高级目录同步、偏好设置、视图选项与操作守护**：
+  - **SyncOptions 与 CSV 报告**：支持时间偏移补偿（Time Offset）与自动时间差估算（`estimateTimeOffset`）、仅同步最近 N 秒/分钟内修改（`modifiedWithinSeconds`）、跟随符号链接（`followSymlinks`）、只模拟不执行的干跑模式（`simulateOnly`）以及 RFC-4180 CSV 同步报告导出（`SyncPlan.exportReportCSV`）。
+  - **Files & Editors 偏好设置与视图选项**：新增 `FilesPreferencesStore`（双击行为、默认外部编辑器、按文件扩展名指定自定义编辑器、删除前确认、默认传输模式、完成通知与提示音）与 `ViewOptionsPopover`（`⌘J` 图标大小、间距、列表列与字号调节）。
+  - **守护与菜单快捷键**：新增活跃传输关闭窗口/断开连接守护提醒，以及完整对齐 macOS 原生菜单栏快捷键（`AppMenus`）。
+
 ## 已完成对齐（v0.2.0）
 
 - **全协议传输引擎（10 种协议模式 / 8 大协议家族）**：
@@ -46,7 +64,8 @@
 1. 原生工程、GitHub 规范、官网开发中入口、FTP/SFTP 协议与安全基础。（已完成）
 2. 双栏与任务队列、递归/冲突/续传/编辑/文件管理的完整核心工作流。（已完成）
 3. 全协议引擎（WebDAV/S3/R2/B2/Azure/Swift/Explicit FTPS）、Miller 分栏/画廊/聚焦模式、Servers Launchpad、三标签检查器、规则引擎、脱敏日志、Droplets 与 `.aethersync`。（已完成 `v0.2.0`）
-4. 消费级 OAuth 云盘集成与真机账号长稳验收。（后续版本）
+4. 深度工作流对齐：FTP Active/Passive & ASCII/Binary、Raw FTP/SFTP 控制台、S3 预设 / `ListBuckets` / AWS STS `AssumeRole` + MFA、跨客户端书签导入、防 Zip-Slip 解压、编辑器查找替换与多编码、高级同步（时差补偿/干跑/CSV）、Files 偏好设置、View Options、断连守护与菜单快捷键。（已完成 `v0.3.0`）
+5. 消费级 OAuth 云盘集成与真机账号长稳验收。（后续版本）
 
 参考：
 - https://help.panic.com/transmit/transmit5/features/

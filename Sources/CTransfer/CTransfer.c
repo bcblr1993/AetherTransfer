@@ -1,10 +1,12 @@
 #include "CTransfer.h"
+#include <ctype.h>
 #include <curl/curl.h>
 #include <pthread.h>
 #include <stdatomic.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
 #include <sys/stat.h>
 
 struct ATRequest {
@@ -21,6 +23,7 @@ struct ATRequest {
     int64_t range_end;
     int64_t expected_total;
     int window;
+    int is_sftp;
 };
 static pthread_once_t initialized = PTHREAD_ONCE_INIT;
 static void initialize(void) { curl_global_init(CURL_GLOBAL_DEFAULT); }
@@ -93,6 +96,7 @@ ATRequest *at_create(const char *url, const char *user, const char *password,
     curl_easy_setopt(r->curl, CURLOPT_PROXY, "");
     curl_easy_setopt(r->curl, CURLOPT_FILETIME, 1L);
     if (strncmp(url, "sftp:", 5) == 0) {
+        r->is_sftp = 1;
         curl_easy_setopt(r->curl, CURLOPT_SSH_HOSTKEYFUNCTION, hostkey);
         curl_easy_setopt(r->curl, CURLOPT_SSH_HOSTKEYDATA, r);
         if (key && *key) {
@@ -149,6 +153,19 @@ int at_set_ftps_explicit(ATRequest *r, int enabled) {
         return curl_easy_setopt(r->curl, CURLOPT_FTPSSLAUTH, (long)CURLFTPAUTH_TLS);
     }
     return CURLE_OK;
+}
+int at_set_ascii_mode(ATRequest *r, int enabled) {
+    if (!r) return CURLE_BAD_FUNCTION_ARGUMENT;
+    return curl_easy_setopt(r->curl, CURLOPT_TRANSFERTEXT, enabled ? 1L : 0L);
+}
+int at_set_ftp_active(ATRequest *r, int enabled) {
+    if (!r) return CURLE_BAD_FUNCTION_ARGUMENT;
+    return curl_easy_setopt(r->curl, CURLOPT_FTPPORT, enabled ? "-" : NULL);
+}
+int at_set_connect_timeout(ATRequest *r, int seconds) {
+    if (!r) return CURLE_BAD_FUNCTION_ARGUMENT;
+    long clamped = seconds < 5 ? 5L : (seconds > 120 ? 120L : (long)seconds);
+    return curl_easy_setopt(r->curl, CURLOPT_CONNECTTIMEOUT, clamped);
 }
 int64_t at_file_size(ATRequest *r) {
     if (!r) return -1;
@@ -215,6 +232,54 @@ int at_perform(ATRequest *r, int mode, const char *local, const char *commands, 
     }
     CURLcode code = curl_easy_perform(r->curl);
     if (f && fclose(f) != 0 && code == CURLE_OK) { snprintf(r->error, sizeof(r->error), "Cannot flush local file"); code = CURLE_WRITE_ERROR; }
+    curl_slist_free_all(quotes);
+    if (code != CURLE_OK && !r->error[0]) snprintf(r->error, sizeof(r->error), "%s", curl_easy_strerror(code));
+    return code;
+}
+static int is_ftp_data_command(const char *cmd) {
+    while (*cmd && isspace((unsigned char)*cmd)) cmd++;
+    const char *verbs[] = {"LIST", "NLST", "MLSD"};
+    for (size_t i = 0; i < sizeof(verbs) / sizeof(verbs[0]); i++) {
+        size_t len = strlen(verbs[i]);
+        if (strncasecmp(cmd, verbs[i], len) == 0 && (cmd[len] == '\0' || isspace((unsigned char)cmd[len]))) {
+            return 1;
+        }
+    }
+    return 0;
+}
+int at_perform_raw(ATRequest *r, const char *command) {
+    if (!r || !command || !*command) return CURLE_BAD_FUNCTION_ARGUMENT;
+    free(r->result);
+    r->result = NULL;
+    r->length = 0;
+    r->error[0] = 0;
+
+    struct curl_slist *quotes = NULL;
+    curl_easy_setopt(r->curl, CURLOPT_HEADERFUNCTION, collect);
+    curl_easy_setopt(r->curl, CURLOPT_HEADERDATA, r);
+    curl_easy_setopt(r->curl, CURLOPT_WRITEFUNCTION, collect);
+    curl_easy_setopt(r->curl, CURLOPT_WRITEDATA, r);
+
+    if (!r->is_sftp && is_ftp_data_command(command)) {
+        curl_easy_setopt(r->curl, CURLOPT_QUOTE, NULL);
+        curl_easy_setopt(r->curl, CURLOPT_NOBODY, 0L);
+        curl_easy_setopt(r->curl, CURLOPT_CUSTOMREQUEST, command);
+    } else {
+        char *copy = strdup(command);
+        if (!copy) return CURLE_OUT_OF_MEMORY;
+        char *save = NULL;
+        for (char *line = strtok_r(copy, "\r\n", &save); line; line = strtok_r(NULL, "\r\n", &save)) {
+            while (*line && isspace((unsigned char)*line)) line++;
+            if (*line) quotes = curl_slist_append(quotes, line);
+        }
+        free(copy);
+        if (!quotes) return CURLE_BAD_FUNCTION_ARGUMENT;
+        curl_easy_setopt(r->curl, CURLOPT_CUSTOMREQUEST, NULL);
+        curl_easy_setopt(r->curl, CURLOPT_QUOTE, quotes);
+        curl_easy_setopt(r->curl, CURLOPT_NOBODY, 1L);
+    }
+
+    CURLcode code = curl_easy_perform(r->curl);
     curl_slist_free_all(quotes);
     if (code != CURLE_OK && !r->error[0]) snprintf(r->error, sizeof(r->error), "%s", curl_easy_strerror(code));
     return code;

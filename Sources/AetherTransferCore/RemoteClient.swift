@@ -22,12 +22,19 @@ public struct RemoteClient: RemoteTransport, Sendable {
     public let profile: ServerProfile
     public let credentials: Credentials
     public let speedLimitBytesPerSec: Int64?
+    public let transferMode: TransferMode
     private let httpSession: URLSession
 
-    public init(profile: ServerProfile, credentials: Credentials, speedLimitBytesPerSec: Int64? = nil) {
+    public init(
+        profile: ServerProfile,
+        credentials: Credentials,
+        speedLimitBytesPerSec: Int64? = nil,
+        transferMode: TransferMode? = nil
+    ) {
         self.profile = profile
         self.credentials = credentials
         self.speedLimitBytesPerSec = speedLimitBytesPerSec
+        self.transferMode = transferMode ?? profile.defaultTransferMode
         self.httpSession = .shared
     }
 
@@ -35,17 +42,50 @@ public struct RemoteClient: RemoteTransport, Sendable {
         profile: ServerProfile,
         credentials: Credentials,
         speedLimitBytesPerSec: Int64? = nil,
+        transferMode: TransferMode? = nil,
         httpSession: URLSession
     ) {
         self.profile = profile
         self.credentials = credentials
         self.speedLimitBytesPerSec = speedLimitBytesPerSec
+        self.transferMode = transferMode ?? profile.defaultTransferMode
         self.httpSession = httpSession
     }
 
     public static func fingerprint(_ key: String) -> String {
         guard let data = Data(base64Encoded: key) else { return "Invalid key" }
         return "SHA256:" + Data(SHA256.hash(data: data)).base64EncodedString().replacingOccurrences(of: "=", with: "")
+    }
+
+    public static func isFTPFamily(_ protocolKind: TransferProtocol) -> Bool {
+        protocolKind == .ftp || protocolKind == .ftps || protocolKind == .ftpsExplicit
+    }
+
+    /// Resolves whether ASCII text transfer mode should be enabled for a given filename on FTP-family protocols.
+    public func shouldUseAsciiTransfer(forFilename filename: String, transferModeOverride: TransferMode? = nil) -> Bool {
+        guard Self.isFTPFamily(profile.protocolKind) else { return false }
+        let effectiveMode = transferModeOverride ?? transferMode
+        switch effectiveMode {
+        case .automatic:
+            return AsciiFileExtensions.isAsciiTransferFile(filename)
+        case .ascii:
+            return true
+        case .binary:
+            return false
+        }
+    }
+
+    /// Validates a raw FTP/SFTP command before passing it to libcurl (`\0`, `\r`, `\n`, and blank commands are rejected).
+    public static func validateRawCommand(_ command: String) throws -> String {
+        let forbidden: Set<UnicodeScalar> = ["\0", "\r", "\n"]
+        guard !command.unicodeScalars.contains(where: { forbidden.contains($0) }) else {
+            throw TransferError.invalidPath
+        }
+        let trimmed = command.trimmingCharacters(in: .whitespaces)
+        guard !trimmed.isEmpty else {
+            throw TransferError.invalidPath
+        }
+        return trimmed
     }
 
     private func httpTransport() -> (any RemoteTransport)? {
@@ -65,42 +105,15 @@ public struct RemoteClient: RemoteTransport, Sendable {
         }
     }
 
-    private func perform(
+    internal func createConfiguredRequest(
         path: String,
         directory: Bool = false,
         mode: Int32,
-        local: String = "",
-        commands: String = "",
+        transferFilename: String? = nil,
         offset: Int64? = nil,
         rangeEnd: Int64 = -1,
-        expectedTotal: Int64 = -1,
-        progress: @escaping @Sendable (TransferProgress) -> Void = { _ in }
-    ) async throws -> String {
-        try await performWithMetadata(
-            path: path,
-            directory: directory,
-            mode: mode,
-            local: local,
-            commands: commands,
-            offset: offset,
-            rangeEnd: rangeEnd,
-            expectedTotal: expectedTotal,
-            progress: progress
-        ).output
-    }
-
-    private func performWithMetadata(
-        path: String,
-        directory: Bool = false,
-        mode: Int32,
-        local: String = "",
-        commands: String = "",
-        offset: Int64? = nil,
-        rangeEnd: Int64 = -1,
-        expectedTotal: Int64 = -1,
-        progress: @escaping @Sendable (TransferProgress) -> Void = { _ in }
-    ) async throws -> (output: String, fileTime: Int64) {
-        try Task.checkCancellation()
+        expectedTotal: Int64 = -1
+    ) throws -> OpaquePointer {
         let url = try profile.url(path: path, directory: directory)
         let request = url.withCString { url in profile.username.withCString { user in credentials.password.withCString { password in
             profile.privateKeyPath.withCString { key in credentials.passphrase.withCString { passphrase in
@@ -125,6 +138,27 @@ public struct RemoteClient: RemoteTransport, Sendable {
                 throw TransferError.remote(L10n.tr("无法配置 TLS 证书根。", "Unable to configure TLS certificate roots."))
             }
         }
+        let timeoutResult = at_set_connect_timeout(request, Int32(profile.connectTimeoutSeconds))
+        guard timeoutResult == 0 else {
+            at_destroy(request)
+            throw TransferError.remote(L10n.tr("无法配置连接超时。", "Unable to configure connection timeout."))
+        }
+        if Self.isFTPFamily(profile.protocolKind) && !profile.ftpPassiveMode {
+            let activeResult = at_set_ftp_active(request, 1)
+            guard activeResult == 0 else {
+                at_destroy(request)
+                throw TransferError.remote(L10n.tr("无法启用主动 FTP 模式。", "Unable to enable Active FTP mode."))
+            }
+        }
+        if Self.isFTPFamily(profile.protocolKind) && (mode == 1 || mode == 2), let transferFilename {
+            // Byte-offset resumed transfers require binary mode so server and local byte offsets match.
+            let useAscii = (offset == nil) && shouldUseAsciiTransfer(forFilename: transferFilename)
+            let asciiResult = at_set_ascii_mode(request, useAscii ? 1 : 0)
+            guard asciiResult == 0 else {
+                at_destroy(request)
+                throw TransferError.remote(L10n.tr("无法配置传输模式。", "Unable to configure transfer mode."))
+            }
+        }
         if let limit = speedLimitBytesPerSec, limit > 0, (mode == 1 || mode == 2) {
             _ = at_set_speed_limit(request, limit)
         }
@@ -135,6 +169,57 @@ public struct RemoteClient: RemoteTransport, Sendable {
                 throw TransferError.remote("无法设置传输窗口。")
             }
         }
+        return request
+    }
+
+    private func perform(
+        path: String,
+        directory: Bool = false,
+        mode: Int32,
+        local: String = "",
+        commands: String = "",
+        transferFilename: String? = nil,
+        offset: Int64? = nil,
+        rangeEnd: Int64 = -1,
+        expectedTotal: Int64 = -1,
+        progress: @escaping @Sendable (TransferProgress) -> Void = { _ in }
+    ) async throws -> String {
+        try await performWithMetadata(
+            path: path,
+            directory: directory,
+            mode: mode,
+            local: local,
+            commands: commands,
+            transferFilename: transferFilename,
+            offset: offset,
+            rangeEnd: rangeEnd,
+            expectedTotal: expectedTotal,
+            progress: progress
+        ).output
+    }
+
+    private func performWithMetadata(
+        path: String,
+        directory: Bool = false,
+        mode: Int32,
+        local: String = "",
+        commands: String = "",
+        transferFilename: String? = nil,
+        offset: Int64? = nil,
+        rangeEnd: Int64 = -1,
+        expectedTotal: Int64 = -1,
+        progress: @escaping @Sendable (TransferProgress) -> Void = { _ in }
+    ) async throws -> (output: String, fileTime: Int64) {
+        try Task.checkCancellation()
+        let request = try createConfiguredRequest(
+            path: path,
+            directory: directory,
+            mode: mode,
+            transferFilename: transferFilename,
+            offset: offset,
+            rangeEnd: rangeEnd,
+            expectedTotal: expectedTotal
+        )
         let box = RequestBox(pointer: request, callback: progress)
         return try await withTaskCancellationHandler {
             try await Task.detached {
@@ -201,6 +286,7 @@ public struct RemoteClient: RemoteTransport, Sendable {
             path: remote,
             mode: 1,
             local: temporary.path,
+            transferFilename: (remote as NSString).lastPathComponent,
             offset: offset,
             progress: progress
         )
@@ -262,7 +348,15 @@ public struct RemoteClient: RemoteTransport, Sendable {
             temporary = try RemotePath.join(parent, ".aethertransfer-\(UUID().uuidString).part")
         }
         do {
-            _ = try await perform(path: temporary, mode: 2, local: local.path, offset: offset, progress: progress)
+            let filename = name.isEmpty ? local.lastPathComponent : name
+            _ = try await perform(
+                path: temporary,
+                mode: 2,
+                local: local.path,
+                transferFilename: filename,
+                offset: offset,
+                progress: progress
+            )
             try Task.checkCancellation()
             if temporary != remote {
                 try await rename(temporary, to: remote)
@@ -399,6 +493,59 @@ public struct RemoteClient: RemoteTransport, Sendable {
                 throw TransferError.invalidConnection
             }
             return url
+        }
+    }
+
+    /// Sends a raw FTP/SFTP command off the main thread using `at_perform_raw`, keeping SFTP host-key and TLS checks enabled.
+    public func sendRawCommand(_ command: String, path: String = "/") async throws -> RawCommandResult {
+        try Task.checkCancellation()
+        let validatedCommand = try Self.validateRawCommand(command)
+        let sanitizedCommand = TranscriptRedactor.sanitize(validatedCommand)
+        guard httpTransport() == nil else {
+            throw TransferError.remote(L10n.tr(
+                "协议 \(profile.protocolKind.title) 不支持发送原始命令。",
+                "Raw commands are not supported for \(profile.protocolKind.title)."
+            ))
+        }
+        let request = try createConfiguredRequest(path: path, directory: true, mode: 3)
+        let box = RequestBox(pointer: request, callback: { _ in })
+        return try await withTaskCancellationHandler {
+            try await Task.detached {
+                try Task.checkCancellation()
+                let code = validatedCommand.withCString { cmdPtr in
+                    at_perform_raw(box.pointer, cmdPtr)
+                }
+                if code == 42 { throw CancellationError() }
+
+                let rawOutput = String(cString: at_result(box.pointer))
+                let rawError = String(cString: at_error(box.pointer))
+
+                if code != 0 {
+                    let key = String(cString: at_host_key(box.pointer))
+                    if !key.isEmpty && key != profile.trustedHostKey {
+                        throw TransferError.hostKeyRequired(key: key, changed: profile.trustedHostKey != nil)
+                    }
+                    // CURLE_QUOTE_ERROR (21): server responded with an error reply to the quote command.
+                    if code == 21 {
+                        let combined = rawOutput.isEmpty ? rawError : rawOutput
+                        return RawCommandResult(
+                            command: sanitizedCommand,
+                            output: TranscriptRedactor.sanitize(combined),
+                            succeeded: false
+                        )
+                    }
+                    throw TransferError.remote(TranscriptRedactor.sanitize(rawError))
+                }
+
+                let outputText = rawOutput.isEmpty ? rawError : rawOutput
+                return RawCommandResult(
+                    command: sanitizedCommand,
+                    output: TranscriptRedactor.sanitize(outputText),
+                    succeeded: true
+                )
+            }.value
+        } onCancel: {
+            box.cancel()
         }
     }
 

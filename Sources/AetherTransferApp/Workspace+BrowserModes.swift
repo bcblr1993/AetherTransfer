@@ -483,7 +483,13 @@ enum BrowserPromptHelper {
 
     func secondRemoteClient(speedLimit: Int64?) -> RemoteClient? {
         secondRemoteProfile.map {
-            RemoteClient(profile: $0, credentials: secondRemoteCredentials, speedLimitBytesPerSec: speedLimit)
+            let mode = $0.defaultTransferMode != .automatic ? $0.defaultTransferMode : FilesPreferencesStore.shared.transferMode
+            return RemoteClient(
+                profile: $0,
+                credentials: secondRemoteCredentials,
+                speedLimitBytesPerSec: speedLimit,
+                transferMode: mode
+            )
         }
     }
 
@@ -870,13 +876,7 @@ extension Workspace {
             openEntry(entry, in: role, layout: layout)
             return
         }
-        switch rulesAndTranscriptStore.doubleClickAction {
-        case .openOrEdit:
-            if TextFileHelper.isTextFileName(entry.name) || fileRulesStore.isAsciiTransferFile(entry.name) {
-                openEditorInPane(for: entry, role: role, layout: layout)
-            } else {
-                openEntry(entry, in: role, layout: layout)
-            }
+        switch FilesPreferencesStore.shared.doubleClickAction {
         case .transfer:
             let action = BrowserTransferRouter.oppositeAction(from: role, workspace: self, layout: layout)
             if action.isEnabled {
@@ -884,8 +884,16 @@ extension Workspace {
             } else {
                 openEntry(entry, in: role, layout: layout)
             }
-        case .externalEditor:
+        case .editBuiltIn:
+            if TextFileHelper.isTextFileName(entry.name) || fileRulesStore.isAsciiTransferFile(entry.name) {
+                openEditorInPane(for: entry, role: role, layout: layout)
+            } else {
+                openEntry(entry, in: role, layout: layout)
+            }
+        case .editExternal:
             openInExternalEditor(entry, in: role, layout: layout)
+        case .doNothing:
+            return
         }
     }
 
@@ -1149,14 +1157,16 @@ extension Workspace {
             delete(entry, remote: role == .primaryRemote)
             return
         }
-        let alert = NSAlert()
-        alert.messageText = L10n.tr("删除 \(entry.name)？", "Delete \"\(entry.name)\"?")
-        alert.informativeText = role.isRemote
-            ? L10n.tr("服务器删除无法从本机废纸篓恢复。", "Remote deletion is permanent and cannot be undone from local Trash.")
-            : L10n.tr("文件将移到废纸篓。", "The item will be moved to the Trash.")
-        alert.addButton(withTitle: L10n.tr("删除", "Delete"))
-        alert.addButton(withTitle: L10n.tr("取消", "Cancel"))
-        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        if FilesPreferencesStore.shared.askBeforeDeleting {
+            let alert = NSAlert()
+            alert.messageText = L10n.tr("删除 \(entry.name)？", "Delete \"\(entry.name)\"?")
+            alert.informativeText = role.isRemote
+                ? L10n.tr("服务器删除无法从本机废纸篓恢复。", "Remote deletion is permanent and cannot be undone from local Trash.")
+                : L10n.tr("文件将移到废纸篓。", "The item will be moved to the Trash.")
+            alert.addButton(withTitle: L10n.tr("删除", "Delete"))
+            alert.addButton(withTitle: L10n.tr("取消", "Cancel"))
+            guard alert.runModal() == .alertFirstButtonReturn else { return }
+        }
 
         switch role {
         case .secondLocal:
