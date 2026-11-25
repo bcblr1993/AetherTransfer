@@ -122,6 +122,14 @@ private func makeHTTPResponse(url: URL, status: Int, headers: [String: String] =
     HTTPURLResponse(url: url, statusCode: status, httpVersion: "HTTP/1.1", headerFields: headers)!
 }
 
+private func makePatternData(count: Int, multiplier: Int = 1, offset: Int = 0, modulus: Int = 256) -> Data {
+    var bytes = [UInt8](repeating: 0, count: count)
+    for index in 0..<count {
+        bytes[index] = UInt8((index * multiplier + offset) % modulus)
+    }
+    return Data(bytes)
+}
+
 // MARK: - CTransfer Explicit FTPS & Mtime Tests
 
 @Test func ctransferExplicitFTPSOptionsAndFileTimeAPI() throws {
@@ -156,7 +164,7 @@ private func makeHTTPResponse(url: URL, status: Int, headers: [String: String] =
 
     // >200 KiB payload to verify multi-chunk 64 KiB streaming
     let payloadSize = 256 * 1024 + 137
-    let payload = Data((0..<payloadSize).map { UInt8(($0 * 13 + 7) % 256) })
+    let payload = makePatternData(count: payloadSize, multiplier: 13, offset: 7)
     let localSource = dir.appendingPathComponent("upload.bin")
     try payload.write(to: localSource)
 
@@ -259,7 +267,7 @@ private func makeHTTPResponse(url: URL, status: Int, headers: [String: String] =
     defer { try? FileManager.default.removeItem(at: dir) }
 
     let totalSize = 256 * 1024 // 4 x 64 KiB chunks
-    let payload = Data((0..<totalSize).map { UInt8($0 % 239) })
+    let payload = makePatternData(count: totalSize, modulus: 239)
     let localSource = dir.appendingPathComponent("throttled.bin")
     try payload.write(to: localSource)
 
@@ -366,7 +374,7 @@ private func makeHTTPResponse(url: URL, status: Int, headers: [String: String] =
 
     // 1. Paginated ListObjectsV2
     let entries = try await client.list("/docs")
-    #expect(entries.map(\.name) == ["sub", "a.txt", "b.txt"])
+    #expect(entries.map { $0.name } == ["sub", "a.txt", "b.txt"])
     #expect(capturedRequests.snapshot().allSatisfy { $0.headers["x-amz-security-token"] == "STS-TOKEN-XYZ" })
 
     // 2. statMetadata & updateMetadata
@@ -402,7 +410,7 @@ private func makeHTTPResponse(url: URL, status: Int, headers: [String: String] =
 
     // 250 KiB payload: with multipartThreshold=128 KiB and partSize=90 KiB -> 3 parts (90K, 90K, 70K)
     let totalSize = 250 * 1024
-    let payload = Data((0..<totalSize).map { UInt8(($0 * 7 + 3) % 256) })
+    let payload = makePatternData(count: totalSize, multiplier: 7, offset: 3)
     let localFile = dir.appendingPathComponent("multipart.bin")
     try payload.write(to: localFile)
 
@@ -561,7 +569,7 @@ private func makeHTTPResponse(url: URL, status: Int, headers: [String: String] =
     let dir = try makeTempDir()
     defer { try? FileManager.default.removeItem(at: dir) }
 
-    let payload = Data((0..<(210 * 1024)).map { UInt8(($0 * 5 + 1) % 256) })
+    let payload = makePatternData(count: 210 * 1024, multiplier: 5, offset: 1)
     let localFile = dir.appendingPathComponent("b2-upload.bin")
     try payload.write(to: localFile)
 
@@ -667,7 +675,7 @@ private func makeHTTPResponse(url: URL, status: Int, headers: [String: String] =
     let client = B2Client(profile: profile, credentials: Credentials(password: "appKeySecret"), session: session)
 
     let listed = try await client.list("/docs")
-    #expect(listed.map(\.name) == ["archive", "notes.txt", "report.pdf"])
+    #expect(listed.map { $0.name } == ["archive", "notes.txt", "report.pdf"])
 
     try await client.upload(localFile, to: "/docs/upload.bin", overwrite: true)
     #expect(uploadedBytes.snapshot().first == payload)
@@ -697,11 +705,11 @@ private func makeHTTPResponse(url: URL, status: Int, headers: [String: String] =
     let dir = try makeTempDir()
     defer { try? FileManager.default.removeItem(at: dir) }
 
-    let payload = Data((0..<(190 * 1024)).map { UInt8(($0 * 11 + 2) % 256) })
+    let payload = makePatternData(count: 190 * 1024, multiplier: 11, offset: 2)
     let localFile = dir.appendingPathComponent("az-upload.bin")
     try payload.write(to: localFile)
 
-    let sharedKeyBytes = Data((0..<32).map { UInt8($0 + 1) }).base64EncodedString()
+    let sharedKeyBytes = makePatternData(count: 32, offset: 1).base64EncodedString()
     let seenHeaders = Recorder<[String: String]>()
     let uploadedCapture = Recorder<Data>()
 
@@ -788,7 +796,7 @@ private func makeHTTPResponse(url: URL, status: Int, headers: [String: String] =
     let client = AzureBlobClient(profile: profile, credentials: Credentials(password: sharedKeyBytes), session: session)
 
     let entries = try await client.list("/assets")
-    #expect(entries.map(\.name) == ["icons", "a.png", "b.png"])
+    #expect(entries.map { $0.name } == ["icons", "a.png", "b.png"])
 
     try await client.upload(localFile, to: "/assets/up.bin", overwrite: true)
     #expect(uploadedCapture.snapshot().first == payload)
@@ -822,7 +830,7 @@ private func makeHTTPResponse(url: URL, status: Int, headers: [String: String] =
     let dir = try makeTempDir()
     defer { try? FileManager.default.removeItem(at: dir) }
 
-    let payload = Data((0..<(205 * 1024)).map { UInt8(($0 * 3 + 9) % 256) })
+    let payload = makePatternData(count: 205 * 1024, multiplier: 3, offset: 9)
     let localFile = dir.appendingPathComponent("swift-up.bin")
     try payload.write(to: localFile)
 
@@ -900,7 +908,7 @@ private func makeHTTPResponse(url: URL, status: Int, headers: [String: String] =
     let client = SwiftStorageClient(profile: profile, credentials: Credentials(password: "swift-secret"), session: session)
 
     let entries = try await client.list("/releases")
-    #expect(entries.map(\.name) == ["v1", "app.tar.gz"])
+    #expect(entries.map { $0.name } == ["v1", "app.tar.gz"])
     #expect(entries[1].size == 4096)
     #expect(entries[1].modified != nil)
 
@@ -968,7 +976,7 @@ private func makeHTTPResponse(url: URL, status: Int, headers: [String: String] =
     defer { try? FileManager.default.removeItem(at: dir) }
 
     let totalSize = 230 * 1024
-    let payload = Data((0..<totalSize).map { UInt8(($0 * 17 + 5) % 256) })
+    let payload = makePatternData(count: totalSize, multiplier: 17, offset: 5)
     let localFile = dir.appendingPathComponent("b2-large.bin")
     try payload.write(to: localFile)
 
@@ -1027,7 +1035,7 @@ private func makeHTTPResponse(url: URL, status: Int, headers: [String: String] =
     let parts = uploadedParts.snapshot().sorted { $0.part < $1.part }
     #expect(parts.count == 3)
     #expect(parts.reduce(into: Data()) { $0.append($1.data) } == payload)
-    #expect(finishedPayload.snapshot().first == parts.map(\.sha1))
+    #expect(finishedPayload.snapshot().first == parts.map { $0.sha1 })
 
     // Verify failure triggers b2_cancel_large_file
     failOnSecondPart.append(true)
@@ -1116,7 +1124,7 @@ private func makeHTTPResponse(url: URL, status: Int, headers: [String: String] =
     defer { try? FileManager.default.removeItem(at: dir) }
 
     // 192 KiB payload with 256 KiB/s limit via RemoteClient -> exercises speedLimitBytesPerSec forwarding
-    let payload = Data((0..<(192 * 1024)).map { UInt8($0 % 251) })
+    let payload = makePatternData(count: 192 * 1024, modulus: 251)
     let localFile = dir.appendingPathComponent("rc-up.bin")
     try payload.write(to: localFile)
 

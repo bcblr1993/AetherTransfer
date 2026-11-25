@@ -224,7 +224,7 @@ import Testing
 
     #expect(logger.count == 3)
     let all = logger.entries()
-    #expect(all.map(\.category) == [.command, .transfer, .error])
+    #expect(all.map { $0.category } == [.command, .transfer, .error])
     #expect(all.last?.message.contains("pw") == false)
     #expect(logger.entries(category: .transfer).count == 1)
     #expect(logger.entries(search: "index.html").count == 1)
@@ -326,7 +326,7 @@ import Testing
     }
     #expect(parsedId == profileId)
     #expect(parsedRemote == "/var/www/my site")
-    #expect(parsedFiles.map(\.standardizedFileURL.path) == [trickyFile.standardizedFileURL.path])
+    #expect(parsedFiles.map { $0.standardizedFileURL.path } == [trickyFile.standardizedFileURL.path])
 
     // Additional AetherURLCommand.parse tests: comma-separated files & connect URLs (stripping password!)
     let commaURL = URL(string: "aethertransfer://upload?profileId=\(profileId.uuidString)&remotePath=/uploads&files=/tmp/a.txt,/tmp/b.txt")!

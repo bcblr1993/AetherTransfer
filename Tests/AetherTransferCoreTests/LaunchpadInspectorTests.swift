@@ -75,7 +75,12 @@ private func computeChunkedChecksums(forFileAt url: URL) async throws -> (sha256
     try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
 
     // Multi-chunk file (> 3 * 64 KiB)
-    let payload = Data((0..<(200 * 1024)).map { UInt8(($0 * 7 + 13) % 256) })
+    let count = 200 * 1024
+    var bytes = [UInt8](repeating: 0, count: count)
+    for index in 0..<count {
+        bytes[index] = UInt8((index * 7 + 13) % 256)
+    }
+    let payload = Data(bytes)
     let multiChunkFile = tempDir.appendingPathComponent("multi.bin")
     try payload.write(to: multiChunkFile)
 
@@ -168,7 +173,7 @@ private func computeChunkedChecksums(forFileAt url: URL) async throws -> (sha256
     ]
     let remoteFileBytes = remoteEntries.filter { !$0.isDirectory }.reduce(Int64(0)) { $0 + $1.size }
     #expect(remoteFileBytes == 1000)
-    #expect(remoteEntries.filter(\.isDirectory).count == 1)
+    #expect(remoteEntries.filter { $0.isDirectory }.count == 1)
 }
 
 @Test func octalPermissionsParsingAndEditingEdgeCases() {

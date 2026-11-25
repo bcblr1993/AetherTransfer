@@ -84,7 +84,11 @@ private final class FixtureTLSDelegate: NSObject, URLSessionDelegate, URLSession
     }
 
     private func makeDeterministicData(size: Int, seed: Int = 1) -> Data {
-        Data((0..<size).map { UInt8(($0 * 17 + $0 / 251 + seed) % 256) })
+        var bytes = [UInt8](repeating: 0, count: size)
+        for index in 0..<size {
+            bytes[index] = UInt8((index * 17 + index / 251 + seed) % 256)
+        }
+        return Data(bytes)
     }
 
     private func client(
