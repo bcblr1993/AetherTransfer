@@ -86,13 +86,15 @@ public struct SyncPlan: Sendable {
     public let direction: SyncDirection
     public let rule: SyncComparisonRule
     public let deleteOrphans: Bool
+    public let simulateOnly: Bool
     public var items: [SyncItem]
 
     public init(direction: SyncDirection, rule: SyncComparisonRule = .sizeAndDate,
-                deleteOrphans: Bool = false, items: [SyncItem] = []) {
+                deleteOrphans: Bool = false, simulateOnly: Bool = false, items: [SyncItem] = []) {
         self.direction = direction
         self.rule = rule
         self.deleteOrphans = deleteOrphans
+        self.simulateOnly = simulateOnly
         self.items = items
     }
 
@@ -131,6 +133,7 @@ public struct SyncPlan: Sendable {
             "- Direction: \(direction.localizedTitle)",
             "- Rule: \(rule.localizedTitle)",
             "- Delete Orphans: \(deleteOrphans ? "Yes" : "No")",
+            "- Simulate Only: \(simulateOnly ? "Yes" : "No")",
             "- Uploads: \(uploadItems.count) | Downloads: \(downloadItems.count) | Deletions: \(deleteItems.count) | Skipped: \(skipItems.count)",
             ""
         ]
@@ -138,6 +141,35 @@ public struct SyncPlan: Sendable {
             lines.append("- [\(item.actionType.localizedTitle)] `\(item.relativePath)` (\(item.size) bytes)")
         }
         return lines.joined(separator: "\n")
+    }
+
+    public func exportReportCSV() -> String {
+        let formatter = ISO8601DateFormatter()
+        var rows: [String] = ["RelativePath,Action,SizeBytes,SourceDate,TargetDate,Enabled"]
+        rows.reserveCapacity(items.count + 1)
+        for item in items {
+            let sourceStr = item.sourceDate.map { formatter.string(from: $0) } ?? ""
+            let targetStr = item.targetDate.map { formatter.string(from: $0) } ?? ""
+            let enabledStr = item.isEnabled ? "true" : "false"
+            let fields = [
+                escapeCSVField(item.relativePath),
+                escapeCSVField(item.actionType.localizedTitle),
+                String(item.size),
+                escapeCSVField(sourceStr),
+                escapeCSVField(targetStr),
+                enabledStr
+            ]
+            rows.append(fields.joined(separator: ","))
+        }
+        return rows.joined(separator: "\n")
+    }
+
+    private func escapeCSVField(_ field: String) -> String {
+        if field.unicodeScalars.contains(where: { $0 == "," || $0 == "\"" || $0 == "\n" || $0 == "\r" }) {
+            let doubled = field.replacingOccurrences(of: "\"", with: "\"\"")
+            return "\"\(doubled)\""
+        }
+        return field
     }
 }
 
@@ -178,18 +210,65 @@ public enum SyncEngine {
         rule: SyncComparisonRule = .sizeAndDate,
         deleteOrphans: Bool = false,
         ignorePatterns: [String] = [],
-        skipRules: [SkipRule] = []
+        skipRules: [SkipRule] = [],
+        options: SyncOptions = SyncOptions(),
+        referenceDate: Date = Date()
     ) -> SyncPlan {
         let normalizedRemoteRoot = RemotePath.normalize(remoteRoot)
         let enabledRules = skipRules.filter { $0.isEnabled && $0.scope.appliesToSync }
+        let modifiedCutoff: Date? = options.modifiedWithinSeconds.map { referenceDate.addingTimeInterval(-$0) }
+
+        func isOutsideModifiedWindow(_ date: Date?, isDirectory: Bool) -> Bool {
+            guard !isDirectory, let cutoff = modifiedCutoff, let date else { return false }
+            return date < cutoff
+        }
+
+        func makeUpload(
+            rel: String,
+            local: LocalFileItem,
+            remotePath: String,
+            targetDate: Date?
+        ) -> SyncItem {
+            let outsideWindow = isOutsideModifiedWindow(local.modified, isDirectory: local.isDirectory)
+            return SyncItem(
+                relativePath: rel,
+                actionType: outsideWindow ? .skipIdentical : .upload,
+                localURL: local.fileURL,
+                remotePath: remotePath,
+                size: local.size,
+                sourceDate: local.modified,
+                targetDate: targetDate,
+                isDirectory: local.isDirectory,
+                isEnabled: !outsideWindow
+            )
+        }
+
+        func makeDownload(
+            rel: String,
+            localURL: URL,
+            remote: FileEntry,
+            targetDate: Date?
+        ) -> SyncItem {
+            let adjustedRemoteDate = remote.modified?.addingTimeInterval(options.timeOffsetSeconds)
+            let outsideWindow = isOutsideModifiedWindow(adjustedRemoteDate, isDirectory: remote.isDirectory)
+            return SyncItem(
+                relativePath: rel,
+                actionType: outsideWindow ? .skipIdentical : .download,
+                localURL: localURL,
+                remotePath: remote.path,
+                size: remote.size,
+                sourceDate: remote.modified,
+                targetDate: targetDate,
+                isDirectory: remote.isDirectory,
+                isEnabled: !outsideWindow
+            )
+        }
 
         // Pre-pass directory skip set for local & remote so child ordering does not matter
         var skippedLocalDirs: Set<String> = []
         if !enabledRules.isEmpty {
             for item in localFiles where item.isDirectory {
-                var rel = item.relativePath
-                if rel.hasPrefix("/") { rel.removeFirst() }
-                guard !rel.isEmpty else { continue }
+                guard let rel = normalizedLocalRelativePath(item.relativePath) else { continue }
                 let name = (rel as NSString).lastPathComponent
                 if enabledRules.contains(where: {
                     $0.matches(name: name, relativePath: rel, isDirectory: true, size: item.size, modified: item.modified)
@@ -202,9 +281,7 @@ public enum SyncEngine {
         // Build index of local files keyed by relative path
         var localDict: [String: LocalFileItem] = [:]
         for item in localFiles {
-            var rel = item.relativePath
-            if rel.hasPrefix("/") { rel.removeFirst() }
-            guard !rel.isEmpty else { continue }
+            guard let rel = normalizedLocalRelativePath(item.relativePath) else { continue }
             if !shouldSkipSyncItem(
                 relativePath: rel,
                 isDirectory: item.isDirectory,
@@ -221,11 +298,8 @@ public enum SyncEngine {
         var skippedRemoteDirs: Set<String> = []
         if !enabledRules.isEmpty {
             for entry in remoteFiles where entry.isDirectory {
-                let normalized = RemotePath.normalize(entry.path)
-                guard normalized.hasPrefix(normalizedRemoteRoot) else { continue }
-                var rel = String(normalized.dropFirst(normalizedRemoteRoot.count))
-                if rel.hasPrefix("/") { rel.removeFirst() }
-                guard !rel.isEmpty else { continue }
+                if !options.followSymlinks && entry.isSymbolicLink { continue }
+                guard let rel = normalizedRemoteRelativePath(entry.path, normalizedRemoteRoot: normalizedRemoteRoot) else { continue }
                 if enabledRules.contains(where: {
                     $0.matches(name: entry.name, relativePath: rel, isDirectory: true, size: entry.size, modified: entry.modified)
                 }) {
@@ -237,11 +311,8 @@ public enum SyncEngine {
         // Build index of remote files keyed by relative path
         var remoteDict: [String: FileEntry] = [:]
         for entry in remoteFiles {
-            let normalized = RemotePath.normalize(entry.path)
-            guard normalized.hasPrefix(normalizedRemoteRoot) else { continue }
-            var rel = String(normalized.dropFirst(normalizedRemoteRoot.count))
-            if rel.hasPrefix("/") { rel.removeFirst() }
-            guard !rel.isEmpty else { continue }
+            if !options.followSymlinks && entry.isSymbolicLink { continue }
+            guard let rel = normalizedRemoteRelativePath(entry.path, normalizedRemoteRoot: normalizedRemoteRoot) else { continue }
             if !shouldSkipSyncItem(
                 relativePath: rel,
                 isDirectory: entry.isDirectory,
@@ -285,17 +356,7 @@ public enum SyncEngine {
                 // File exists only locally
                 switch direction {
                 case .localToRemote, .bidirectional:
-                    plannedItems.append(SyncItem(
-                        relativePath: rel,
-                        actionType: .upload,
-                        localURL: local.fileURL,
-                        remotePath: fullRemotePath,
-                        size: local.size,
-                        sourceDate: local.modified,
-                        targetDate: nil,
-                        isDirectory: local.isDirectory,
-                        isEnabled: true
-                    ))
+                    plannedItems.append(makeUpload(rel: rel, local: local, remotePath: fullRemotePath, targetDate: nil))
                 case .remoteToLocal:
                     if deleteOrphans {
                         plannedItems.append(SyncItem(
@@ -328,17 +389,7 @@ public enum SyncEngine {
                 // File exists only remotely
                 switch direction {
                 case .remoteToLocal, .bidirectional:
-                    plannedItems.append(SyncItem(
-                        relativePath: rel,
-                        actionType: .download,
-                        localURL: fullLocalURL,
-                        remotePath: remote.path,
-                        size: remote.size,
-                        sourceDate: remote.modified,
-                        targetDate: nil,
-                        isDirectory: remote.isDirectory,
-                        isEnabled: true
-                    ))
+                    plannedItems.append(makeDownload(rel: rel, localURL: fullLocalURL, remote: remote, targetDate: nil))
                 case .localToRemote:
                     if deleteOrphans {
                         plannedItems.append(SyncItem(
@@ -375,8 +426,9 @@ public enum SyncEngine {
                 }
 
                 let sameSize = local.size == remote.size
+                let adjustedRemoteDate = remote.modified?.addingTimeInterval(options.timeOffsetSeconds)
                 let dateDiff: TimeInterval? = {
-                    guard let ld = local.modified, let rd = remote.modified else { return nil }
+                    guard let ld = local.modified, let rd = adjustedRemoteDate else { return nil }
                     return ld.timeIntervalSince(rd)
                 }()
 
@@ -405,84 +457,24 @@ public enum SyncEngine {
                 } else {
                     switch direction {
                     case .localToRemote:
-                        plannedItems.append(SyncItem(
-                            relativePath: rel,
-                            actionType: .upload,
-                            localURL: local.fileURL,
-                            remotePath: remote.path,
-                            size: local.size,
-                            sourceDate: local.modified,
-                            targetDate: remote.modified,
-                            isDirectory: false,
-                            isEnabled: true
-                        ))
+                        plannedItems.append(makeUpload(rel: rel, local: local, remotePath: remote.path, targetDate: remote.modified))
                     case .remoteToLocal:
-                        plannedItems.append(SyncItem(
-                            relativePath: rel,
-                            actionType: .download,
-                            localURL: local.fileURL,
-                            remotePath: remote.path,
-                            size: remote.size,
-                            sourceDate: remote.modified,
-                            targetDate: local.modified,
-                            isDirectory: false,
-                            isEnabled: true
-                        ))
+                        plannedItems.append(makeDownload(rel: rel, localURL: local.fileURL, remote: remote, targetDate: local.modified))
                     case .bidirectional:
                         if let diff = dateDiff {
                             if diff > 2.0 {
                                 // Local is newer
-                                plannedItems.append(SyncItem(
-                                    relativePath: rel,
-                                    actionType: .upload,
-                                    localURL: local.fileURL,
-                                    remotePath: remote.path,
-                                    size: local.size,
-                                    sourceDate: local.modified,
-                                    targetDate: remote.modified,
-                                    isDirectory: false,
-                                    isEnabled: true
-                                ))
+                                plannedItems.append(makeUpload(rel: rel, local: local, remotePath: remote.path, targetDate: remote.modified))
                             } else if diff < -2.0 {
                                 // Remote is newer
-                                plannedItems.append(SyncItem(
-                                    relativePath: rel,
-                                    actionType: .download,
-                                    localURL: local.fileURL,
-                                    remotePath: remote.path,
-                                    size: remote.size,
-                                    sourceDate: remote.modified,
-                                    targetDate: local.modified,
-                                    isDirectory: false,
-                                    isEnabled: true
-                                ))
+                                plannedItems.append(makeDownload(rel: rel, localURL: local.fileURL, remote: remote, targetDate: local.modified))
                             } else {
                                 // Dates within 2 seconds but size differs -> default to upload
-                                plannedItems.append(SyncItem(
-                                    relativePath: rel,
-                                    actionType: .upload,
-                                    localURL: local.fileURL,
-                                    remotePath: remote.path,
-                                    size: local.size,
-                                    sourceDate: local.modified,
-                                    targetDate: remote.modified,
-                                    isDirectory: false,
-                                    isEnabled: true
-                                ))
+                                plannedItems.append(makeUpload(rel: rel, local: local, remotePath: remote.path, targetDate: remote.modified))
                             }
                         } else {
                             // No date info -> upload local
-                            plannedItems.append(SyncItem(
-                                relativePath: rel,
-                                actionType: .upload,
-                                localURL: local.fileURL,
-                                remotePath: remote.path,
-                                size: local.size,
-                                sourceDate: local.modified,
-                                targetDate: remote.modified,
-                                isDirectory: false,
-                                isEnabled: true
-                            ))
+                            plannedItems.append(makeUpload(rel: rel, local: local, remotePath: remote.path, targetDate: remote.modified))
                         }
                     }
                 }
@@ -492,7 +484,72 @@ public enum SyncEngine {
             }
         }
 
-        return SyncPlan(direction: direction, rule: rule, deleteOrphans: deleteOrphans, items: plannedItems)
+        return SyncPlan(
+            direction: direction,
+            rule: rule,
+            deleteOrphans: deleteOrphans,
+            simulateOnly: options.simulateOnly,
+            items: plannedItems
+        )
+    }
+
+    public static func estimateTimeOffset(
+        localFiles: [LocalFileItem],
+        remoteFiles: [FileEntry],
+        remoteRoot: String
+    ) -> TimeInterval {
+        let normalizedRemoteRoot = RemotePath.normalize(remoteRoot)
+        var localByPath: [String: LocalFileItem] = [:]
+        for item in localFiles where !item.isDirectory {
+            guard let rel = normalizedLocalRelativePath(item.relativePath) else { continue }
+            localByPath[rel] = item
+        }
+
+        var diffs: [TimeInterval] = []
+        for entry in remoteFiles where !entry.isDirectory {
+            guard let rel = normalizedRemoteRelativePath(entry.path, normalizedRemoteRoot: normalizedRemoteRoot),
+                  let local = localByPath[rel],
+                  local.size == entry.size,
+                  let localDate = local.modified,
+                  let remoteDate = entry.modified else {
+                continue
+            }
+            let diff = localDate.timeIntervalSince(remoteDate)
+            if abs(diff) > 2.0 {
+                diffs.append(diff)
+            }
+        }
+
+        guard !diffs.isEmpty else { return 0 }
+        let sorted = diffs.sorted()
+        let mid = sorted.count / 2
+        let median: TimeInterval = sorted.count % 2 == 1
+            ? sorted[mid]
+            : (sorted[mid - 1] + sorted[mid]) / 2.0
+
+        let nearestHour = (median / 3600.0).rounded() * 3600.0
+        let nearestMinute = (median / 60.0).rounded() * 60.0
+        let rounded: TimeInterval
+        if abs(median) >= 1800.0 && abs(median - nearestHour) <= 120.0 {
+            rounded = nearestHour
+        } else {
+            rounded = nearestMinute
+        }
+        return rounded == 0 ? 0 : rounded
+    }
+
+    private static func normalizedLocalRelativePath(_ rawPath: String) -> String? {
+        var rel = rawPath
+        if rel.hasPrefix("/") { rel.removeFirst() }
+        return rel.isEmpty ? nil : rel
+    }
+
+    private static func normalizedRemoteRelativePath(_ entryPath: String, normalizedRemoteRoot: String) -> String? {
+        let normalized = RemotePath.normalize(entryPath)
+        guard normalized.hasPrefix(normalizedRemoteRoot) else { return nil }
+        var rel = String(normalized.dropFirst(normalizedRemoteRoot.count))
+        if rel.hasPrefix("/") { rel.removeFirst() }
+        return rel.isEmpty ? nil : rel
     }
 
     private static func shouldSkipSyncItem(
