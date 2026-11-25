@@ -302,6 +302,11 @@ private enum ModifiedWithinPreset: String, CaseIterable, Identifiable {
         case .days90: return L10n.tr("最近 90 天", "90 Days")
         }
     }
+
+    static func matching(_ seconds: TimeInterval?) -> ModifiedWithinPreset {
+        guard let seconds else { return .any }
+        return allCases.first(where: { $0.seconds == seconds }) ?? .any
+    }
 }
 
 struct SyncSheet: View {
@@ -310,8 +315,6 @@ struct SyncSheet: View {
     @Environment(\.dismiss) private var dismiss
     @State private var showRulesBar = true
 
-    // Wave 3 v3-integrator: pass syncOptions directly into Workspace.startSyncAnalysis() and Workspace.recalculateSyncPlan()
-    @State private var syncOptions = SyncOptions()
     @State private var offsetHours: Int = 0
     @State private var offsetMinutes: Int = 0
     @State private var offsetSeconds: Int = 0
@@ -322,6 +325,11 @@ struct SyncSheet: View {
     init(workspace: Workspace) {
         self.workspace = workspace
         self._store = ObservedObject(wrappedValue: workspace.rulesAndTranscriptStore)
+        let totalOffset = Int(workspace.syncOptions.timeOffsetSeconds.rounded())
+        self._offsetHours = State(initialValue: totalOffset / 3600)
+        self._offsetMinutes = State(initialValue: (totalOffset % 3600) / 60)
+        self._offsetSeconds = State(initialValue: totalOffset % 60)
+        self._modifiedWithinPreset = State(initialValue: ModifiedWithinPreset.matching(workspace.syncOptions.modifiedWithinSeconds))
     }
 
     private var syncApplicableRules: [SkipRule] {
@@ -361,7 +369,7 @@ struct SyncSheet: View {
                     Text(L10n.tr("文件夹同步 (Folder Sync)", "Folder Synchronization"))
                         .font(.title3.bold())
 
-                    if syncOptions.simulateOnly || (workspace.syncPlan?.simulateOnly == true) {
+                    if workspace.syncOptions.simulateOnly || (workspace.syncPlan?.simulateOnly == true) {
                         Text("[SIMULATE]")
                             .font(.caption2.monospaced().bold())
                             .padding(.horizontal, 6)
@@ -408,7 +416,7 @@ struct SyncSheet: View {
                 }
                 .pickerStyle(.menu)
                 .onChange(of: modifiedWithinPreset) {
-                    syncOptions.modifiedWithinSeconds = modifiedWithinPreset.seconds
+                    workspace.syncOptions.modifiedWithinSeconds = modifiedWithinPreset.seconds
                     recalculateWithSyncOptions()
                 }
 
@@ -461,7 +469,7 @@ struct SyncSheet: View {
                 }
                 .controlSize(.small)
 
-                if syncOptions.timeOffsetSeconds != 0 {
+                if workspace.syncOptions.timeOffsetSeconds != 0 {
                     Button(L10n.tr("归零", "Reset")) {
                         offsetHours = 0
                         offsetMinutes = 0
@@ -473,15 +481,15 @@ struct SyncSheet: View {
 
                 Spacer()
 
-                Toggle(L10n.tr("依照符号链接", "Follow Symlinks"), isOn: $syncOptions.followSymlinks)
+                Toggle(L10n.tr("依照符号链接", "Follow Symlinks"), isOn: $workspace.syncOptions.followSymlinks)
                     .toggleStyle(.checkbox)
                     .font(.caption)
-                    .onChange(of: syncOptions.followSymlinks) { recalculateWithSyncOptions() }
+                    .onChange(of: workspace.syncOptions.followSymlinks) { recalculateWithSyncOptions() }
 
-                Toggle(L10n.tr("模拟试运行", "Simulate"), isOn: $syncOptions.simulateOnly)
+                Toggle(L10n.tr("模拟试运行", "Simulate"), isOn: $workspace.syncOptions.simulateOnly)
                     .toggleStyle(.checkbox)
                     .font(.caption)
-                    .onChange(of: syncOptions.simulateOnly) { recalculateWithSyncOptions() }
+                    .onChange(of: workspace.syncOptions.simulateOnly) { recalculateWithSyncOptions() }
             }
 
             HStack(spacing: 10) {
@@ -593,7 +601,7 @@ struct SyncSheet: View {
         if let plan = workspace.syncPlan {
             let visibleItems = filteredItems(from: plan)
 
-            if syncOptions.simulateOnly || plan.simulateOnly {
+            if workspace.syncOptions.simulateOnly || plan.simulateOnly {
                 HStack(spacing: 8) {
                     Image(systemName: "eye.fill")
                         .foregroundStyle(.orange)
@@ -812,7 +820,7 @@ struct SyncSheet: View {
                     saveSyncReportWithPanel(plan)
                 }
 
-                let isDryRun = syncOptions.simulateOnly || plan.simulateOnly
+                let isDryRun = workspace.syncOptions.simulateOnly || plan.simulateOnly
                 Button(
                     isDryRun
                     ? L10n.tr("[试运行] 执行同步 (\(plan.activeItems.count) 项)", "[SIMULATE] Synchronize (\(plan.activeItems.count))")
@@ -831,7 +839,7 @@ struct SyncSheet: View {
     }
 
     private func syncOffsetComponentsToOptions() {
-        syncOptions.timeOffsetSeconds = TimeInterval(offsetHours * 3600 + offsetMinutes * 60 + offsetSeconds)
+        workspace.syncOptions.timeOffsetSeconds = TimeInterval(offsetHours * 3600 + offsetMinutes * 60 + offsetSeconds)
         recalculateWithSyncOptions()
     }
 
@@ -897,7 +905,7 @@ struct SyncSheet: View {
         let remainder = total % 3600
         offsetMinutes = remainder / 60
         offsetSeconds = remainder % 60
-        syncOptions.timeOffsetSeconds = TimeInterval(total)
+        workspace.syncOptions.timeOffsetSeconds = TimeInterval(total)
         recalculateWithSyncOptions()
 
         if total == 0 {
@@ -912,87 +920,6 @@ struct SyncSheet: View {
 
     private func recalculateWithSyncOptions() {
         store.recalculateSyncPlanWithRules()
-        guard let basePlan = workspace.syncPlan else { return }
-
-        let cutoff = syncOptions.modifiedWithinSeconds.map { Date().addingTimeInterval(-$0) }
-        var updatedItems: [SyncItem] = []
-        updatedItems.reserveCapacity(basePlan.items.count)
-
-        for item in basePlan.items {
-            var nextAction = item.actionType
-            var nextEnabled = item.isEnabled
-
-            // Re-evaluate timestamp comparison when both sourceDate and targetDate exist and rule == .sizeAndDate
-            if basePlan.rule == .sizeAndDate,
-               !item.isDirectory,
-               let src = item.sourceDate,
-               let dst = item.targetDate,
-               item.localURL != nil,
-               item.remotePath != nil {
-                let localDate: Date
-                let remoteDate: Date
-                if item.actionType == .download {
-                    localDate = dst
-                    remoteDate = src
-                } else {
-                    localDate = src
-                    remoteDate = dst
-                }
-                let adjustedRemote = remoteDate.addingTimeInterval(syncOptions.timeOffsetSeconds)
-                let diff = localDate.timeIntervalSince(adjustedRemote)
-                if abs(diff) <= 2.0 && item.actionType != .deleteLocal && item.actionType != .deleteRemote {
-                    // Only treat as identical if sizes matched in the original comparison
-                    if item.actionType == .skipIdentical {
-                        nextAction = .skipIdentical
-                        nextEnabled = false
-                    }
-                }
-                if abs(diff) > 2.0 && item.actionType == .skipIdentical {
-                    switch basePlan.direction {
-                    case .localToRemote:
-                        nextAction = .upload
-                        nextEnabled = true
-                    case .remoteToLocal:
-                        nextAction = .download
-                        nextEnabled = true
-                    case .bidirectional:
-                        nextAction = diff > 2.0 ? .upload : .download
-                        nextEnabled = true
-                    }
-                }
-            }
-
-            if let cutoff, !item.isDirectory, nextAction == .upload || nextAction == .download {
-                let relevantDate: Date? = nextAction == .download
-                    ? item.sourceDate?.addingTimeInterval(syncOptions.timeOffsetSeconds)
-                    : item.sourceDate
-                if let relevantDate, relevantDate < cutoff {
-                    nextAction = .skipIdentical
-                    nextEnabled = false
-                }
-            }
-
-            updatedItems.append(SyncItem(
-                id: item.id,
-                relativePath: item.relativePath,
-                actionType: nextAction,
-                localURL: item.localURL,
-                remotePath: item.remotePath,
-                size: item.size,
-                sourceDate: item.sourceDate,
-                targetDate: item.targetDate,
-                isDirectory: item.isDirectory,
-                isEnabled: nextEnabled
-            ))
-        }
-
-        workspace.syncPlan = SyncPlan(
-            direction: basePlan.direction,
-            rule: basePlan.rule,
-            deleteOrphans: basePlan.deleteOrphans,
-            simulateOnly: syncOptions.simulateOnly,
-            items: updatedItems
-        )
     }
 
     private func setFilteredActionableItemsEnabled(_ enabled: Bool, visibleIDs: Set<UUID>) {
@@ -1094,7 +1021,7 @@ struct SettingsView: View {
 
     var body: some View {
         TabView {
-            GeneralSettingsTab(workspace: workspace, store: store)
+            GeneralSettingsTab(workspace: workspace, store: store, filesPrefs: filesPrefs)
                 .tabItem {
                     Label(L10n.tr("通用", "General"), systemImage: "gearshape")
                 }
@@ -1128,6 +1055,7 @@ struct SettingsView: View {
 private struct GeneralSettingsTab: View {
     @ObservedObject var workspace: Workspace
     @ObservedObject var store: RulesAndTranscriptStore
+    @ObservedObject var filesPrefs: FilesPreferencesStore
 
     var body: some View {
         Form {
@@ -1178,8 +1106,8 @@ private struct GeneralSettingsTab: View {
                     }
                 }
 
-                Picker(L10n.tr("双击文件行为", "Double-Click File Action"), selection: $store.doubleClickAction) {
-                    ForEach(DoubleClickFileAction.allCases) { action in
+                Picker(L10n.tr("双击文件行为", "Double-Click File Action"), selection: $filesPrefs.doubleClickAction) {
+                    ForEach(DoubleClickAction.allCases) { action in
                         Text(action.localizedTitle).tag(action)
                     }
                 }

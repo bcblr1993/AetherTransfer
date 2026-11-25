@@ -37,7 +37,6 @@ struct DisconnectedStateView: View {
     var workspace: Workspace?
     var onDropWithoutConnection: () -> Void = {}
 
-    // Wave 3 Integrator: pass `workspace: workspace` in BrowserPaneViews.swift -> DisconnectedStateView(showConnect: $showConnect, workspace: workspace)
     init(
         showConnect: Binding<Bool>,
         workspace: Workspace? = nil,
@@ -943,7 +942,7 @@ struct HostChallengeDialog: View {
             HStack {
                 Button(L10n.tr("取消", "Cancel")) {
                     workspace.hostChallenge = nil
-                    workspace.disconnect()
+                    workspace.disconnect(confirmActiveTransfers: false)
                 }
                 .keyboardShortcut(.cancelAction)
 

@@ -323,7 +323,7 @@ struct BrowserEntryContextMenu: View {
                 }
                 if !entry.isDirectory && entry.fileExtension == "zip" {
                     Button(L10n.tr("解压压缩包…", "Extract Archive…")) {
-                        workspace.extractLocalZip(entry)
+                        workspace.extractLocalZip(entry, role: role, layout: layout)
                     }
                 }
             }
@@ -840,6 +840,7 @@ struct MainView: View {
         }
         .onAppear {
             appearance.syncFromWorkspaceViewMode(workspace.viewMode)
+            v3Store.displayMode = appearance.displayMode
             if workspace.connectedProfile != nil && rulesStore.defaultFocusPane == .remoteWhenConnected {
                 layout.activePaneSide = .right
             }
@@ -850,6 +851,30 @@ struct MainView: View {
         .onChange(of: rulesStore.newEmptyFileRequestCounter) { _, _ in
             workspace.createNewFile(in: focusedPaneRole, layout: layout)
         }
+        .onChange(of: v3Store.newFolderRequestCounter) { _, _ in
+            workspace.createFolder(in: focusedPaneRole, layout: layout)
+        }
+        .onChange(of: v3Store.quickConnectRequestCounter) { _, _ in
+            workspace.editingProfile = nil
+            showConnect = true
+        }
+        .onChange(of: v3Store.viewOptionsRequestCounter) { _, _ in
+            let targetRole = focusedPaneRole
+            if v3Store.showViewOptionsPopover && v3Store.viewOptionsPaneRole == targetRole {
+                v3Store.showViewOptionsPopover = false
+            } else {
+                v3Store.viewOptionsPaneRole = targetRole
+                v3Store.showViewOptionsPopover = true
+            }
+        }
+        .onChange(of: v3Store.externalEditRequestCounter) { _, _ in
+            if let target = inspectedTarget, !target.entry.isDirectory {
+                let role: BrowserPaneRole = (target.isRemote == activeRightRole.isRemote) ? activeRightRole : activeLeftRole
+                workspace.openInExternalEditor(target.entry, in: role, layout: layout)
+            } else if let entry = workspace.selectedEntry, !entry.isDirectory {
+                workspace.openInExternalEditor(entry, remote: workspace.isRemoteEntry(entry))
+            }
+        }
         .onChange(of: workspace.showHidden) { _, _ in
             workspace.refreshLocal()
             if layout.rightPaneSource == .secondLocal {
@@ -858,6 +883,16 @@ struct MainView: View {
         }
         .onChange(of: workspace.viewMode) { _, newValue in
             appearance.syncFromWorkspaceViewMode(newValue)
+        }
+        .onChange(of: appearance.displayMode) { _, newMode in
+            if v3Store.displayMode != newMode {
+                v3Store.displayMode = newMode
+            }
+        }
+        .onChange(of: v3Store.displayMode) { _, newMode in
+            if appearance.displayMode != newMode {
+                appearance.applyDisplayMode(newMode, to: workspace)
+            }
         }
         .onChange(of: layout.rightPaneSource) { _, newSource in
             if newSource == .secondLocal {

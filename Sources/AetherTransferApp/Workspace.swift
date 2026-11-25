@@ -1,5 +1,6 @@
 import AppKit
 import SwiftUI
+import UserNotifications
 import AetherTransferCore
 
 public struct EditingFileContext: Identifiable {
@@ -8,12 +9,23 @@ public struct EditingFileContext: Identifiable {
     public let path: String
     public let remote: Bool
     public var content: String
+    public var rawData: Data?
+    public var encoding: TextFileEncoding
     public var isSaving: Bool = false
-    public init(name: String, path: String, remote: Bool, content: String) {
+    public init(
+        name: String,
+        path: String,
+        remote: Bool,
+        content: String,
+        rawData: Data? = nil,
+        encoding: TextFileEncoding = .utf8
+    ) {
         self.name = name
         self.path = path
         self.remote = remote
         self.content = content
+        self.rawData = rawData
+        self.encoding = encoding
     }
 }
 
@@ -108,6 +120,7 @@ public enum DefaultConflictPreference: String, CaseIterable, Identifiable, Senda
     @Published var syncRule: SyncComparisonRule = .sizeAndDate
     @Published var syncDeleteOrphans: Bool = false
     @Published var syncIgnorePatternsText: String = SyncIgnoreFilter.defaultPatternString
+    @Published var syncOptions: SyncOptions = SyncOptions()
 
     // Transmit Parity: SSH Key Manager, Encrypted Sync, Clipboard & External Editor
     @Published var showSSHKeyManager: Bool = false
@@ -185,6 +198,9 @@ public enum DefaultConflictPreference: String, CaseIterable, Identifiable, Senda
     private var localGeneration = UUID()
     private var remoteGeneration = UUID()
     private var pendingDropletUpload: (urls: [URL], profile: ServerProfile, remotePath: String)?
+    private var knownTransferStates: [UUID: TransferState] = [:]
+    private var didRequestNotificationAuthorization = false
+    private var lastCompletionSoundDate: Date?
 
     struct HostChallenge: Identifiable {
         let id = UUID()
@@ -194,7 +210,12 @@ public enum DefaultConflictPreference: String, CaseIterable, Identifiable, Senda
 
     var client: RemoteClient? {
         connectedProfile.map {
-            RemoteClient(profile: $0, credentials: credentials, speedLimitBytesPerSec: queue.speedLimitBytesPerSec)
+            RemoteClient(
+                profile: $0,
+                credentials: credentials,
+                speedLimitBytesPerSec: queue.speedLimitBytesPerSec,
+                transferMode: effectiveTransferMode(for: $0)
+            )
         }
     }
 
@@ -313,6 +334,7 @@ public enum DefaultConflictPreference: String, CaseIterable, Identifiable, Senda
             Task { @MainActor in
                 guard let self else { return }
                 self.transferTasks = self.queue.items
+                self.handleQueueCompletionNotifications(for: self.transferTasks)
                 let count = self.activeTransferCount
                 NSApp.dockTile.badgeLabel = count > 0 ? "\(count)" : nil
             }
@@ -485,7 +507,50 @@ public enum DefaultConflictPreference: String, CaseIterable, Identifiable, Senda
         connect(profile, credentials: credentials)
     }
 
-    func connect(_ profile: ServerProfile, credentials: Credentials) {
+    func connect(
+        _ profile: ServerProfile,
+        credentials: Credentials,
+        mfaTokenCode: String? = nil,
+        bypassSTS: Bool = false
+    ) {
+        let roleARN = profile.s3IAMRoleARN.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !bypassSTS && profile.protocolKind == .s3 && !roleARN.isEmpty {
+            let mfaSerial = profile.s3MFASerial.trimmingCharacters(in: .whitespacesAndNewlines)
+            let cleanToken = mfaTokenCode?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            if !mfaSerial.isEmpty && cleanToken.isEmpty {
+                v3UIStore.mfaChallengeProfile = profile
+                v3UIStore.mfaChallengeCredentials = credentials
+                return
+            }
+
+            browseTask?.cancel()
+            connecting = true
+            Task { @MainActor [weak self] in
+                guard let self else { return }
+                do {
+                    let (stsProfile, stsCredentials, temp) = try await AWSSTSClient().assumeRoleProfileAndCredentials(
+                        profile: profile,
+                        credentials: credentials,
+                        mfaTokenCode: cleanToken.isEmpty ? nil : cleanToken
+                    )
+                    self.rulesAndTranscriptStore.appendTranscript(
+                        for: profile,
+                        category: .connect,
+                        message: "Assumed IAM Role via AWS STS (expires: \(temp.expiration?.description ?? "session"))"
+                    )
+                    self.performConnect(stsProfile, credentials: stsCredentials)
+                } catch {
+                    self.connecting = false
+                    self.error = error.localizedDescription
+                }
+            }
+            return
+        }
+
+        performConnect(profile, credentials: credentials)
+    }
+
+    private func performConnect(_ profile: ServerProfile, credentials: Credentials) {
         browseTask?.cancel()
         connectedProfile = profile; self.credentials = credentials
         selectedServer = profile.id; remotePath = RemotePath.normalize(profile.initialPath)
@@ -519,7 +584,10 @@ public enum DefaultConflictPreference: String, CaseIterable, Identifiable, Senda
         refreshRemote()
     }
 
-    func disconnect() {
+    func disconnect(confirmActiveTransfers: Bool = true) {
+        if confirmActiveTransfers, !confirmActiveTransfersResolution(actionLabel: L10n.tr("断开连接", "Disconnect")) {
+            return
+        }
         let previousProfile = connectedProfile
         browseTask?.cancel(); remoteGeneration = UUID(); connectedProfile = nil; remoteFiles = []
         remoteSelection = []; connecting = false; loadingRemote = false
@@ -539,7 +607,7 @@ public enum DefaultConflictPreference: String, CaseIterable, Identifiable, Senda
         guard let challenge = hostChallenge else { return }
         var profile = challenge.profile; profile.trustedHostKey = challenge.key
         if let index = profiles.firstIndex(where: { $0.id == profile.id }) { profiles[index] = profile; persist() }
-        hostChallenge = nil; connect(profile, credentials: credentials)
+        hostChallenge = nil; connect(profile, credentials: credentials, bypassSTS: true)
     }
 
     // MARK: - Navigation
@@ -651,8 +719,26 @@ public enum DefaultConflictPreference: String, CaseIterable, Identifiable, Senda
         if entry.isDirectory {
             if remote { navigateRemote(to: entry.path) }
             else { navigateLocal(to: entry.path) }
-        } else if remote { download([entry]) }
-        else { NSWorkspace.shared.open(URL(fileURLWithPath: entry.path)) }
+            return
+        }
+        switch FilesPreferencesStore.shared.doubleClickAction {
+        case .transfer:
+            if remote { download([entry]) }
+            else if client != nil { upload([entry]) }
+            else { NSWorkspace.shared.open(URL(fileURLWithPath: entry.path)) }
+        case .editBuiltIn:
+            if TextFileHelper.isTextFileName(entry.name) || fileRulesStore.isAsciiTransferFile(entry.name) {
+                openEditor(for: entry, remote: remote)
+            } else if remote {
+                download([entry])
+            } else {
+                NSWorkspace.shared.open(URL(fileURLWithPath: entry.path))
+            }
+        case .editExternal:
+            openInExternalEditor(entry, remote: remote)
+        case .doNothing:
+            return
+        }
     }
 
     func parent(remote: Bool) {
@@ -670,32 +756,49 @@ public enum DefaultConflictPreference: String, CaseIterable, Identifiable, Senda
     func downloadSelection() { download(remoteFiles.filter { remoteSelection.contains($0.id) }) }
 
     /// 上传到指定远程目录（默认当前远程目录）；目标不是当前目录时先列出它用于冲突判断。
-    func upload(_ entries: [FileEntry], to remoteDirectory: String? = nil) {
+    func upload(_ entries: [FileEntry], to remoteDirectory: String? = nil, bypassingRules: Bool = false) {
         guard let client else { error = L10n.tr("请先连接服务器。", "Connect to a server first."); return }
         guard !entries.isEmpty else { return }
         let target = RemotePath.normalize(remoteDirectory ?? remotePath)
         rulesAndTranscriptStore.appendTranscript(
             for: client.profile,
             category: .command,
-            message: "PUT \(entries.count) item(s) -> \(target)"
+            message: "PUT \(entries.count) item(s) -> \(target)\(bypassingRules ? " [bypassing rules]" : "")"
         )
         if target == remotePath {
-            enqueueUploads(entries, to: target, existing: remoteFiles.map(\.name), client: client)
+            enqueueUploads(entries, to: target, existing: remoteFiles.map(\.name), client: client, bypassingRules: bypassingRules)
             return
         }
         Task { [weak self] in
             do {
                 let names = try await client.list(target).map(\.name)
-                self?.enqueueUploads(entries, to: target, existing: names, client: client)
+                self?.enqueueUploads(entries, to: target, existing: names, client: client, bypassingRules: bypassingRules)
             } catch { self?.error = error.localizedDescription }
         }
     }
 
-    private func enqueueUploads(_ entries: [FileEntry], to target: String, existing: [String], client: RemoteClient) {
+    private func enqueueUploads(_ entries: [FileEntry], to target: String, existing: [String], client: RemoteClient, bypassingRules: Bool = false) {
         var names = existing
+        let activeSkipRules = rulesAndTranscriptStore.skipRules
         for entry in entries {
+            if !bypassingRules && FileRulesStore.matchesAny(
+                rules: activeSkipRules,
+                name: entry.name,
+                relativePath: entry.name,
+                isDirectory: entry.isDirectory,
+                size: entry.size,
+                modified: entry.modified,
+                scope: .transfersAndSync
+            ) {
+                rulesAndTranscriptStore.appendTranscript(
+                    for: client.profile,
+                    category: .transfer,
+                    message: "Skipped \(entry.name) matching Skip Rules"
+                )
+                continue
+            }
             let name = entry.isDirectory
-                ? uploadDirectory(entry, to: target, existing: names, client: client)
+                ? uploadDirectory(entry, to: target, existing: names, client: client, bypassingRules: bypassingRules)
                 : uploadSingleFile(entry, to: target, existing: names, client: client)
             if let name { names.append(name) }
         }
@@ -732,7 +835,7 @@ public enum DefaultConflictPreference: String, CaseIterable, Identifiable, Senda
         } catch { self.error = error.localizedDescription; return nil }
     }
 
-    private func uploadDirectory(_ entry: FileEntry, to targetDir: String, existing: [String], client: RemoteClient) -> String? {
+    private func uploadDirectory(_ entry: FileEntry, to targetDir: String, existing: [String], client: RemoteClient, bypassingRules: Bool = false) -> String? {
         let rootURL = URL(fileURLWithPath: entry.path)
         guard let (folderName, finalOverwrite) = resolveConflict(entry.name, existing: existing) else { return nil }
         let baseRemoteFolder = RemotePath.normalize(targetDir + "/" + folderName)
@@ -745,11 +848,13 @@ public enum DefaultConflictPreference: String, CaseIterable, Identifiable, Senda
                 let rawItems = try await Task.detached(priority: .userInitiated) {
                     try LocalFiles.walk(rootURL, showHidden: includeHidden)
                 }.value
-                let items = FileRulesStore.filterLocalItems(
-                    rawItems,
-                    rules: activeSkipRules,
-                    scope: .transfersAndSync
-                )
+                let items = bypassingRules
+                    ? rawItems
+                    : FileRulesStore.filterLocalItems(
+                        rawItems,
+                        rules: activeSkipRules,
+                        scope: .transfersAndSync
+                    )
                 let skippedCount = rawItems.count - items.count
                 if skippedCount > 0 {
                     self.rulesAndTranscriptStore.appendTranscript(
@@ -785,20 +890,37 @@ public enum DefaultConflictPreference: String, CaseIterable, Identifiable, Senda
     }
 
     /// 下载到指定本地目录（默认当前本地目录）。
-    func download(_ entries: [FileEntry], to localDirectory: String? = nil) {
+    func download(_ entries: [FileEntry], to localDirectory: String? = nil, bypassingRules: Bool = false) {
         guard let client else { error = L10n.tr("请先连接服务器。", "Connect to a server first."); return }
         guard !entries.isEmpty else { return }
         let target = localDirectory ?? localPath
         rulesAndTranscriptStore.appendTranscript(
             for: client.profile,
             category: .command,
-            message: "GET \(entries.count) item(s) -> \(URL(fileURLWithPath: target).lastPathComponent)"
+            message: "GET \(entries.count) item(s) -> \(URL(fileURLWithPath: target).lastPathComponent)\(bypassingRules ? " [bypassing rules]" : "")"
         )
         let localDir = URL(fileURLWithPath: target)
         var names = (try? FileManager.default.contentsOfDirectory(atPath: target)) ?? []
+        let activeSkipRules = rulesAndTranscriptStore.skipRules
         for entry in entries {
+            if !bypassingRules && FileRulesStore.matchesAny(
+                rules: activeSkipRules,
+                name: entry.name,
+                relativePath: entry.name,
+                isDirectory: entry.isDirectory,
+                size: entry.size,
+                modified: entry.modified,
+                scope: .transfersAndSync
+            ) {
+                rulesAndTranscriptStore.appendTranscript(
+                    for: client.profile,
+                    category: .transfer,
+                    message: "Skipped \(entry.name) matching Skip Rules"
+                )
+                continue
+            }
             let name = entry.isDirectory
-                ? downloadDirectory(entry, to: localDir, existing: names, client: client)
+                ? downloadDirectory(entry, to: localDir, existing: names, client: client, bypassingRules: bypassingRules)
                 : downloadSingleFile(entry, to: localDir, existing: names, client: client)
             if let name { names.append(name) }
         }
@@ -822,10 +944,12 @@ public enum DefaultConflictPreference: String, CaseIterable, Identifiable, Senda
         return targetName
     }
 
-    private func downloadDirectory(_ entry: FileEntry, to localParent: URL, existing: [String], client: RemoteClient) -> String? {
+    private func downloadDirectory(_ entry: FileEntry, to localParent: URL, existing: [String], client: RemoteClient, bypassingRules: Bool = false) -> String? {
         guard let (folderName, finalOverwrite) = resolveConflict(entry.name, existing: existing) else { return nil }
         let finalBaseLocalDir = localParent.appendingPathComponent(folderName)
         let remoteBase = entry.path
+        let activeSkipRules = rulesAndTranscriptStore.skipRules
+        let enabledRules = bypassingRules ? [] : activeSkipRules.filter { $0.isEnabled && $0.scope.appliesToTransfers }
         Task { [weak self] in
             guard let self else { return }
             do {
@@ -836,6 +960,15 @@ public enum DefaultConflictPreference: String, CaseIterable, Identifiable, Senda
                     var rel = String(item.path.dropFirst(remoteBase.count))
                     if rel.hasPrefix("/") { rel.removeFirst() }
                     guard !rel.isEmpty else { continue }
+                    if !bypassingRules && FileRulesStore.shouldSkipItem(
+                        relativePath: rel,
+                        isDirectory: item.isDirectory,
+                        size: item.size,
+                        modified: item.modified,
+                        enabledRules: enabledRules
+                    ) {
+                        continue
+                    }
                     let localTarget = finalBaseLocalDir.appendingPathComponent(rel)
                     if item.isDirectory {
                         try FileManager.default.createDirectory(at: localTarget, withIntermediateDirectories: true)
@@ -949,14 +1082,16 @@ public enum DefaultConflictPreference: String, CaseIterable, Identifiable, Senda
     }
 
     func delete(_ entry: FileEntry, remote: Bool) {
-        let alert = NSAlert()
-        alert.messageText = L10n.tr("删除 \(entry.name)？", "Delete \"\(entry.name)\"?")
-        alert.informativeText = remote
-            ? L10n.tr("服务器删除无法从本机废纸篓恢复。", "Remote deletion is permanent and cannot be undone from local Trash.")
-            : L10n.tr("文件将移到废纸篓。", "The item will be moved to the Trash.")
-        alert.addButton(withTitle: L10n.tr("删除", "Delete"))
-        alert.addButton(withTitle: L10n.tr("取消", "Cancel"))
-        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        if FilesPreferencesStore.shared.askBeforeDeleting {
+            let alert = NSAlert()
+            alert.messageText = L10n.tr("删除 \(entry.name)？", "Delete \"\(entry.name)\"?")
+            alert.informativeText = remote
+                ? L10n.tr("服务器删除无法从本机废纸篓恢复。", "Remote deletion is permanent and cannot be undone from local Trash.")
+                : L10n.tr("文件将移到废纸篓。", "The item will be moved to the Trash.")
+            alert.addButton(withTitle: L10n.tr("删除", "Delete"))
+            alert.addButton(withTitle: L10n.tr("取消", "Cancel"))
+            guard alert.runModal() == .alertFirstButtonReturn else { return }
+        }
         if remote, let client {
             Task { do { try await client.remove(entry.path, directory: entry.isDirectory); refreshRemote() } catch { self.error = error.localizedDescription } }
         } else {
@@ -1018,13 +1153,32 @@ public enum DefaultConflictPreference: String, CaseIterable, Identifiable, Senda
             if let pid = tab.connectedProfileId, let profile = profiles.first(where: { $0.id == pid }) {
                 connectSaved(profile)
             } else if tab.connectedProfileId == nil {
-                disconnect()
+                disconnect(confirmActiveTransfers: false)
             }
             refreshLocal()
         }
     }
 
+    func selectPreviousTab() {
+        let tabs = tabManager.tabs
+        guard tabs.count > 1, let idx = tabs.firstIndex(where: { $0.id == tabManager.activeTabId }) else { return }
+        let prevIndex = (idx - 1 + tabs.count) % tabs.count
+        selectTab(tabs[prevIndex].id)
+    }
+
+    func selectNextTab() {
+        let tabs = tabManager.tabs
+        guard tabs.count > 1, let idx = tabs.firstIndex(where: { $0.id == tabManager.activeTabId }) else { return }
+        let nextIndex = (idx + 1) % tabs.count
+        selectTab(tabs[nextIndex].id)
+    }
+
     func closeTab(_ id: UUID) {
+        if activeTransferCount > 0 {
+            guard confirmActiveTransfersResolution(actionLabel: L10n.tr("关闭标签页", "Close Tab")) else {
+                return
+            }
+        }
         tabSnapshots.removeValue(forKey: id)
         let wasActive = (id == tabManager.activeTabId)
         tabManager.closeTab(id: id)
@@ -1046,6 +1200,85 @@ public enum DefaultConflictPreference: String, CaseIterable, Identifiable, Senda
                 refreshLocal()
                 if connectedProfile != nil { refreshRemote() }
             }
+        }
+    }
+
+    private func confirmActiveTransfersResolution(actionLabel: String) -> Bool {
+        let count = activeTransferCount
+        guard count > 0 else { return true }
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        alert.messageText = L10n.tr(
+            "仍有 \(count) 个传输任务正在进行",
+            "\(count) Active Transfer(s) in Progress"
+        )
+        alert.informativeText = L10n.tr(
+            "执行「\(actionLabel)」前，请选择取消正在进行的传输还是保持其在后台继续运行。",
+            "Before performing \"\(actionLabel)\", choose whether to cancel active transfers or keep them running in the background."
+        )
+        alert.addButton(withTitle: L10n.tr("取消传输并\(actionLabel)", "Cancel Transfers & \(actionLabel)"))
+        alert.addButton(withTitle: L10n.tr("保持后台传输并继续", "Keep Transfers Running"))
+        alert.addButton(withTitle: L10n.tr("取消", "Cancel"))
+        switch alert.runModal() {
+        case .alertFirstButtonReturn:
+            queue.cancelAll()
+            return true
+        case .alertSecondButtonReturn:
+            return true
+        default:
+            return false
+        }
+    }
+
+    private func handleQueueCompletionNotifications(for tasks: [TransferTaskItem]) {
+        let currentIDs = Set(tasks.map(\.id))
+        knownTransferStates = knownTransferStates.filter { currentIDs.contains($0.key) }
+
+        for item in tasks {
+            let prev = knownTransferStates[item.id]
+            knownTransferStates[item.id] = item.state
+            if prev != .completed && item.state == .completed {
+                postTransferCompleteNotification(for: item)
+            }
+        }
+    }
+
+    private func postTransferCompleteNotification(for item: TransferTaskItem) {
+        if FilesPreferencesStore.shared.playSoundOnTransferComplete {
+            let now = Date()
+            if lastCompletionSoundDate.map({ now.timeIntervalSince($0) >= 0.8 }) ?? true {
+                lastCompletionSoundDate = now
+                NSSound(named: NSSound.Name("Glass"))?.play()
+            }
+        }
+
+        guard FilesPreferencesStore.shared.notifyOnTransferComplete else { return }
+        guard Bundle.main.bundleIdentifier != nil,
+              Bundle.main.bundleURL.pathExtension == "app" else {
+            return
+        }
+
+        let title = item.direction == .upload
+            ? L10n.tr("上传完成", "Upload Complete")
+            : L10n.tr("下载完成", "Download Complete")
+        let body = item.name
+
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            let center = UNUserNotificationCenter.current()
+            if !self.didRequestNotificationAuthorization {
+                self.didRequestNotificationAuthorization = true
+                _ = try? await center.requestAuthorization(options: [.alert, .sound])
+            }
+            let content = UNMutableNotificationContent()
+            content.title = title
+            content.body = body
+            let request = UNNotificationRequest(
+                identifier: "aether-transfer-\(item.id.uuidString)",
+                content: content,
+                trigger: nil
+            )
+            try? await center.add(request)
         }
     }
 
@@ -1098,6 +1331,16 @@ public enum DefaultConflictPreference: String, CaseIterable, Identifiable, Senda
         }
     }
 
+    nonisolated private static func decodeTextWithFallback(_ data: Data) throws -> (text: String, encoding: TextFileEncoding) {
+        let candidates: [TextFileEncoding] = [.utf8, .utf16, .gb18030, .isoLatin1]
+        for candidate in candidates {
+            if let decoded = try? TextFileHelper.decodeText(data, encoding: candidate) {
+                return (decoded, candidate)
+            }
+        }
+        throw TextFileEncodingError.decodingFailed(.utf8)
+    }
+
     func openEditor(for entry: FileEntry, remote: Bool) {
         if remote, let client {
             Task {
@@ -1105,56 +1348,51 @@ public enum DefaultConflictPreference: String, CaseIterable, Identifiable, Senda
                     let tempCache = FileManager.default.temporaryDirectory.appendingPathComponent("aether-edit-\(UUID().uuidString)-\(entry.name)")
                     defer { try? FileManager.default.removeItem(at: tempCache) }
                     try await client.download(entry.path, to: tempCache, overwrite: true)
-                    let text = try String(contentsOf: tempCache, encoding: .utf8)
-                    self.editingFile = EditingFileContext(name: entry.name, path: entry.path, remote: true, content: text)
+                    let (data, text, detectedEncoding) = try await Task.detached(priority: .userInitiated) {
+                        let data = try Data(contentsOf: tempCache)
+                        let decoded = try Self.decodeTextWithFallback(data)
+                        return (data, decoded.text, decoded.encoding)
+                    }.value
+                    self.editingFile = EditingFileContext(
+                        name: entry.name,
+                        path: entry.path,
+                        remote: true,
+                        content: text,
+                        rawData: data,
+                        encoding: detectedEncoding
+                    )
                 } catch {
                     self.error = L10n.tr("无法以文本形式打开此文件：\(error.localizedDescription)",
                                          "Unable to open file as text: \(error.localizedDescription)")
                 }
             }
         } else {
-            do {
-                let text = try String(contentsOfFile: entry.path, encoding: .utf8)
-                self.editingFile = EditingFileContext(name: entry.name, path: entry.path, remote: false, content: text)
-            } catch {
-                self.error = L10n.tr("无法以文本形式打开此文件：\(error.localizedDescription)",
-                                     "Unable to open file as text: \(error.localizedDescription)")
+            let fileURL = URL(fileURLWithPath: entry.path)
+            Task {
+                do {
+                    let (data, text, detectedEncoding) = try await Task.detached(priority: .userInitiated) {
+                        let data = try Data(contentsOf: fileURL)
+                        let decoded = try Self.decodeTextWithFallback(data)
+                        return (data, decoded.text, decoded.encoding)
+                    }.value
+                    self.editingFile = EditingFileContext(
+                        name: entry.name,
+                        path: entry.path,
+                        remote: false,
+                        content: text,
+                        rawData: data,
+                        encoding: detectedEncoding
+                    )
+                } catch {
+                    self.error = L10n.tr("无法以文本形式打开此文件：\(error.localizedDescription)",
+                                         "Unable to open file as text: \(error.localizedDescription)")
+                }
             }
         }
     }
 
     func saveEditorContent(_ newContent: String) {
-        guard var ctx = editingFile else { return }
-        ctx.isSaving = true
-        self.editingFile = ctx
-        Task {
-            if ctx.remote, let client {
-                do {
-                    let tempFile = FileManager.default.temporaryDirectory.appendingPathComponent("aether-save-\(UUID().uuidString)-\(ctx.name)")
-                    try newContent.write(to: tempFile, atomically: true, encoding: .utf8)
-                    defer { try? FileManager.default.removeItem(at: tempFile) }
-                    try await client.upload(tempFile, to: ctx.path, overwrite: true)
-                    refreshRemote()
-                    self.editingFile = nil
-                } catch {
-                    self.error = L10n.tr("保存远程文件失败：\(error.localizedDescription)",
-                                         "Failed to save remote file: \(error.localizedDescription)")
-                    ctx.isSaving = false
-                    self.editingFile = ctx
-                }
-            } else {
-                do {
-                    try newContent.write(toFile: ctx.path, atomically: true, encoding: .utf8)
-                    refreshLocal()
-                    self.editingFile = nil
-                } catch {
-                    self.error = L10n.tr("保存本地文件失败：\(error.localizedDescription)",
-                                         "Failed to save local file: \(error.localizedDescription)")
-                    ctx.isSaving = false
-                    self.editingFile = ctx
-                }
-            }
-        }
+        v3SaveEditorContent(newContent, encoding: editingFile?.encoding ?? .utf8)
     }
 
     func openTerminal(remote: Bool) {
@@ -1191,6 +1429,15 @@ public enum DefaultConflictPreference: String, CaseIterable, Identifiable, Senda
 
     // MARK: - External Editor with Auto-Upload on Save (Transmit Parity)
     private func openFileWithPreferredEditor(_ fileURL: URL) {
+        if let editorURL = FilesPreferencesStore.shared.preferredEditorURL(for: fileURL.lastPathComponent),
+           FileManager.default.fileExists(atPath: editorURL.path) {
+            NSWorkspace.shared.open(
+                [fileURL],
+                withApplicationAt: editorURL,
+                configuration: NSWorkspace.OpenConfiguration()
+            )
+            return
+        }
         let editorPath = rulesAndTranscriptStore.preferredExternalEditorPath.trimmingCharacters(in: .whitespacesAndNewlines)
         if !editorPath.isEmpty && FileManager.default.fileExists(atPath: editorPath) {
             NSWorkspace.shared.open(
@@ -1220,7 +1467,8 @@ public enum DefaultConflictPreference: String, CaseIterable, Identifiable, Senda
                     let sessionClient = RemoteClient(
                         profile: session.profile,
                         credentials: creds,
-                        speedLimitBytesPerSec: self.queue.speedLimitBytesPerSec
+                        speedLimitBytesPerSec: self.queue.speedLimitBytesPerSec,
+                        transferMode: self.effectiveTransferMode(for: session.profile)
                     )
                     self.rulesAndTranscriptStore.appendTranscript(
                         for: session.profile,
@@ -1446,7 +1694,12 @@ public enum DefaultConflictPreference: String, CaseIterable, Identifiable, Senda
     }
 
     private func enqueueDropletUpload(_ urls: [URL], to profile: ServerProfile, credentials creds: Credentials, remotePath remoteDir: String) {
-        let targetClient = RemoteClient(profile: profile, credentials: creds, speedLimitBytesPerSec: queue.speedLimitBytesPerSec)
+        let targetClient = RemoteClient(
+            profile: profile,
+            credentials: creds,
+            speedLimitBytesPerSec: queue.speedLimitBytesPerSec,
+            transferMode: effectiveTransferMode(for: profile)
+        )
         let serverLabel = profile.name.isEmpty ? profile.host : profile.name
         let includeHidden = showHidden
         let activeSkipRules = rulesAndTranscriptStore.skipRules
@@ -1563,6 +1816,7 @@ public enum DefaultConflictPreference: String, CaseIterable, Identifiable, Senda
         let currentDelete = syncDeleteOrphans
         let ignorePatterns = SyncIgnoreFilter.parsePatterns(syncIgnorePatternsText)
         let activeSkipRules = rulesAndTranscriptStore.skipRules
+        let currentOptions = syncOptions
 
         rulesAndTranscriptStore.appendTranscript(
             for: client.profile,
@@ -1586,7 +1840,8 @@ public enum DefaultConflictPreference: String, CaseIterable, Identifiable, Senda
                     rule: currentRule,
                     deleteOrphans: currentDelete,
                     ignorePatterns: ignorePatterns,
-                    skipRules: activeSkipRules
+                    skipRules: activeSkipRules,
+                    options: currentOptions
                 )
 
                 await MainActor.run {
@@ -1619,12 +1874,14 @@ public enum DefaultConflictPreference: String, CaseIterable, Identifiable, Senda
             rule: syncRule,
             deleteOrphans: syncDeleteOrphans,
             ignorePatterns: ignorePatterns,
-            skipRules: activeSkipRules
+            skipRules: activeSkipRules,
+            options: syncOptions
         )
     }
 
     func executeSyncPlan() {
         guard let plan = syncPlan, let client else { return }
+        guard !plan.simulateOnly && !syncOptions.simulateOnly else { return }
         showSyncSheet = false
         self.syncPlan = nil
 

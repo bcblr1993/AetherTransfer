@@ -73,6 +73,13 @@ final class TransmitV3UIStore: ObservableObject {
     @Published var showViewOptionsPopover: Bool = false
     @Published var viewOptionsPaneRole: BrowserPaneRole?
 
+    // Menu Bar / Toolbar Cross-Scene Requests & Display Mode Sync
+    @Published var displayMode: BrowserDisplayMode = .list
+    @Published var newFolderRequestCounter: Int = 0
+    @Published var quickConnectRequestCounter: Int = 0
+    @Published var viewOptionsRequestCounter: Int = 0
+    @Published var externalEditRequestCounter: Int = 0
+
     // S3 IAM Role MFA Prompt
     @Published var mfaChallengeProfile: ServerProfile?
     @Published var mfaChallengeCredentials: Credentials?
@@ -154,11 +161,36 @@ extension Workspace {
         )
     }
 
-    // MARK: - Transfer Mode
+    // MARK: - Transfer Mode & Menu Requests
+
+    func requestNewFolder() {
+        v3UIStore.newFolderRequestCounter &+= 1
+    }
+
+    func requestQuickConnect() {
+        v3UIStore.quickConnectRequestCounter &+= 1
+    }
+
+    func requestViewOptions() {
+        v3UIStore.viewOptionsRequestCounter &+= 1
+    }
+
+    func requestExternalEdit() {
+        v3UIStore.externalEditRequestCounter &+= 1
+    }
+
+    func effectiveTransferMode(for profile: ServerProfile) -> TransferMode {
+        if v3UIStore.activeTransferMode != .automatic {
+            return v3UIStore.activeTransferMode
+        }
+        if profile.defaultTransferMode != .automatic {
+            return profile.defaultTransferMode
+        }
+        return FilesPreferencesStore.shared.transferMode
+    }
 
     func setActiveTransferMode(_ mode: TransferMode) {
         v3UIStore.activeTransferMode = mode
-        // Wave 3 v3-integrator: propagate activeTransferMode to TransferQueueManager / RemoteClient options
         rulesAndTranscriptStore.appendTranscript(
             for: connectedProfile,
             category: .command,
@@ -195,6 +227,7 @@ extension Workspace {
         }
 
         let sanitizedCommand = TranscriptRedactor.sanitize(trimmed)
+        let targetPath = remotePath
         store.isRunningRawCommand = true
         rulesAndTranscriptStore.appendTranscript(
             for: client.profile,
@@ -206,22 +239,37 @@ extension Workspace {
             guard let self else { return }
             defer { self.v3UIStore.isRunningRawCommand = false }
 
-            // Wave 3 v3-integrator: replace stub below with `let output = try await client.sendRawCommand(trimmed)`
-            let resultMessage = L10n.tr(
-                "已验证命令格式（\(client.profile.protocolKind.title)）。等待 Wave 3 RemoteClient.sendRawCommand 后端集成。",
-                "Validated command for \(client.profile.protocolKind.title). Pending Wave 3 RemoteClient.sendRawCommand integration."
-            )
-            let entry = RawCommandResult(
-                command: sanitizedCommand,
-                output: TranscriptRedactor.sanitize(resultMessage),
-                succeeded: false
-            )
-            self.v3UIStore.rawCommandHistory.append(entry)
-            self.rulesAndTranscriptStore.appendTranscript(
-                for: client.profile,
-                category: .response,
-                message: entry.output
-            )
+            do {
+                let result = try await client.sendRawCommand(trimmed, path: targetPath)
+                let sanitizedEntry = RawCommandResult(
+                    command: TranscriptRedactor.sanitize(result.command),
+                    output: TranscriptRedactor.sanitize(result.output),
+                    succeeded: result.succeeded,
+                    timestamp: result.timestamp
+                )
+                self.v3UIStore.rawCommandHistory.append(sanitizedEntry)
+                let logOutput = sanitizedEntry.output.isEmpty
+                    ? (sanitizedEntry.succeeded ? "OK" : "Command returned empty error")
+                    : sanitizedEntry.output
+                self.rulesAndTranscriptStore.appendTranscript(
+                    for: client.profile,
+                    category: sanitizedEntry.succeeded ? .response : .error,
+                    message: logOutput
+                )
+            } catch {
+                let sanitizedErr = TranscriptRedactor.sanitize(error.localizedDescription)
+                let entry = RawCommandResult(
+                    command: sanitizedCommand,
+                    output: sanitizedErr,
+                    succeeded: false
+                )
+                self.v3UIStore.rawCommandHistory.append(entry)
+                self.rulesAndTranscriptStore.appendTranscript(
+                    for: client.profile,
+                    category: .error,
+                    message: sanitizedErr
+                )
+            }
         }
     }
 
@@ -261,11 +309,41 @@ extension Workspace {
         Task { @MainActor [weak self] in
             guard let self else { return }
             defer { self.v3UIStore.isLoadingBuckets = false }
-            // Wave 3 v3-integrator: wire to S3Client(profile: profile, credentials: credentials).listBuckets()
-            self.v3UIStore.bucketDiscoveryError = L10n.tr(
-                "存储桶列举接口已就绪，等待 Wave 3 S3Client.listBuckets() 后端集成。",
-                "Bucket discovery UI ready; pending Wave 3 S3Client.listBuckets() integration."
-            )
+
+            do {
+                var effectiveProfile = profile
+                var effectiveCredentials = credentials
+                let roleARN = profile.s3IAMRoleARN.trimmingCharacters(in: .whitespacesAndNewlines)
+                if !roleARN.isEmpty {
+                    let (stsProfile, stsCredentials, _) = try await AWSSTSClient().assumeRoleProfileAndCredentials(
+                        profile: profile,
+                        credentials: credentials
+                    )
+                    effectiveProfile = stsProfile
+                    effectiveCredentials = stsCredentials
+                }
+
+                let buckets = try await S3Client(
+                    profile: effectiveProfile,
+                    credentials: effectiveCredentials
+                ).listBuckets()
+                self.v3UIStore.discoveredBuckets = buckets
+                self.rulesAndTranscriptStore.appendTranscript(
+                    for: profile,
+                    category: .response,
+                    message: "Listed \(buckets.count) S3 bucket(s)"
+                )
+            } catch is CancellationError {
+                return
+            } catch {
+                let message = TranscriptRedactor.sanitize(error.localizedDescription)
+                self.v3UIStore.bucketDiscoveryError = message
+                self.rulesAndTranscriptStore.appendTranscript(
+                    for: profile,
+                    category: .error,
+                    message: "S3 bucket discovery failed: \(message)"
+                )
+            }
         }
     }
 
@@ -278,34 +356,19 @@ extension Workspace {
 
         Task { @MainActor [weak self] in
             guard let self else { return }
-            let ext = url.pathExtension.lowercased()
-
-            if ext == "json" {
-                do {
-                    let profiles = try await Task.detached(priority: .userInitiated) {
-                        let data = try Data(contentsOf: url)
-                        return try ServerProfile.importJSON(data)
-                    }.value
-                    let items = profiles.map {
-                        ImportedServerItem(sourceFormat: "AetherTransfer JSON", profile: $0, hasPassword: false, selected: true)
-                    }
-                    self.v3UIStore.importedItems = items
-                    self.v3UIStore.importStatusMessage = L10n.tr(
-                        "已解析 \(items.count) 个服务器配置。",
-                        "Loaded \(items.count) server profile(s)."
-                    )
-                } catch {
-                    self.v3UIStore.importErrorMessage = error.localizedDescription
-                }
-                return
+            do {
+                let items = try await Task.detached(priority: .userInitiated) {
+                    try BookmarkImporter.importFromFile(at: url)
+                }.value
+                self.v3UIStore.importedItems = items
+                self.v3UIStore.importStatusMessage = L10n.tr(
+                    "已解析 \(items.count) 个服务器配置（\(url.lastPathComponent)）。",
+                    "Loaded \(items.count) server profile(s) from \(url.lastPathComponent)."
+                )
+            } catch {
+                self.v3UIStore.importedItems = []
+                self.v3UIStore.importErrorMessage = error.localizedDescription
             }
-
-            // Wave 3 v3-integrator: wire to BookmarkImporter.importFile(at: url) for FileZilla .xml, Cyberduck .duck, Transmit .exportedFavorites / .inetloc
-            self.v3UIStore.importedItems = []
-            self.v3UIStore.importErrorMessage = L10n.tr(
-                "已读取文件「\(url.lastPathComponent)」；FileZilla / Cyberduck / Transmit 解析器将在 Wave 3 集成 BookmarkImporter 后启用。",
-                "Selected \"\(url.lastPathComponent)\"; FileZilla / Cyberduck / Transmit parsing pending Wave 3 BookmarkImporter integration."
-            )
         }
     }
 
@@ -316,38 +379,20 @@ extension Workspace {
 
         Task { @MainActor [weak self] in
             guard let self else { return }
-            let sshItems = await Task.detached(priority: .userInitiated) { () -> [ImportedServerItem] in
-                let hosts = SSHConfigParser.parseDefaultConfig()
-                return hosts.map { entry in
-                    ImportedServerItem(
-                        sourceFormat: "SSH Config",
-                        profile: entry.toServerProfile(),
-                        hasPassword: false,
-                        selected: true
-                    )
-                }
+            let items = await Task.detached(priority: .userInitiated) {
+                BookmarkImporter.importFromLocalConfigs()
             }.value
 
-            // Wave 3 v3-integrator: also merge ~/.aws/config & ~/.aws/credentials from BookmarkImporter.scanLocalConfigs()
-            let awsDir = FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent(".aws", isDirectory: true)
-            let hasAWSConfig = FileManager.default.fileExists(atPath: awsDir.appendingPathComponent("config").path)
-                || FileManager.default.fileExists(atPath: awsDir.appendingPathComponent("credentials").path)
-
-            self.v3UIStore.importedItems = sshItems
-            if sshItems.isEmpty && !hasAWSConfig {
+            self.v3UIStore.importedItems = items
+            if items.isEmpty {
                 self.v3UIStore.importStatusMessage = L10n.tr(
                     "未在 ~/.ssh/config 或 ~/.aws 中发现可导入配置。",
                     "No importable server entries found in ~/.ssh/config or ~/.aws."
                 )
-            } else if hasAWSConfig {
-                self.v3UIStore.importStatusMessage = L10n.tr(
-                    "已从 ~/.ssh/config 扫描到 \(sshItems.count) 个主机（~/.aws 解析将在 Wave 3 BookmarkImporter 集成后加入）。",
-                    "Scanned \(sshItems.count) host(s) from ~/.ssh/config (~/.aws parsing pending Wave 3 BookmarkImporter)."
-                )
             } else {
                 self.v3UIStore.importStatusMessage = L10n.tr(
-                    "已从 ~/.ssh/config 扫描到 \(sshItems.count) 个主机。",
-                    "Scanned \(sshItems.count) host(s) from ~/.ssh/config."
+                    "已从本机配置 (~/.ssh/config, ~/.aws) 扫描到 \(items.count) 个配置。",
+                    "Scanned \(items.count) server entry(ies) from ~/.ssh/config and ~/.aws."
                 )
             }
         }
@@ -375,7 +420,6 @@ extension Workspace {
             addedCount += 1
 
             if importPasswords, item.hasPassword, let password = item.optionalPassword, !password.isEmpty {
-                // Wave 3 v3-integrator: also store passphrase/sessionToken if BookmarkImporter supplies full Credentials
                 do {
                     try CredentialStore.save(password, id: profile.id)
                     passwordCount += 1
@@ -406,14 +450,7 @@ extension Workspace {
     // MARK: - S3 IAM Role MFA Prompt
 
     func connectWithOptionalMFAPrompt(_ profile: ServerProfile, credentials: Credentials) {
-        let roleARN = profile.s3IAMRoleARN.trimmingCharacters(in: .whitespacesAndNewlines)
-        let mfaSerial = profile.s3MFASerial.trimmingCharacters(in: .whitespacesAndNewlines)
-        if profile.protocolKind == .s3 && !roleARN.isEmpty && !mfaSerial.isEmpty {
-            v3UIStore.mfaChallengeProfile = profile
-            v3UIStore.mfaChallengeCredentials = credentials
-            return
-        }
-        connectApplyingFolderLink(profile, credentials: credentials)
+        connect(profile, credentials: credentials)
     }
 
     func submitMFAToken(_ token: String) {
@@ -426,13 +463,12 @@ extension Workspace {
         v3UIStore.mfaChallengeProfile = nil
         v3UIStore.mfaChallengeCredentials = nil
 
-        // Wave 3 v3-integrator: attach MFA TOTP token (`cleaned`) to STS AssumeRole credentials / S3Client
         rulesAndTranscriptStore.appendTranscript(
             for: profile,
             category: .connect,
             message: "MFA token submitted for IAM Role session (serial configured)"
         )
-        connectApplyingFolderLink(profile, credentials: creds)
+        connect(profile, credentials: creds, mfaTokenCode: cleaned)
     }
 
     // MARK: - Browser Preview, Bypass Rules & Archive Actions
@@ -468,15 +504,33 @@ extension Workspace {
         return webAndImageExts.contains(entry.fileExtension)
     }
 
-    func extractLocalZip(_ entry: FileEntry) {
+    func extractLocalZip(_ entry: FileEntry, role: BrowserPaneRole = .leftLocal, layout: PaneLayoutController? = nil) {
         guard !entry.isDirectory, entry.fileExtension == "zip" else { return }
-        // Wave 3 v3-integrator: wire to ArchiveHelper.extractZip(at: URL(fileURLWithPath: entry.path), to: destinationURL)
-        let notice = L10n.tr(
-            "ZIP 解压等待 Wave 3 ArchiveHelper.extractZip 后端集成：\(entry.name)",
-            "ZIP extraction pending Wave 3 ArchiveHelper.extractZip integration: \(entry.name)"
-        )
-        rulesAndTranscriptStore.appendTranscript(for: nil, category: .command, message: notice)
-        flashNotice(notice)
+        let zipURL = URL(fileURLWithPath: entry.path)
+        let destinationURL = zipURL.deletingLastPathComponent()
+
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            do {
+                let extracted = try await ArchiveHelper.extractZip(at: zipURL, to: destinationURL)
+                if let layout {
+                    self.refreshPane(role: role, layout: layout)
+                } else {
+                    self.refreshLocal()
+                }
+                let notice = L10n.tr(
+                    "已解压 \(entry.name)（\(extracted.count) 个顶层项目）",
+                    "Extracted \(entry.name) (\(extracted.count) top-level item(s))"
+                )
+                self.rulesAndTranscriptStore.appendTranscript(for: nil, category: .command, message: notice)
+                self.flashNotice(notice)
+            } catch {
+                self.error = L10n.tr(
+                    "解压失败：\(error.localizedDescription)",
+                    "Extraction failed: \(error.localizedDescription)"
+                )
+            }
+        }
     }
 
     func compressLocalEntries(_ entries: [FileEntry], role: BrowserPaneRole, layout: PaneLayoutController) {
@@ -513,11 +567,10 @@ extension Workspace {
             category: .transfer,
             message: "Transfer Without Rules requested for \(entries.count) item(s) (remote=\(remote))"
         )
-        // Wave 3 v3-integrator: pass `bypassingRules: true` to upload(_:bypassingRules:) / download(_:bypassingRules:)
         if remote {
-            download(entries)
+            download(entries, bypassingRules: true)
         } else {
-            upload(entries)
+            upload(entries, bypassingRules: true)
         }
     }
 
@@ -535,16 +588,11 @@ extension Workspace {
             return
         }
 
-        guard let encodedData = newContent.data(using: encoding.stringEncoding) else {
-            self.error = L10n.tr(
-                "当前文本包含无法使用 \(encoding.localizedTitle) 编码保存的字符。",
-                "Text contains characters that cannot be encoded as \(encoding.localizedTitle)."
-            )
-            return
-        }
-
-        if encoding == .utf8 {
-            saveEditorContent(newContent)
+        let encodedData: Data
+        do {
+            encodedData = try TextFileHelper.encodeText(newContent, encoding: encoding)
+        } catch {
+            self.error = error.localizedDescription
             return
         }
 

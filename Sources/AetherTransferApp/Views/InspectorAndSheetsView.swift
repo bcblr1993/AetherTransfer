@@ -1183,6 +1183,7 @@ struct QuickEditorSheet: View {
         self.context = context
         self._text = State(initialValue: context.content)
         self._originalContent = State(initialValue: context.content)
+        self._selectedEncoding = State(initialValue: context.encoding)
     }
 
     private var isDirty: Bool {
@@ -1244,6 +1245,17 @@ struct QuickEditorSheet: View {
             Button(L10n.tr("继续编辑", "Keep Editing"), role: .cancel) {}
         } message: {
             Text(L10n.tr("文件「\(context.name)」包含尚未保存的修改。", "\"\(context.name)\" has unsaved modifications."))
+        }
+        .onChange(of: selectedEncoding) { oldEncoding, newEncoding in
+            guard !isDirty, let rawData = context.rawData else { return }
+            do {
+                let decoded = try TextFileHelper.decodeText(rawData, encoding: newEncoding)
+                text = decoded
+                originalContent = decoded
+            } catch {
+                selectedEncoding = oldEncoding
+                workspace.error = error.localizedDescription
+            }
         }
     }
 
