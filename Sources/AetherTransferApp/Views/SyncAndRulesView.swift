@@ -1,5 +1,6 @@
 import SwiftUI
 import AppKit
+import UniformTypeIdentifiers
 import AetherTransferCore
 
 // MARK: - Software Update Sheet (In-App Online Update + Download + Immediate Restart)
@@ -240,163 +241,253 @@ struct SoftwareUpdateSheet: View {
     }
 }
 
-// MARK: - Directory Synchronization Sheet (Liquid Glass)
+// MARK: - Directory Synchronization Sheet (Liquid Glass + FileRulesStore Integration)
+
 struct SyncSheet: View {
     @ObservedObject var workspace: Workspace
+    @ObservedObject private var store: RulesAndTranscriptStore
     @Environment(\.dismiss) private var dismiss
+    @State private var showRulesBar = true
+
+    init(workspace: Workspace) {
+        self.workspace = workspace
+        self._store = ObservedObject(wrappedValue: workspace.rulesAndTranscriptStore)
+    }
+
+    private var syncApplicableRules: [SkipRule] {
+        store.skipRules.filter { $0.scope.appliesToSync }
+    }
 
     var body: some View {
         VStack(spacing: 0) {
-            // Header
-            HStack(spacing: 12) {
-                Image(systemName: "arrow.triangle.2.circlepath.circle.fill")
-                    .font(.system(size: 32))
-                    .foregroundStyle(LinearGradient(colors: [Color.accentColor, Color.cyan], startPoint: .topLeading, endPoint: .bottomTrailing))
+            syncHeader
+            Divider()
+            syncConfigBar
+            Divider()
+            syncPlanBody
+            Divider()
+            syncFooter
+        }
+        .frame(width: 780, height: 610)
+    }
 
-                VStack(alignment: .leading, spacing: 3) {
-                    Text(L10n.tr("文件夹同步 (Folder Sync)", "Folder Synchronization"))
-                        .font(.title3.bold())
+    private var syncHeader: some View {
+        HStack(spacing: 12) {
+            Image(systemName: "arrow.triangle.2.circlepath.circle.fill")
+                .font(.system(size: 32))
+                .foregroundStyle(LinearGradient(colors: [Color.accentColor, Color.cyan], startPoint: .topLeading, endPoint: .bottomTrailing))
 
-                    Text("\(L10n.tr("本地", "Local")): \(workspace.localPath)  ⇄  \(L10n.tr("远程", "Remote")): \(workspace.remotePath)")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
+            VStack(alignment: .leading, spacing: 3) {
+                Text(L10n.tr("文件夹同步 (Folder Sync)", "Folder Synchronization"))
+                    .font(.title3.bold())
+
+                Text("\(L10n.tr("本地", "Local")): \(workspace.localPath)  ⇄  \(L10n.tr("远程", "Remote")): \(workspace.remotePath)")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
+
+            Spacer()
+        }
+        .padding(18)
+        .background(.ultraThinMaterial)
+    }
+
+    private var syncConfigBar: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 16) {
+                Picker(L10n.tr("同步方向", "Direction"), selection: $workspace.syncDirection) {
+                    ForEach(SyncDirection.allCases, id: \.self) { dir in
+                        Text(dir.localizedTitle).tag(dir)
+                    }
                 }
+                .pickerStyle(.menu)
+                .onChange(of: workspace.syncDirection) { store.recalculateSyncPlanWithRules() }
+
+                Picker(L10n.tr("比较规则", "Compare By"), selection: $workspace.syncRule) {
+                    Text(SyncComparisonRule.sizeAndDate.localizedTitle).tag(SyncComparisonRule.sizeAndDate)
+                    Text(SyncComparisonRule.sizeOnly.localizedTitle).tag(SyncComparisonRule.sizeOnly)
+                }
+                .pickerStyle(.menu)
+                .onChange(of: workspace.syncRule) { store.recalculateSyncPlanWithRules() }
 
                 Spacer()
+
+                Button {
+                    workspace.startSyncAnalysis()
+                } label: {
+                    Label(L10n.tr("重新比对", "Re-analyze"), systemImage: "arrow.clockwise")
+                }
+                .buttonStyle(.borderless)
             }
-            .padding(18)
-            .background(.ultraThinMaterial)
 
-            Divider()
+            HStack(spacing: 10) {
+                Toggle(L10n.tr("删除目标位置的多余文件 (默认关闭)", "Delete orphan files on target (off by default)"), isOn: $workspace.syncDeleteOrphans)
+                    .toggleStyle(.checkbox)
+                    .onChange(of: workspace.syncDeleteOrphans) { store.recalculateSyncPlanWithRules() }
 
-            // Configuration Bar
-            VStack(alignment: .leading, spacing: 12) {
-                HStack(spacing: 16) {
-                    Picker(L10n.tr("同步方向", "Direction"), selection: $workspace.syncDirection) {
-                        ForEach(SyncDirection.allCases, id: \.self) { dir in
-                            Text(dir.localizedTitle).tag(dir)
+                Spacer()
+
+                if workspace.syncDeleteOrphans {
+                    Label(
+                        L10n.tr("危险：目标端多余文件将被删除", "Warning: Target orphan files will be deleted"),
+                        systemImage: "exclamationmark.triangle.fill"
+                    )
+                    .font(.caption2.bold())
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 3)
+                    .background(Capsule().fill(Color.red.opacity(0.15)))
+                    .foregroundStyle(.red)
+                } else {
+                    Label(
+                        L10n.tr("安全模式：保留目标端多余文件", "Safe Mode: Orphans Preserved"),
+                        systemImage: "checkmark.shield.fill"
+                    )
+                    .font(.caption2.bold())
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 3)
+                    .background(Capsule().fill(Color.green.opacity(0.14)))
+                    .foregroundStyle(.green)
+                }
+            }
+
+            // Skip Rules from FileRulesStore
+            if !syncApplicableRules.isEmpty {
+                VStack(alignment: .leading, spacing: 6) {
+                    HStack(spacing: 8) {
+                        Button {
+                            withAnimation(.easeInOut(duration: 0.15)) {
+                                showRulesBar.toggle()
+                            }
+                        } label: {
+                            HStack(spacing: 4) {
+                                Image(systemName: showRulesBar ? "chevron.down" : "chevron.right")
+                                    .font(.caption2)
+                                Image(systemName: "line.3.horizontal.decrease.circle")
+                                    .font(.caption)
+                                let activeCount = syncApplicableRules.filter(\.isEnabled).count
+                                Text(L10n.tr("跳过规则 (\(activeCount)/\(syncApplicableRules.count) 启用)",
+                                             "Skip Rules (\(activeCount)/\(syncApplicableRules.count) Active)"))
+                                    .font(.caption.bold())
+                            }
+                        }
+                        .buttonStyle(.plain)
+
+                        Spacer()
+                    }
+
+                    if showRulesBar {
+                        ScrollView(.horizontal, showsIndicators: false) {
+                            HStack(spacing: 6) {
+                                ForEach(syncApplicableRules) { rule in
+                                    Button {
+                                        store.setRuleEnabled(rule.id, enabled: !rule.isEnabled)
+                                    } label: {
+                                        HStack(spacing: 4) {
+                                            Image(systemName: rule.isEnabled ? "checkmark.circle.fill" : "circle")
+                                                .font(.caption2)
+                                            Text(rule.name)
+                                                .font(.caption2)
+                                        }
+                                        .padding(.horizontal, 8)
+                                        .padding(.vertical, 3)
+                                        .background(
+                                            Capsule().fill(rule.isEnabled ? Color.accentColor.opacity(0.16) : Color.primary.opacity(0.05))
+                                        )
+                                        .foregroundStyle(rule.isEnabled ? Color.accentColor : Color.secondary)
+                                    }
+                                    .buttonStyle(.plain)
+                                }
+                            }
                         }
                     }
-                    .pickerStyle(.menu)
-                    .onChange(of: workspace.syncDirection) { workspace.recalculateSyncPlan() }
-
-                    Picker(L10n.tr("比较规则", "Compare By"), selection: $workspace.syncRule) {
-                        Text(SyncComparisonRule.sizeAndDate.localizedTitle).tag(SyncComparisonRule.sizeAndDate)
-                        Text(SyncComparisonRule.sizeOnly.localizedTitle).tag(SyncComparisonRule.sizeOnly)
-                    }
-                    .pickerStyle(.menu)
-                    .onChange(of: workspace.syncRule) { workspace.recalculateSyncPlan() }
-
-                    Spacer()
-
-                    Button {
-                        workspace.startSyncAnalysis()
-                    } label: {
-                        Label(L10n.tr("重新比对", "Re-analyze"), systemImage: "arrow.clockwise")
-                    }
-                    .buttonStyle(.borderless)
-                }
-
-                HStack {
-                    Toggle(L10n.tr("删除目标位置的多余文件 (慎用，默认关闭)", "Delete orphan files on target (Use with caution, off by default)"), isOn: $workspace.syncDeleteOrphans)
-                        .toggleStyle(.checkbox)
-                        .onChange(of: workspace.syncDeleteOrphans) { workspace.recalculateSyncPlan() }
-
-                    Spacer()
-
-                    Text(L10n.tr("🛡️ 遵循安全性原则，默认不删除任何远程文件", "🛡️ Safe by default: remote files are never deleted unless explicitly checked"))
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
-                }
-
-                HStack(spacing: 8) {
-                    Text(L10n.tr("忽略规则 (Glob):", "Ignore Rules:"))
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                    TextField(".DS_Store, .git, node_modules, *.log", text: $workspace.syncIgnorePatternsText)
-                        .textFieldStyle(.roundedBorder)
-                        .font(.caption)
-                        .onSubmit { workspace.recalculateSyncPlan() }
-                    Button(L10n.tr("应用过滤", "Apply Filter")) {
-                        workspace.recalculateSyncPlan()
-                    }
-                    .controlSize(.small)
                 }
             }
+
+            // Custom Glob Ignore Patterns (SyncIgnoreFilter)
+            HStack(spacing: 8) {
+                Text(L10n.tr("额外 Glob 忽略:", "Glob Ignores:"))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                TextField(".DS_Store, .git, node_modules, *.log", text: $workspace.syncIgnorePatternsText)
+                    .textFieldStyle(.roundedBorder)
+                    .font(.caption)
+                    .onSubmit { store.recalculateSyncPlanWithRules() }
+                Button(L10n.tr("应用过滤", "Apply Filter")) {
+                    store.recalculateSyncPlanWithRules()
+                }
+                .controlSize(.small)
+            }
+        }
+        .padding(.horizontal, 18)
+        .padding(.vertical, 12)
+        .background(Color.primary.opacity(0.02))
+    }
+
+    @ViewBuilder
+    private var syncPlanBody: some View {
+        if let plan = workspace.syncPlan {
+            HStack(spacing: 10) {
+                summaryCapsule(
+                    icon: "arrow.up.circle.fill",
+                    color: .blue,
+                    text: L10n.tr("上传: \(plan.uploadItems.count)", "Upload: \(plan.uploadItems.count)"),
+                    bold: true
+                )
+                summaryCapsule(
+                    icon: "arrow.down.circle.fill",
+                    color: .green,
+                    text: L10n.tr("下载: \(plan.downloadItems.count)", "Download: \(plan.downloadItems.count)"),
+                    bold: true
+                )
+                summaryCapsule(
+                    icon: "trash.circle.fill",
+                    color: .red,
+                    text: L10n.tr("删除: \(plan.deleteItems.count)", "Delete: \(plan.deleteItems.count)"),
+                    bold: true
+                )
+                summaryCapsule(
+                    icon: "checkmark.circle.fill",
+                    color: .secondary,
+                    text: L10n.tr("跳过: \(plan.skipItems.count)", "Skip: \(plan.skipItems.count)"),
+                    bold: false
+                )
+
+                Spacer()
+
+                Text(L10n.tr("计划传输: \(L10n.formatByteCount(plan.totalTransferBytes))",
+                             "Total: \(L10n.formatByteCount(plan.totalTransferBytes))"))
+                    .font(.caption.monospacedDigit().bold())
+                    .foregroundStyle(Color.accentColor)
+            }
             .padding(.horizontal, 18)
-            .padding(.vertical, 12)
-            .background(Color.primary.opacity(0.02))
+            .padding(.vertical, 8)
 
             Divider()
 
-            // Summary Stats Pill Bar
-            if let plan = workspace.syncPlan {
-                HStack(spacing: 14) {
-                    HStack(spacing: 5) {
-                        Image(systemName: "arrow.up.circle.fill")
-                            .foregroundStyle(.blue)
-                        Text(L10n.tr("上传: \(plan.uploadItems.count) 项", "Upload: \(plan.uploadItems.count)"))
-                            .font(.caption.bold())
-                    }
-                    .padding(.horizontal, 8)
-                    .padding(.vertical, 4)
-                    .background(Color.blue.opacity(0.1))
-                    .clipShape(Capsule())
-
-                    HStack(spacing: 5) {
-                        Image(systemName: "arrow.down.circle.fill")
-                            .foregroundStyle(.green)
-                        Text(L10n.tr("下载: \(plan.downloadItems.count) 项", "Download: \(plan.downloadItems.count)"))
-                            .font(.caption.bold())
-                    }
-                    .padding(.horizontal, 8)
-                    .padding(.vertical, 4)
-                    .background(Color.green.opacity(0.1))
-                    .clipShape(Capsule())
-
-                    HStack(spacing: 5) {
-                        Image(systemName: "trash.circle.fill")
-                            .foregroundStyle(.red)
-                        Text(L10n.tr("删除: \(plan.deleteItems.count) 项", "Delete: \(plan.deleteItems.count)"))
-                            .font(.caption.bold())
-                    }
-                    .padding(.horizontal, 8)
-                    .padding(.vertical, 4)
-                    .background(Color.red.opacity(0.1))
-                    .clipShape(Capsule())
-
-                    HStack(spacing: 5) {
-                        Image(systemName: "checkmark.circle.fill")
-                            .foregroundStyle(.secondary)
-                        Text(L10n.tr("跳过: \(plan.skipItems.count) 项", "Skip: \(plan.skipItems.count)"))
-                            .font(.caption)
-                    }
-                    .padding(.horizontal, 8)
-                    .padding(.vertical, 4)
-                    .background(Color.primary.opacity(0.05))
-                    .clipShape(Capsule())
-
-                    Spacer()
-
-                    Text(L10n.tr("计划传输: \(ByteCountFormatter.string(fromByteCount: plan.totalTransferBytes, countStyle: .file))",
-                                 "Total: \(ByteCountFormatter.string(fromByteCount: plan.totalTransferBytes, countStyle: .file))"))
-                        .font(.caption.monospacedDigit().bold())
-                        .foregroundStyle(Color.accentColor)
+            if plan.items.isEmpty {
+                VStack(spacing: 8) {
+                    Image(systemName: "checkmark.seal")
+                        .font(.title2)
+                        .foregroundStyle(.secondary)
+                    Text(L10n.tr("没有需要同步的项目（已被规则过滤或完全一致）", "No items to synchronize (filtered by rules or already in sync)"))
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
                 }
-                .padding(.horizontal, 18)
-                .padding(.vertical, 8)
-
-                Divider()
-
-                // Items Table
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else {
                 List {
-                    ForEach(plan.items.indices, id: \.self) { idx in
-                        let item = plan.items[idx]
+                    ForEach(plan.items) { item in
                         HStack(spacing: 10) {
                             Toggle("", isOn: Binding(
-                                get: { workspace.syncPlan?.items[idx].isEnabled ?? false },
-                                set: { workspace.syncPlan?.items[idx].isEnabled = $0 }
+                                get: {
+                                    workspace.syncPlan?.items.first(where: { $0.id == item.id })?.isEnabled ?? false
+                                },
+                                set: { newValue in
+                                    if let idx = workspace.syncPlan?.items.firstIndex(where: { $0.id == item.id }) {
+                                        workspace.syncPlan?.items[idx].isEnabled = newValue
+                                    }
+                                }
                             ))
                             .labelsHidden()
                             .toggleStyle(.checkbox)
@@ -416,19 +507,19 @@ struct SyncSheet: View {
                                         .foregroundStyle(colorForAction(item.actionType))
 
                                     if item.size > 0 {
-                                        Text(ByteCountFormatter.string(fromByteCount: item.size, countStyle: .file))
+                                        Text(L10n.formatByteCount(item.size))
                                             .font(.caption2.monospacedDigit())
                                             .foregroundStyle(.secondary)
                                     }
 
                                     if let d1 = item.sourceDate {
-                                        Text("\(L10n.tr("源", "Src")): \(d1.formatted(date: .numeric, time: .shortened))")
+                                        Text("\(L10n.tr("源", "Src")): \(L10n.formatDateTime(d1))")
                                             .font(.caption2)
                                             .foregroundStyle(.secondary)
                                     }
 
                                     if let d2 = item.targetDate {
-                                        Text("\(L10n.tr("目标", "Dst")): \(d2.formatted(date: .numeric, time: .shortened))")
+                                        Text("\(L10n.tr("目标", "Dst")): \(L10n.formatDateTime(d2))")
                                             .font(.caption2)
                                             .foregroundStyle(.secondary)
                                     }
@@ -441,47 +532,62 @@ struct SyncSheet: View {
                     }
                 }
                 .listStyle(.inset(alternatesRowBackgrounds: true))
-            } else {
-                VStack(spacing: 12) {
-                    ProgressView()
-                    Text(L10n.tr("正在生成同步计划…", "Generating sync plan…"))
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
-                .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
+        } else {
+            VStack(spacing: 12) {
+                ProgressView()
+                Text(L10n.tr("正在生成同步计划…", "Generating sync plan…"))
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+        }
+    }
 
-            Divider()
+    private var syncFooter: some View {
+        HStack {
+            Button(L10n.tr("取消", "Cancel")) {
+                dismiss()
+            }
+            .keyboardShortcut(.cancelAction)
 
-            // Footer
-            HStack {
-                Button(L10n.tr("取消", "Cancel")) {
+            Spacer()
+
+            if let plan = workspace.syncPlan {
+                Button(L10n.tr("复制报告", "Copy Report")) {
+                    NSPasteboard.general.clearContents()
+                    NSPasteboard.general.setString(plan.exportReportMarkdown(), forType: .string)
+                    workspace.flashNotice(L10n.tr("已复制 Markdown 同步计划报告", "Copied Markdown sync report"))
+                }
+
+                Button(L10n.tr("导出报告 (.md)…", "Export Report…")) {
+                    store.exportSyncReportMarkdown(plan)
+                }
+
+                Button(L10n.tr("执行同步 (\(plan.activeItems.count) 项)", "Synchronize (\(plan.activeItems.count) Items)")) {
+                    workspace.executeSyncPlan()
                     dismiss()
                 }
-                .keyboardShortcut(.cancelAction)
-
-                Spacer()
-
-                if let plan = workspace.syncPlan {
-                    Button(L10n.tr("复制同步报告", "Copy Report")) {
-                        NSPasteboard.general.clearContents()
-                        NSPasteboard.general.setString(plan.exportReportMarkdown(), forType: .string)
-                        workspace.flashNotice(L10n.tr("已复制 Markdown 同步计划报告", "Copied Markdown sync report"))
-                    }
-
-                    Button(L10n.tr("执行同步 (\(plan.activeItems.count) 项)", "Synchronize (\(plan.activeItems.count) Items)")) {
-                        workspace.executeSyncPlan()
-                        dismiss()
-                    }
-                    .buttonStyle(.glassProminent)
-                    .disabled(plan.activeItems.isEmpty)
-                    .keyboardShortcut(.defaultAction)
-                }
+                .buttonStyle(.glassProminent)
+                .disabled(plan.activeItems.isEmpty)
+                .keyboardShortcut(.defaultAction)
             }
-            .padding(16)
-            .background(.ultraThinMaterial)
         }
-        .frame(width: 720, height: 560)
+        .padding(16)
+        .background(.ultraThinMaterial)
+    }
+
+    private func summaryCapsule(icon: String, color: Color, text: String, bold: Bool) -> some View {
+        HStack(spacing: 5) {
+            Image(systemName: icon)
+                .foregroundStyle(color)
+            Text(text)
+                .font(bold ? .caption.bold() : .caption)
+        }
+        .padding(.horizontal, 9)
+        .padding(.vertical, 4)
+        .background(color == .secondary ? Color.primary.opacity(0.06) : color.opacity(0.11))
+        .clipShape(Capsule())
     }
 
     private func colorForAction(_ action: SyncActionType) -> Color {
@@ -494,75 +600,767 @@ struct SyncSheet: View {
     }
 }
 
-// MARK: - Native Settings View (⌘,)
+// MARK: - Native Multi-Tab Settings View (⌘, Transmit 5 Parity)
+
 struct SettingsView: View {
     @ObservedObject var workspace: Workspace
+    @ObservedObject private var store: RulesAndTranscriptStore
+
+    init(workspace: Workspace) {
+        self.workspace = workspace
+        self._store = ObservedObject(wrappedValue: workspace.rulesAndTranscriptStore)
+    }
 
     var body: some View {
         TabView {
-            Form {
-                Section(L10n.tr("通用与语言", "General & Language")) {
-                    Picker(L10n.tr("界面语言", "Interface Language"), selection: $workspace.appLanguage) {
-                        ForEach(AppLanguage.allCases) { lang in
-                            Text(lang.displayName).tag(lang)
-                        }
-                    }
-
-                    HStack {
-                        TextField(L10n.tr("默认本地起始文件夹", "Default Local Folder"), text: $workspace.defaultLocalPath)
-                        Button(L10n.tr("选择…", "Choose…")) {
-                            let panel = NSOpenPanel()
-                            panel.canChooseDirectories = true
-                            panel.canChooseFiles = false
-                            if panel.runModal() == .OK, let url = panel.url {
-                                workspace.defaultLocalPath = url.path
-                            }
-                        }
-                    }
-
-                    Toggle(L10n.tr("默认显示隐藏文件 (以 . 开头)", "Show hidden files by default"), isOn: $workspace.showHidden)
+            GeneralSettingsTab(workspace: workspace, store: store)
+                .tabItem {
+                    Label(L10n.tr("通用", "General"), systemImage: "gearshape")
                 }
 
-                Section(L10n.tr("传输与冲突处理", "Transfers & Conflict Resolution")) {
-                    Stepper(
-                        value: $workspace.maxConcurrentTransfers,
-                        in: 1...10
-                    ) {
-                        HStack {
-                            Text(L10n.tr("最大并发传输任务数", "Max Concurrent Transfers"))
-                            Spacer()
-                            Text("\(workspace.maxConcurrentTransfers)")
-                                .font(.body.monospacedDigit().bold())
-                        }
-                    }
+            TransfersSettingsTab(workspace: workspace, store: store)
+                .tabItem {
+                    Label(L10n.tr("传输", "Transfers"), systemImage: "arrow.up.arrow.down.circle")
+                }
 
-                    Picker(L10n.tr("遇到同名文件冲突时", "When File Conflict Occurs"), selection: $workspace.defaultConflictPreference) {
-                        ForEach(DefaultConflictPreference.allCases) { pref in
-                            Text(pref.localizedTitle).tag(pref)
-                        }
+            RulesSettingsTab(store: store)
+                .tabItem {
+                    Label(L10n.tr("规则", "Rules"), systemImage: "line.3.horizontal.decrease.circle")
+                }
+
+            EditorsAndTerminalSettingsTab(store: store)
+                .tabItem {
+                    Label(L10n.tr("编辑器与终端", "Editors & Terminal"), systemImage: "terminal")
+                }
+
+            UpdatesSettingsTab(workspace: workspace)
+                .tabItem {
+                    Label(L10n.tr("更新", "Updates"), systemImage: "arrow.down.app")
+                }
+        }
+        .frame(width: 700, height: 530)
+    }
+}
+
+// MARK: - Tab 1: General Settings
+
+private struct GeneralSettingsTab: View {
+    @ObservedObject var workspace: Workspace
+    @ObservedObject var store: RulesAndTranscriptStore
+
+    var body: some View {
+        Form {
+            Section(L10n.tr("语言与本地目录", "Language & Local Startup")) {
+                Picker(L10n.tr("界面语言", "Interface Language"), selection: $workspace.appLanguage) {
+                    ForEach(AppLanguage.allCases) { lang in
+                        Text(lang.displayName).tag(lang)
                     }
                 }
 
-                Section(L10n.tr("软件在线更新", "Software Updates")) {
-                    Toggle(L10n.tr("启动时自动在后台检查更新", "Automatically check for updates on launch"), isOn: $workspace.autoCheckForUpdates)
+                HStack {
+                    TextField(L10n.tr("默认本地起始文件夹", "Default Local Folder"), text: $workspace.defaultLocalPath)
+                    Button(L10n.tr("选择…", "Choose…")) {
+                        let panel = NSOpenPanel()
+                        panel.canChooseDirectories = true
+                        panel.canChooseFiles = false
+                        if panel.runModal() == .OK, let url = panel.url {
+                            workspace.defaultLocalPath = url.path
+                        }
+                    }
+                }
+            }
 
+            Section(L10n.tr("文件浏览器与交互", "Browser Display & Behavior")) {
+                Toggle(
+                    L10n.tr("默认显示隐藏文件 (以 . 开头)", "Show hidden files by default"),
+                    isOn: Binding(
+                        get: { workspace.showHidden },
+                        set: { store.setDefaultShowHidden($0) }
+                    )
+                )
+
+                Picker(
+                    L10n.tr("默认视图模式", "Default View Mode"),
+                    selection: Binding(
+                        get: { workspace.viewMode },
+                        set: { store.setDefaultViewMode($0) }
+                    )
+                ) {
+                    ForEach(FileViewMode.allCases) { mode in
+                        Text(mode.localizedTitle).tag(mode)
+                    }
+                }
+
+                Picker(L10n.tr("默认焦点面板", "Default Focus Pane"), selection: $store.defaultFocusPane) {
+                    ForEach(DefaultFocusPane.allCases) { pane in
+                        Text(pane.localizedTitle).tag(pane)
+                    }
+                }
+
+                Picker(L10n.tr("双击文件行为", "Double-Click File Action"), selection: $store.doubleClickAction) {
+                    ForEach(DoubleClickFileAction.allCases) { action in
+                        Text(action.localizedTitle).tag(action)
+                    }
+                }
+            }
+        }
+        .formStyle(.grouped)
+    }
+}
+
+// MARK: - Tab 2: Transfers Settings
+
+private struct TransfersSettingsTab: View {
+    @ObservedObject var workspace: Workspace
+    @ObservedObject var store: RulesAndTranscriptStore
+
+    var body: some View {
+        Form {
+            Section(L10n.tr("队列与限速", "Queue & Bandwidth")) {
+                Stepper(value: $workspace.maxConcurrentTransfers, in: 1...10) {
                     HStack {
-                        Text(L10n.tr("当前版本：v\(AutoUpdater.currentAppVersion()) (Build \(AutoUpdater.currentBuildNumber()))",
-                                     "Current Version: v\(AutoUpdater.currentAppVersion()) (Build \(AutoUpdater.currentBuildNumber()))"))
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
+                        Text(L10n.tr("最大并发传输任务数", "Max Concurrent Transfers"))
                         Spacer()
-                        Button(L10n.tr("立即检查更新…", "Check for Updates Now…")) {
-                            workspace.openUpdateWindowAndCheck()
+                        Text("\(workspace.maxConcurrentTransfers)")
+                            .font(.body.monospacedDigit().bold())
+                    }
+                }
+
+                Picker(
+                    L10n.tr("默认传输限速", "Default Bandwidth Limit"),
+                    selection: Binding(
+                        get: { BandwidthPreset.matching(store.defaultBandwidthLimit) },
+                        set: { store.defaultBandwidthLimit = $0.bytesPerSec }
+                    )
+                ) {
+                    ForEach(BandwidthPreset.allCases) { preset in
+                        Text(preset.localizedTitle).tag(preset)
+                    }
+                }
+            }
+
+            Section(L10n.tr("冲突与文件属性", "Conflicts & Attributes")) {
+                Picker(L10n.tr("遇到同名文件冲突时", "When File Conflict Occurs"), selection: $workspace.defaultConflictPreference) {
+                    ForEach(DefaultConflictPreference.allCases) { pref in
+                        Text(pref.localizedTitle).tag(pref)
+                    }
+                }
+
+                Toggle(L10n.tr("保留远程与本地文件修改时间", "Preserve modification dates"), isOn: $store.preserveModificationDates)
+
+                Toggle(L10n.tr("上传完成后默认复制文件 URL", "Copy URL after upload by default"), isOn: $store.copyURLAfterUpload)
+            }
+        }
+        .formStyle(.grouped)
+    }
+}
+
+// MARK: - Tab 3: Rules & ASCII Types Settings
+
+private struct RulesSettingsTab: View {
+    @ObservedObject var store: RulesAndTranscriptStore
+
+    @State private var editingRule: SkipRule?
+    @State private var newAsciiInput: String = ""
+
+    var body: some View {
+        VStack(spacing: 0) {
+            // Skip Rules Header
+            HStack {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(L10n.tr("跳过规则 (Skip Rules)", "Skip Rules"))
+                        .font(.headline)
+                    Text(L10n.tr("在文件夹同步或传输过滤中自动跳过匹配的文件与目录。", "Automatically exclude matching files and folders during sync and transfers."))
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+
+                Spacer()
+
+                Button(L10n.tr("恢复默认", "Reset Defaults")) {
+                    store.resetRulesToDefaults()
+                }
+                .controlSize(.small)
+
+                Button {
+                    editingRule = SkipRule(
+                        name: L10n.tr("自定义规则", "Custom Rule"),
+                        isEnabled: true,
+                        matchMode: .all,
+                        scope: .transfersAndSync,
+                        predicates: [RulePredicate(field: .name, op: .matchesGlob, value: "*.tmp")]
+                    )
+                } label: {
+                    Label(L10n.tr("添加规则…", "Add Rule…"), systemImage: "plus")
+                }
+                .buttonStyle(.glassProminent)
+                .controlSize(.small)
+            }
+            .padding(.horizontal, 18)
+            .padding(.top, 14)
+            .padding(.bottom, 8)
+
+            List {
+                ForEach(store.skipRules) { rule in
+                    HStack(spacing: 10) {
+                        Toggle("", isOn: Binding(
+                            get: { rule.isEnabled },
+                            set: { store.setRuleEnabled(rule.id, enabled: $0) }
+                        ))
+                        .labelsHidden()
+                        .toggleStyle(.checkbox)
+
+                        VStack(alignment: .leading, spacing: 2) {
+                            HStack(spacing: 6) {
+                                Text(rule.name)
+                                    .font(.system(size: 13, weight: .medium))
+
+                                Text(rule.scope.localizedTitle)
+                                    .font(.system(size: 10, weight: .medium))
+                                    .padding(.horizontal, 6)
+                                    .padding(.vertical, 1)
+                                    .background(Capsule().fill(Color.accentColor.opacity(0.12)))
+                                    .foregroundStyle(Color.accentColor)
+
+                                Text(rule.matchMode.localizedTitle)
+                                    .font(.system(size: 10))
+                                    .foregroundStyle(.secondary)
+                            }
+
+                            Text(predicateSummary(for: rule))
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                                .lineLimit(1)
                         }
+
+                        Spacer()
+
+                        Button {
+                            editingRule = rule
+                        } label: {
+                            Image(systemName: "pencil")
+                        }
+                        .buttonStyle(.borderless)
+                        .help(L10n.tr("编辑规则", "Edit Rule"))
+
+                        Button(role: .destructive) {
+                            store.deleteRule(rule.id)
+                        } label: {
+                            Image(systemName: "trash")
+                                .foregroundStyle(.red)
+                        }
+                        .buttonStyle(.borderless)
+                        .help(L10n.tr("删除规则", "Delete Rule"))
+                    }
+                    .padding(.vertical, 2)
+                }
+            }
+            .listStyle(.inset(alternatesRowBackgrounds: true))
+            .frame(minHeight: 205)
+
+            Divider()
+
+            // ASCII File Extensions Editor
+            VStack(alignment: .leading, spacing: 8) {
+                HStack {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(L10n.tr("ASCII 文本传输扩展名", "ASCII File Extensions"))
+                            .font(.subheadline.bold())
+                        Text(L10n.tr("以下扩展名将识别为纯文本 / ASCII 模式文件。", "Extensions treated as ASCII text files during transfers."))
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                    }
+
+                    Spacer()
+
+                    TextField("toml, env, md", text: $newAsciiInput)
+                        .textFieldStyle(.roundedBorder)
+                        .font(.caption)
+                        .frame(width: 150)
+                        .onSubmit { commitAsciiExtensions() }
+
+                    Button(L10n.tr("添加", "Add")) {
+                        commitAsciiExtensions()
+                    }
+                    .controlSize(.small)
+                    .disabled(newAsciiInput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+
+                    Button(L10n.tr("恢复默认", "Reset")) {
+                        store.resetAsciiExtensionsToDefaults()
+                    }
+                    .controlSize(.small)
+                }
+
+                ScrollView {
+                    LazyVGrid(columns: [GridItem(.adaptive(minimum: 64, maximum: 110), spacing: 6)], spacing: 6) {
+                        ForEach(store.asciiExtensions, id: \.self) { ext in
+                            HStack(spacing: 4) {
+                                Text(".\(ext)")
+                                    .font(.system(size: 11, design: .monospaced))
+                                    .lineLimit(1)
+                                Spacer(minLength: 0)
+                                Button {
+                                    store.removeAsciiExtension(ext)
+                                } label: {
+                                    Image(systemName: "xmark")
+                                        .font(.system(size: 9, weight: .bold))
+                                        .foregroundStyle(.secondary)
+                                }
+                                .buttonStyle(.plain)
+                            }
+                            .padding(.horizontal, 7)
+                            .padding(.vertical, 4)
+                            .background(RoundedRectangle(cornerRadius: 6).fill(Color.primary.opacity(0.06)))
+                        }
+                    }
+                }
+                .frame(height: 112)
+            }
+            .padding(.horizontal, 18)
+            .padding(.vertical, 12)
+            .background(Color.primary.opacity(0.02))
+        }
+        .sheet(item: $editingRule) { rule in
+            SkipRuleEditorSheet(initialRule: rule) { saved in
+                store.saveRule(saved)
+            }
+        }
+    }
+
+    private func commitAsciiExtensions() {
+        store.addAsciiExtensions(newAsciiInput)
+        newAsciiInput = ""
+    }
+
+    private func predicateSummary(for rule: SkipRule) -> String {
+        rule.predicates.map { pred in
+            "\(pred.field.localizedTitle) \(pred.op.localizedTitle) \"\(pred.value)\""
+        }.joined(separator: " · ")
+    }
+}
+
+// MARK: - SkipRule Predicate Builder Sheet
+
+private struct SkipRuleEditorSheet: View {
+    @Environment(\.dismiss) private var dismiss
+
+    @State private var rule: SkipRule
+    @State private var testFileName: String = "debug.log"
+    @State private var testSizeText: String = "2048"
+
+    let onSave: (SkipRule) -> Void
+
+    init(initialRule: SkipRule, onSave: @escaping (SkipRule) -> Void) {
+        self._rule = State(initialValue: initialRule)
+        self.onSave = onSave
+    }
+
+    private var previewMatches: Bool {
+        let size = RulePredicate.parseByteSize(testSizeText) ?? 0
+        let baseName = (testFileName as NSString).lastPathComponent
+        return rule.matches(
+            name: baseName,
+            relativePath: testFileName,
+            isDirectory: false,
+            size: size,
+            modified: Date()
+        )
+    }
+
+    var body: some View {
+        VStack(spacing: 0) {
+            HStack {
+                Text(L10n.tr("编辑跳过规则", "Configure Skip Rule"))
+                    .font(.headline)
+                Spacer()
+                Toggle(L10n.tr("启用此规则", "Enabled"), isOn: $rule.isEnabled)
+                    .toggleStyle(.checkbox)
+            }
+            .padding(16)
+            .background(.ultraThinMaterial)
+
+            Divider()
+
+            Form {
+                Section(L10n.tr("基本信息", "Rule Details")) {
+                    TextField(L10n.tr("规则名称", "Rule Name"), text: $rule.name)
+
+                    Picker(L10n.tr("条件匹配方式", "Match Mode"), selection: $rule.matchMode) {
+                        ForEach(RuleMatchMode.allCases) { mode in
+                            Text(mode.localizedTitle).tag(mode)
+                        }
+                    }
+
+                    Picker(L10n.tr("应用范围", "Scope"), selection: $rule.scope) {
+                        ForEach(RuleScope.allCases) { scope in
+                            Text(scope.localizedTitle).tag(scope)
+                        }
+                    }
+                }
+
+                Section {
+                    ForEach(rule.predicates) { predicate in
+                        predicateRow(for: predicate)
+                    }
+
+                    Button {
+                        rule.predicates.append(RulePredicate(field: .name, op: .contains, value: ""))
+                    } label: {
+                        Label(L10n.tr("添加条件", "Add Condition"), systemImage: "plus.circle")
+                    }
+                    .buttonStyle(.borderless)
+                } header: {
+                    Text(L10n.tr("匹配条件 (Predicates)", "Conditions"))
+                }
+
+                Section(L10n.tr("实时测试", "Rule Test Preview")) {
+                    HStack(spacing: 8) {
+                        TextField(L10n.tr("示例路径，如 build/app.log", "Sample path e.g. build/app.log"), text: $testFileName)
+                        TextField(L10n.tr("字节大小", "Bytes"), text: $testSizeText)
+                            .frame(width: 90)
+                        Label(
+                            previewMatches ? L10n.tr("会跳过", "Skips") : L10n.tr("不跳过", "Allows"),
+                            systemImage: previewMatches ? "nosign" : "checkmark.circle"
+                        )
+                        .font(.caption.bold())
+                        .foregroundStyle(previewMatches ? Color.orange : Color.green)
                     }
                 }
             }
             .formStyle(.grouped)
-            .tabItem {
-                Label(L10n.tr("通用与传输", "General & Transfers"), systemImage: "gearshape")
+
+            Divider()
+
+            HStack {
+                Button(L10n.tr("取消", "Cancel")) {
+                    dismiss()
+                }
+                .keyboardShortcut(.cancelAction)
+
+                Spacer()
+
+                Button(L10n.tr("保存规则", "Save Rule")) {
+                    var trimmed = rule
+                    trimmed.name = rule.name.trimmingCharacters(in: .whitespacesAndNewlines)
+                    if trimmed.name.isEmpty {
+                        trimmed.name = L10n.tr("未命名规则", "Untitled Rule")
+                    }
+                    onSave(trimmed)
+                    dismiss()
+                }
+                .buttonStyle(.glassProminent)
+                .disabled(rule.predicates.isEmpty || rule.predicates.allSatisfy { $0.value.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty })
+                .keyboardShortcut(.defaultAction)
+            }
+            .padding(14)
+            .background(.ultraThinMaterial)
+        }
+        .frame(width: 620, height: 500)
+    }
+
+    @ViewBuilder
+    private func predicateRow(for predicate: RulePredicate) -> some View {
+        if let idx = rule.predicates.firstIndex(where: { $0.id == predicate.id }) {
+            let current = rule.predicates[idx]
+            let operators = allowedOperators(for: current.field, currentOp: current.op)
+            HStack(spacing: 8) {
+                Picker("", selection: Binding(
+                    get: { rule.predicates[idx].field },
+                    set: { newField in
+                        rule.predicates[idx].field = newField
+                        let validOps = allowedOperators(for: newField, currentOp: nil)
+                        if !validOps.contains(rule.predicates[idx].op), let fallback = validOps.first {
+                            rule.predicates[idx].op = fallback
+                        }
+                    }
+                )) {
+                    ForEach(RuleField.allCases) { field in
+                        Text(field.localizedTitle).tag(field)
+                    }
+                }
+                .labelsHidden()
+                .frame(width: 115)
+
+                Picker("", selection: Binding(
+                    get: { rule.predicates[idx].op },
+                    set: { rule.predicates[idx].op = $0 }
+                )) {
+                    ForEach(operators) { op in
+                        Text(op.localizedTitle).tag(op)
+                    }
+                }
+                .labelsHidden()
+                .frame(width: 145)
+
+                TextField(valuePlaceholder(for: current.field), text: Binding(
+                    get: { rule.predicates[idx].value },
+                    set: { rule.predicates[idx].value = $0 }
+                ))
+                .textFieldStyle(.roundedBorder)
+
+                if current.field == .name || current.field == .fileExtension || current.field == .path {
+                    Toggle("Aa", isOn: Binding(
+                        get: { rule.predicates[idx].caseSensitive },
+                        set: { rule.predicates[idx].caseSensitive = $0 }
+                    ))
+                    .toggleStyle(.button)
+                    .controlSize(.small)
+                    .help(L10n.tr("区分大小写", "Case Sensitive"))
+                }
+
+                if rule.predicates.count > 1 {
+                    Button {
+                        rule.predicates.remove(at: idx)
+                    } label: {
+                        Image(systemName: "minus.circle.fill")
+                            .foregroundStyle(.secondary)
+                    }
+                    .buttonStyle(.plain)
+                }
             }
         }
-        .frame(width: 520, height: 390)
+    }
+
+    private func allowedOperators(for field: RuleField, currentOp: RuleOperator?) -> [RuleOperator] {
+        var list: [RuleOperator]
+        switch field {
+        case .modifiedDate:
+            list = [.greaterThan, .lessThan, .is, .isNot]
+        case .sizeBytes:
+            list = [.greaterThan, .lessThan, .is, .isNot]
+        case .name, .fileExtension, .path:
+            list = RuleOperator.allCases
+        }
+        if let currentOp, !list.contains(currentOp) {
+            list.append(currentOp)
+        }
+        return list
+    }
+
+    private func valuePlaceholder(for field: RuleField) -> String {
+        switch field {
+        case .name: return L10n.tr("如 .DS_Store 或 *.tmp", "e.g. .DS_Store or *.tmp")
+        case .fileExtension: return L10n.tr("如 log 或 swp", "e.g. log or swp")
+        case .path: return L10n.tr("如 build/ 或 /.git/", "e.g. build/ or /.git/")
+        case .sizeBytes: return L10n.tr("如 10 MB 或 512 KB", "e.g. 10 MB or 512 KB")
+        case .modifiedDate: return L10n.tr("如 7d 或 2026-01-01", "e.g. 7d or 2026-01-01")
+        }
+    }
+}
+
+// MARK: - Tab 4: Editors & Terminal Settings
+
+private struct EditorsAndTerminalSettingsTab: View {
+    @ObservedObject var store: RulesAndTranscriptStore
+
+    private var activeSessions: [ExternalEditorSession] {
+        store.visibleExternalEditSessions()
+    }
+
+    private var preferredEditorDisplayName: String {
+        let path = store.preferredExternalEditorPath.trimmingCharacters(in: .whitespacesAndNewlines)
+        if path.isEmpty {
+            return L10n.tr("跟随 macOS 系统默认打开方式", "macOS System Default Application")
+        }
+        return URL(fileURLWithPath: path).deletingPathExtension().lastPathComponent
+    }
+
+    var body: some View {
+        Form {
+            Section(L10n.tr("外部编辑器偏好", "Preferred External Editor")) {
+                HStack(spacing: 10) {
+                    Image(systemName: "pencil.and.outline")
+                        .font(.title3)
+                        .foregroundStyle(Color.accentColor)
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(preferredEditorDisplayName)
+                            .font(.subheadline.weight(.medium))
+                        Text(store.preferredExternalEditorPath.isEmpty
+                             ? L10n.tr("支持保存后自动检测 SHA-256 变更并回传服务器", "Monitors saved changes via SHA-256 and auto-uploads to server")
+                             : store.preferredExternalEditorPath)
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                    }
+                    Spacer()
+
+                    if !store.preferredExternalEditorPath.isEmpty {
+                        Button(L10n.tr("恢复默认", "Use Default")) {
+                            store.clearPreferredExternalEditor()
+                        }
+                        .controlSize(.small)
+                    }
+
+                    Button(L10n.tr("选择应用…", "Choose App…")) {
+                        store.choosePreferredExternalEditor()
+                    }
+                    .controlSize(.small)
+                }
+            }
+
+            Section {
+                if activeSessions.isEmpty {
+                    HStack(spacing: 8) {
+                        Image(systemName: "eye.slash")
+                            .foregroundStyle(.tertiary)
+                        Text(L10n.tr("当前没有正在监听的外部编辑文件会话。", "No active external editor watch sessions."))
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
+                    .padding(.vertical, 4)
+                } else {
+                    ForEach(activeSessions) { session in
+                        HStack(spacing: 10) {
+                            Image(systemName: "doc.badge.clock")
+                                .foregroundStyle(.orange)
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(session.entryName)
+                                    .font(.system(size: 13, weight: .medium))
+                                Text("\(session.profile.name.isEmpty ? session.profile.host : session.profile.name) · \(session.remotePath)")
+                                    .font(.caption2)
+                                    .foregroundStyle(.secondary)
+                                    .lineLimit(1)
+                                HStack(spacing: 8) {
+                                    Text(L10n.tr("自动回传次数: \(session.uploadCount)", "Auto-uploads: \(session.uploadCount)"))
+                                    if let lastUploaded = session.lastUploadedAt {
+                                        Text("· \(L10n.tr("最近保存", "Last")): \(L10n.formatDateTime(lastUploaded))")
+                                    }
+                                }
+                                .font(.caption2)
+                                .foregroundStyle(.tertiary)
+                            }
+                            Spacer()
+                            Button(L10n.tr("停止监听", "Stop Watching")) {
+                                store.stopWatchingExternalEditSession(session)
+                            }
+                            .controlSize(.small)
+                        }
+                    }
+                }
+            } header: {
+                HStack {
+                    Text(L10n.tr("实时外部编辑监听会话 (\(activeSessions.count))", "Live External Edit Sessions (\(activeSessions.count))"))
+                    Spacer()
+                    if activeSessions.count > 1 {
+                        Button(L10n.tr("全部停止", "Stop All")) {
+                            store.stopAllExternalEditSessions()
+                        }
+                        .buttonStyle(.borderless)
+                        .font(.caption)
+                    }
+                }
+            }
+
+            Section(L10n.tr("终端集成检测", "Terminal Integration Status")) {
+                HStack(spacing: 10) {
+                    Image(systemName: "terminal.fill")
+                        .font(.title3)
+                        .foregroundStyle(store.detectedTerminal.kind == .apexTerm ? Color.green : Color.secondary)
+
+                    VStack(alignment: .leading, spacing: 2) {
+                        HStack(spacing: 6) {
+                            Text(store.detectedTerminal.kind == .apexTerm
+                                 ? L10n.tr("已检测到 ApexTerm", "ApexTerm Detected")
+                                 : L10n.tr("使用 macOS 原生终端 (Terminal.app)", "Using Apple Terminal.app"))
+                                .font(.subheadline.weight(.medium))
+
+                            Text(store.detectedTerminal.kind == .apexTerm
+                                 ? L10n.tr("优先", "Preferred")
+                                 : L10n.tr("默认回退", "Fallback"))
+                                .font(.system(size: 10, weight: .semibold))
+                                .padding(.horizontal, 6)
+                                .padding(.vertical, 1)
+                                .background(Capsule().fill(store.detectedTerminal.kind == .apexTerm ? Color.green.opacity(0.15) : Color.secondary.opacity(0.15)))
+                                .foregroundStyle(store.detectedTerminal.kind == .apexTerm ? Color.green : Color.secondary)
+                        }
+
+                        Text(store.detectedTerminal.appURL?.path ?? "/System/Applications/Utilities/Terminal.app")
+                            .font(.caption2.monospaced())
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                    }
+
+                    Spacer()
+
+                    Button(L10n.tr("重新检测", "Refresh")) {
+                        store.refreshTerminalDetection()
+                    }
+                    .controlSize(.small)
+                }
+            }
+        }
+        .formStyle(.grouped)
+        .onAppear {
+            store.refreshTerminalDetection()
+        }
+    }
+}
+
+// MARK: - Tab 5: Updates Settings
+
+private struct UpdatesSettingsTab: View {
+    @ObservedObject var workspace: Workspace
+
+    private var statusSummary: String {
+        switch workspace.updateState {
+        case .idle:
+            return L10n.tr("尚未执行手动检查", "No manual check run yet")
+        case .checking:
+            return L10n.tr("正在检查新版本…", "Checking for updates…")
+        case .upToDate(let ver):
+            return L10n.tr("已是最新版本 (v\(ver))", "Up to date (v\(ver))")
+        case .available(let rel):
+            return L10n.tr("发现新版本 v\(rel.version)", "New version v\(rel.version) available")
+        case .downloading(let rel, _, _, let progress):
+            return L10n.tr("正在下载 v\(rel.version) (\(Int(progress * 100))%)", "Downloading v\(rel.version) (\(Int(progress * 100))%)")
+        case .verifying(let rel):
+            return L10n.tr("正在校验 v\(rel.version) 签名…", "Verifying v\(rel.version)…")
+        case .readyToInstall(let rel, _):
+            return L10n.tr("v\(rel.version) 已就绪，可重启更新", "v\(rel.version) ready to install")
+        case .installing(let rel):
+            return L10n.tr("正在安装 v\(rel.version)…", "Installing v\(rel.version)…")
+        case .failed(let msg):
+            return L10n.tr("检查失败：\(msg)", "Check failed: \(msg)")
+        }
+    }
+
+    var body: some View {
+        Form {
+            Section(L10n.tr("自动更新设置", "Automatic Updates")) {
+                Toggle(L10n.tr("启动时自动在后台检查更新", "Automatically check for updates on launch"), isOn: $workspace.autoCheckForUpdates)
+            }
+
+            Section(L10n.tr("版本信息", "Version Information")) {
+                LabeledContent(L10n.tr("当前版本", "Current Version")) {
+                    Text("v\(AutoUpdater.currentAppVersion())")
+                        .font(.body.monospacedDigit())
+                }
+                LabeledContent(L10n.tr("构建号", "Build Number")) {
+                    Text(AutoUpdater.currentBuildNumber())
+                        .font(.body.monospacedDigit())
+                        .foregroundStyle(.secondary)
+                }
+                LabeledContent(L10n.tr("更新状态", "Status")) {
+                    Text(statusSummary)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
+            }
+
+            Section {
+                HStack {
+                    Spacer()
+                    Button(L10n.tr("立即检查更新", "Check Now")) {
+                        workspace.openUpdateWindowAndCheck()
+                    }
+                    .buttonStyle(.glassProminent)
+                    Spacer()
+                }
+            }
+        }
+        .formStyle(.grouped)
     }
 }
