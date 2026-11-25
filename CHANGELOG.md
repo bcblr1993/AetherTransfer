@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.2.0] - 2026-11-25
+
+- feat(protocols): add Explicit FTPS (`AUTH TLS`), WebDAV/WebDAVS (`PROPFIND`/`MKCOL`/`MOVE`/`DELETE`), Amazon S3 / Cloudflare R2 / MinIO (AWS SigV4, multipart upload, metadata, presigned URLs), Backblaze B2 Native API, Microsoft Azure Blob (`SharedKey` + SAS URLs), and OpenStack Swift (`X-Auth-Token` + temporary URLs).
+- feat(browser): add cascading Miller Columns view (`MillerColumnBrowserView`), Gallery Split preview view (`GalleryPreviewCanvas`), resizable Thumbnail Grid with off-main-thread image downsampling, Focus Mode (Left Only / Dual Pane / Right Only), and Local⇄Local / Server⇄Server dual-pane source switching.
+- feat(launchpad): add Servers Launchpad (`ServersLaunchpadView`) with server color tag filtering (`ServerColorTag`), Folder Linking (`linkedLocalPath`), and pinned Custom Places (`CustomPlacesStore`) supporting drag-and-drop.
+- feat(inspector): upgrade File Inspector (`⌘I`) to a 3-tab panel (General with off-main-thread Folder Size and chunked SHA-256/MD5 checksums; Permissions with recursive chmod; Cloud / URLs with remote object metadata editing and configurable Presigned/SAS URL generation).
+- feat(rules): add Transmit-style Skip Rules predicate builder (`FileRulesStore`) and customizable ASCII file extensions editor (`AsciiFileExtensions`) wired into browser filtering, directory sync, and transfers.
+- feat(transcript): add categorized protocol Transcript drawer with strict `TranscriptRedactor` secret/userinfo/header sanitization, search/filter, copy, and sanitized file export, alongside queue state filters, Move to Top, Retry All Failed, live ETA, and copy-URL-after-upload.
+- feat(automation): add Finder Droplet `.app` exporter (`DropletExporter`), URL scheme handling (`aethertransfer://`, `sftp://`, `ftp://`, `ftps://`), Menu Bar Droplet (`MenuBarExtra`) live queue & quick-copy actions, and `.aethersync` zero-knowledge encrypted bookmark vault (`HKDF-SHA256` + `AES-GCM-256`).
+- feat(ssh-editor): add SSH Key Manager (`Ed25519` / `RSA-4096` generation), Known Hosts management (`KnownHostsManager`), `~/.ssh/config` import, SSH Agent auth, live External Editor save-back watching (`ExternalEditorManager`), and ApexTerm / `Terminal.app` integration.
+- fix(s3): preserve trailing slashes in `S3Client` canonical URI signing paths via `URLComponents.path` so folder marker operations (`mkdir`, `copy`, `delete`) verify cleanly under AWS SigV4.
+- test(protocols): expand local loopback integration suite across all 8 protocol families with ephemeral fixture CA TLS verification, plus comprehensive core unit and integration tests.
+
 ## [0.1.2] - 2026-11-04
 
 - feat(icon): use the approved dark connection-bridge icon as the shared app and website master; generate all ICNS sizes from it.

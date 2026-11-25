@@ -3,7 +3,7 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 VERSION="${VERSION:-0.2.0}"
-BUILD_NUMBER="${BUILD_NUMBER:-2026110701}"
+BUILD_NUMBER="${BUILD_NUMBER:-2026112501}"
 FEED_URL="${FEED_URL:-https://github.com/bcblr1993/AetherTransfer/releases/latest/download/appcast.json}"
 ENTITLEMENTS="scripts/Entitlements.plist"
 
@@ -146,8 +146,8 @@ cat > "outputs/appcast.json" <<JSON
     "sha256": "${ZIP_SHA256}",
     "sizeBytes": ${ZIP_SIZE},
     "minimumSystemVersion": "26.0",
-    "releaseNotesZh": "AetherTransfer v${VERSION}（对齐 Transmit 5）：新增 WebDAV 与 S3/R2/MinIO 协议及临时签名链接、Finder 分栏视图、SSH Agent 与内置密钥管理器、外部编辑器保存自动回传、跨面板复制粘贴、同步忽略规则与合并、零知识加密书签同步 (.aethersync) 及菜单栏闪电上传。",
-    "releaseNotesEn": "AetherTransfer v${VERSION} (Transmit 5 Parity): adds WebDAV & S3/R2/MinIO protocols with Presigned URLs, Finder Column View, SSH Agent & Key Manager, External Editor auto-upload on save, cross-pane clipboard, sync ignore rules & merge, zero-knowledge encrypted bookmark vault (.aethersync), and Menu Bar Droplet."
+    "releaseNotesZh": "AetherTransfer v${VERSION}（Transmit 5 深度对齐）：支持显式 FTPS (AUTH TLS)、WebDAV/HTTPS、S3/R2/MinIO、Backblaze B2、Azure Blob 与 OpenStack Swift；新增级联 Miller 分栏与画廊视图、聚焦模式与双栏来源切换、Servers Launchpad（颜色标签、文件夹关联、常用位置）、三标签文件检查器（文件夹大小、SHA-256/MD5、递归权限、云端元数据与 Presigned URL）、Skip Rules 规则与 ASCII 扩展名、脱敏协议日志、Finder Droplets 与 URL Scheme、SSH 密钥管理器、外部编辑器保存自动回传、.aethersync 加密书签同步及菜单栏微件。",
+    "releaseNotesEn": "AetherTransfer v${VERSION} (Transmit 5 Parity): adds Explicit FTPS (AUTH TLS), WebDAV/HTTPS, S3/R2/MinIO, Backblaze B2, Azure Blob, and OpenStack Swift; cascading Miller Columns and Gallery Split views, Focus Mode, and Local/Server pane switching; Servers Launchpad with color tags, Folder Linking, and Custom Places; 3-tab File Inspector (Folder Size, chunked SHA-256/MD5, recursive chmod, cloud metadata and Presigned URLs); Skip Rules and ASCII extensions; redacted Transcript logs; Finder Droplets and URL schemes; SSH Key Manager; External Editor auto-upload on save; .aethersync encrypted vault; and Menu Bar Droplet."
   }
 }
 JSON

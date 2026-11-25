@@ -8,24 +8,32 @@ sections:
         en: Open the DMG, drag AetherTransfer into Applications and launch it.
       - zh: 在“设置”（⌘,）中可开关自动检查更新；也可从菜单手动检查。更新包核对 SHA-256 与代码签名后才会安装。
         en: Turn automatic update checks on or off in Settings (⌘,), or check manually from the menu. Updates install only after their SHA-256 and code signature are verified.
-  - heading: { zh: 连接服务器, en: Connecting to a server }
+  - heading: { zh: 连接服务器与对象存储, en: Connecting to servers and object storage }
     list:
-      - zh: SFTP 首次连接会显示主机指纹，请与服务器管理员提供的指纹核对后再信任；指纹变化时连接会被拒绝。
-        en: The first SFTP connection shows the host fingerprint. Compare it with the one from your server administrator before trusting it; a changed fingerprint is refused.
-      - zh: FTPS 会验证服务器的 TLS 证书，自签名或过期证书无法连接。
-        en: FTPS validates the server's TLS certificate; self-signed or expired certificates cannot connect.
-      - zh: 首次在当前位置打开终端时，macOS 会请求控制“终端”的权限。
-        en: The first time you open Terminal at the current location, macOS asks for permission to control Terminal.
+      - zh: SFTP 首次连接会显示主机指纹，请与服务器管理员提供的指纹核对后再信任；指纹变化时连接会被拒绝。支持在「SSH 密钥管理器」生成 Ed25519 / RSA-4096 密钥、使用 SSH Agent 或导入 `~/.ssh/config`。
+        en: The first SFTP connection shows the host fingerprint. Compare it with the one from your server administrator before trusting it; a changed fingerprint is refused. You can generate Ed25519 / RSA-4096 keys in the SSH Key Manager, use SSH Agent, or import `~/.ssh/config`.
+      - zh: 隐式/显式 FTPS 与 HTTPS（WebDAV HTTPS / S3 / R2 / Backblaze B2 / Azure Blob / OpenStack Swift）均验证服务器 TLS 证书，自签名或过期证书会被拒绝。
+        en: Implicit/Explicit FTPS and HTTPS protocols (WebDAV HTTPS, S3, R2, Backblaze B2, Azure Blob, OpenStack Swift) validate TLS certificates; self-signed or expired certificates are refused.
+      - zh: 首次在当前位置打开终端时，macOS 会请求控制 ApexTerm 或「终端」的权限。
+        en: The first time you open a terminal at the current location, macOS asks for permission to control ApexTerm or Terminal.
+  - heading: { zh: 视图、规则、日志与自动化, en: Views, rules, transcripts, and automation }
+    list:
+      - zh: 工具栏可在列表、级联分栏、缩略图网格与画廊视图间切换，并可切换聚焦模式或双栏本地/远程来源；在 Launchpad 中可配置文件夹关联与颜色标签。
+        en: Switch between List, cascading Miller Columns, Thumbnail Grid, and Gallery Split views, toggle Focus Mode or dual-pane sources, and configure Folder Linking and color tags in the Servers Launchpad.
+      - zh: 在「设置 → 规则」中配置 Skip Rules 跳过规则与 ASCII 扩展名；在底部抽屉「协议日志」中查看或导出经自动脱敏的连接与传输记录。
+        en: Configure Skip Rules and ASCII extensions in Settings → Rules, and inspect or export automatically redacted connection and transfer logs from the bottom Transcript drawer.
+      - zh: 可导出 Finder 上传 Droplet 小应用，或通过 `.aethersync` 零知识加密保险箱跨 Mac 迁移书签配置（需妥善保管主密码）。
+        en: Export Finder upload Droplets or transfer bookmarks across Macs using password-protected `.aethersync` encrypted vaults.
   - heading: { zh: 当前边界, en: Current limits }
     list:
-      - zh: 仅支持 Apple 芯片与 macOS 26+；协议为 SFTP、FTPS 与 FTP，暂不支持 WebDAV 与 S3 / R2。
-        en: Apple silicon and macOS 26+ only. Protocols are SFTP, FTPS and FTP; WebDAV and S3 / R2 are not yet supported.
+      - zh: 仅支持 Apple 芯片与 macOS 26+；支持 SFTP、FTP、隐式/显式 FTPS、WebDAV/HTTPS、S3/R2/MinIO、Backblaze B2、Azure Blob 与 OpenStack Swift。需第三方 OAuth 应用凭据的消费级网盘（Box、Dropbox、Google Drive、OneDrive）暂未包含。
+        en: Apple silicon and macOS 26+ only. Supports SFTP, FTP, Implicit/Explicit FTPS, WebDAV/HTTPS, S3/R2/MinIO, Backblaze B2, Azure Blob, and OpenStack Swift. Consumer OAuth cloud drives (Box, Dropbox, Google Drive, OneDrive) require third-party OAuth app credentials and are not included.
       - zh: 目录同步默认不删除远程多余文件；删除与覆盖都需要你明确确认。
         en: Folder sync never deletes remote extras by default, and deleting or overwriting always requires your confirmation.
   - heading: { zh: 反馈, en: Feedback }
     body:
-      - zh: 请附系统版本、应用版本、使用协议和复现步骤；不要公开密码、私钥或未脱敏的服务器配置。
-        en: Include your OS version, app version, protocol and reproduction steps. Do not publish passwords, private keys or unredacted server configuration.
+      - zh: 请附系统版本、应用版本、使用协议和复现步骤；可以使用已脱敏的协议日志辅助排查，切勿公开密码、私钥或未脱敏的服务器配置。
+        en: Include your OS version, app version, protocol and reproduction steps. You may share redacted Transcript logs, but never publish passwords, private keys or unredacted server configuration.
     links:
       - { label: GitHub Issues, href: https://github.com/bcblr1993/AetherTransfer/issues }
       - { label: { zh: 官网反馈, en: Website feedback }, href: /feedback/?app=aethertransfer }
