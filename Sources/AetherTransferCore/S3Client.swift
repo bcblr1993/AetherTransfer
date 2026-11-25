@@ -128,6 +128,37 @@ public struct S3Client: RemoteTransport, Sendable {
         return signedURL
     }
 
+    /// Resolves the root S3 service endpoint URL without a bucket subdomain/path (used for `ListBuckets`).
+    public func serviceEndpointURL(queryItems: [URLQueryItem] = []) throws -> URL {
+        try profile.validateForBucketDiscovery()
+        var components = URLComponents()
+        components.scheme = "https"
+        if profile.port != 443 && profile.port > 0 {
+            components.port = profile.port
+        }
+        components.host = endpointHost
+        components.path = "/"
+        if !queryItems.isEmpty {
+            components.queryItems = queryItems
+        }
+        guard let url = components.url else { throw TransferError.invalidConnection }
+        return url
+    }
+
+    /// Lists all S3 buckets accessible by the configured credentials (`GET /` against endpoint host).
+    public func listBuckets() async throws -> [S3BucketInfo] {
+        try Task.checkCancellation()
+        let url = try serviceEndpointURL()
+        let req = try signedRequest(url: url, method: "GET", payload: Data())
+        let (data, response) = try await HTTPStreamingHelper.performData(session: session, request: req)
+        guard let http = response as? HTTPURLResponse, (200...299).contains(http.statusCode) else {
+            let status = (response as? HTTPURLResponse)?.statusCode ?? -1
+            let bodyText = String(data: data, encoding: .utf8) ?? ""
+            throw TransferError.remote("S3 ListBuckets HTTP \(status): \(bodyText.prefix(160))")
+        }
+        return try Self.parseListBucketsXML(data)
+    }
+
     // MARK: - S3 Operations
     public func list(_ path: String) async throws -> [FileEntry] {
         try Task.checkCancellation()
@@ -808,10 +839,22 @@ public struct S3Client: RemoteTransport, Sendable {
         return f
     }()
 
-    private static func formatAMZDate(_ date: Date) -> String {
+    static func formatAMZDate(_ date: Date) -> String {
         amzDateLock.lock()
         defer { amzDateLock.unlock() }
         return amzDateFormatter.string(from: date)
+    }
+
+    public static func parseListBucketsXML(_ data: Data) throws -> [S3BucketInfo] {
+        let delegate = S3ListBucketsXMLDelegate()
+        let parser = XMLParser(data: data)
+        parser.delegate = delegate
+        guard parser.parse() else {
+            throw TransferError.invalidListing("S3 ListBuckets XML parse error")
+        }
+        return delegate.buckets.sorted {
+            $0.name.localizedStandardCompare($1.name) == .orderedAscending
+        }
     }
 
     static func sha256Hex(_ data: Data) -> String {
@@ -843,12 +886,12 @@ public struct S3Client: RemoteTransport, Sendable {
         return input.addingPercentEncoding(withAllowedCharacters: allowed) ?? input
     }
 
-    private static func canonicalURIPath(from path: String) -> String {
+    static func canonicalURIPath(from path: String) -> String {
         guard !path.isEmpty else { return "/" }
         return awsURIEnode(path, encodeSlash: false)
     }
 
-    private static func canonicalQueryString(from url: URL) -> String {
+    static func canonicalQueryString(from url: URL) -> String {
         guard let components = URLComponents(url: url, resolvingAgainstBaseURL: false),
               let items = components.queryItems, !items.isEmpty else {
             return ""
@@ -1016,5 +1059,47 @@ private final class S3ListObjectsXMLDelegate: NSObject, XMLParserDelegate {
                 permissions: "drwxr-xr-x"
             ))
         }
+    }
+}
+
+private final class S3ListBucketsXMLDelegate: NSObject, XMLParserDelegate {
+    var buckets: [S3BucketInfo] = []
+    private var inBucket = false
+    private var currentElement = ""
+    private var currentName = ""
+    private var currentCreationDate = ""
+
+    func parser(_ parser: XMLParser, didStartElement elementName: String, namespaceURI: String?, qualifiedName qName: String?, attributes attributeDict: [String: String] = [:]) {
+        currentElement = elementName
+        if elementName == "Bucket" {
+            inBucket = true
+            currentName = ""
+            currentCreationDate = ""
+        }
+    }
+
+    func parser(_ parser: XMLParser, foundCharacters string: String) {
+        guard inBucket else { return }
+        switch currentElement {
+        case "Name":
+            currentName += string
+        case "CreationDate":
+            currentCreationDate += string
+        default:
+            break
+        }
+    }
+
+    func parser(_ parser: XMLParser, didEndElement elementName: String, namespaceURI: String?, qualifiedName qName: String?) {
+        if elementName == "Bucket" {
+            inBucket = false
+            let name = currentName.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !name.isEmpty {
+                let dateStr = currentCreationDate.trimmingCharacters(in: .whitespacesAndNewlines)
+                let created = HTTPStreamingHelper.parseHTTPDate(dateStr)
+                buckets.append(S3BucketInfo(name: name, creationDate: created))
+            }
+        }
+        currentElement = ""
     }
 }
