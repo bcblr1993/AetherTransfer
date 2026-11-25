@@ -39,6 +39,7 @@ struct FileInspectorView: View {
                     Image(systemName: "xmark.circle")
                 }
                 .buttonStyle(.borderless)
+                .accessibilityLabel(L10n.tr("关闭检查器", "Close Inspector"))
             }
             .padding(.horizontal, 14)
             .padding(.top, 12)
@@ -321,6 +322,7 @@ private struct FileInspectorDetailContent: View {
                         }
                         .controlSize(.small)
                         .help(L10n.tr("在浏览器中打开", "Open in Browser"))
+                        .accessibilityLabel(L10n.tr("在浏览器中打开", "Open in Browser"))
                     }
                 }
             }
@@ -392,6 +394,7 @@ private struct FileInspectorDetailContent: View {
                         .font(.caption2)
                 }
                 .buttonStyle(.borderless)
+                .accessibilityLabel(L10n.tr("复制 \(label) 校验值", "Copy \(label) Digest"))
             }
             Text(digest)
                 .font(.system(size: 10, design: .monospaced))
@@ -569,6 +572,7 @@ private struct FileInspectorDetailContent: View {
                                     Image(systemName: "plus.circle")
                                 }
                                 .buttonStyle(.borderless)
+                                .accessibilityLabel(L10n.tr("添加自定义元数据", "Add Custom Metadata"))
                             }
 
                             ForEach($customRows) { $row in
@@ -586,6 +590,7 @@ private struct FileInspectorDetailContent: View {
                                             .foregroundStyle(.red)
                                     }
                                     .buttonStyle(.borderless)
+                                    .accessibilityLabel(L10n.tr("删除此元数据行", "Remove Metadata Row"))
                                 }
                             }
                         }
@@ -1164,54 +1169,285 @@ struct QuickEditorSheet: View {
     @ObservedObject var workspace: Workspace
     let context: EditingFileContext
     @State private var text: String
+    @State private var originalContent: String
+    @State private var showFindBar: Bool = false
+    @State private var findQuery: String = ""
+    @State private var replaceQuery: String = ""
+    @State private var caseSensitive: Bool = false
+    @State private var selectedEncoding: TextFileEncoding = .utf8
+    @State private var showUnsavedCloseConfirm: Bool = false
+    @FocusState private var isFindFieldFocused: Bool
 
     init(workspace: Workspace, context: EditingFileContext) {
         self.workspace = workspace
         self.context = context
         self._text = State(initialValue: context.content)
+        self._originalContent = State(initialValue: context.content)
+    }
+
+    private var isDirty: Bool {
+        text != originalContent
+    }
+
+    private var compareOptions: String.CompareOptions {
+        caseSensitive ? [] : [.caseInsensitive]
+    }
+
+    private var matchCount: Int {
+        guard !findQuery.isEmpty else { return 0 }
+        var count = 0
+        var searchStart = text.startIndex
+        while searchStart < text.endIndex,
+              let range = text.range(of: findQuery, options: compareOptions, range: searchStart..<text.endIndex) {
+            count += 1
+            searchStart = range.upperBound
+        }
+        return count
+    }
+
+    private var lineCount: Int {
+        if text.isEmpty { return 0 }
+        return text.components(separatedBy: "\n").count
     }
 
     var body: some View {
         VStack(spacing: 0) {
-            HStack {
-                Label(context.name, systemImage: "doc.text.fill")
-                    .font(.headline)
+            editorHeaderBar
 
-                Text(context.remote ? L10n.tr("远程服务器文件", "Remote File") : L10n.tr("本地文件", "Local File"))
-                    .font(.caption2)
-                    .padding(.horizontal, 6)
-                    .padding(.vertical, 2)
-                    .background(Color.accentColor.opacity(0.15))
-                    .foregroundStyle(Color.accentColor)
-                    .cornerRadius(4)
-
-                Spacer()
-
-                if context.isSaving {
-                    ProgressView().controlSize(.small)
-                }
-
-                Button(L10n.tr("关闭", "Close")) {
-                    workspace.editingFile = nil
-                }
-                .keyboardShortcut(.cancelAction)
-
-                Button(L10n.tr("保存更改", "Save Changes")) {
-                    workspace.saveEditorContent(text)
-                }
-                .buttonStyle(.glassProminent)
-                .keyboardShortcut("s", modifiers: [.command])
+            if showFindBar {
+                Divider()
+                findAndReplaceBar
             }
-            .padding(14)
-            .background(.ultraThinMaterial)
 
             Divider()
 
             TextEditor(text: $text)
                 .font(.system(.body, design: .monospaced))
                 .padding(10)
+
+            Divider()
+
+            editorFooterBar
         }
-        .frame(minWidth: 700, minHeight: 520)
+        .frame(minWidth: 740, minHeight: 540)
+        .confirmationDialog(
+            L10n.tr("是否放弃未保存的更改？", "Discard Unsaved Changes?"),
+            isPresented: $showUnsavedCloseConfirm,
+            titleVisibility: .visible
+        ) {
+            Button(L10n.tr("保存并关闭", "Save & Close")) {
+                workspace.v3SaveEditorContent(text, encoding: selectedEncoding)
+            }
+            Button(L10n.tr("放弃更改", "Discard Changes"), role: .destructive) {
+                workspace.editingFile = nil
+            }
+            Button(L10n.tr("继续编辑", "Keep Editing"), role: .cancel) {}
+        } message: {
+            Text(L10n.tr("文件「\(context.name)」包含尚未保存的修改。", "\"\(context.name)\" has unsaved modifications."))
+        }
+    }
+
+    private var editorHeaderBar: some View {
+        HStack(spacing: 10) {
+            HStack(spacing: 4) {
+                if isDirty {
+                    Text("•")
+                        .font(.headline.bold())
+                        .foregroundStyle(Color.orange)
+                        .accessibilityLabel(L10n.tr("有未保存的更改", "Unsaved Changes"))
+                }
+                Label(context.name, systemImage: "doc.text.fill")
+                    .font(.headline)
+            }
+
+            Text(context.remote ? L10n.tr("远程服务器文件", "Remote File") : L10n.tr("本地文件", "Local File"))
+                .font(.caption2)
+                .padding(.horizontal, 6)
+                .padding(.vertical, 2)
+                .background(Color.accentColor.opacity(0.15))
+                .foregroundStyle(Color.accentColor)
+                .cornerRadius(4)
+
+            if isDirty {
+                Text(L10n.tr("已修改", "Modified"))
+                    .font(.caption2)
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 2)
+                    .background(Color.orange.opacity(0.16))
+                    .foregroundStyle(.orange)
+                    .cornerRadius(4)
+            }
+
+            Spacer()
+
+            Button {
+                withAnimation(.easeInOut(duration: 0.15)) {
+                    showFindBar.toggle()
+                }
+                if showFindBar {
+                    DispatchQueue.main.async {
+                        isFindFieldFocused = true
+                    }
+                }
+            } label: {
+                Label(L10n.tr("查找与替换", "Find & Replace"), systemImage: "magnifyingglass")
+                    .font(.caption)
+            }
+            .buttonStyle(.borderless)
+            .keyboardShortcut("f", modifiers: [.command])
+            .help(L10n.tr("查找与替换 (⌘F)", "Find & Replace (⌘F)"))
+            .accessibilityLabel(L10n.tr("查找与替换", "Find and Replace"))
+
+            if context.isSaving {
+                ProgressView().controlSize(.small)
+            }
+
+            Button(L10n.tr("关闭", "Close")) {
+                attemptClose()
+            }
+            .keyboardShortcut(.cancelAction)
+
+            Button(L10n.tr("保存更改", "Save Changes")) {
+                workspace.v3SaveEditorContent(text, encoding: selectedEncoding)
+            }
+            .buttonStyle(.glassProminent)
+            .keyboardShortcut("s", modifiers: [.command])
+            .disabled(context.isSaving)
+        }
+        .padding(14)
+        .background(.ultraThinMaterial)
+    }
+
+    private var findAndReplaceBar: some View {
+        HStack(spacing: 8) {
+            HStack(spacing: 4) {
+                Image(systemName: "magnifyingglass")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                TextField(L10n.tr("查找…", "Find…"), text: $findQuery)
+                    .textFieldStyle(.plain)
+                    .font(.caption)
+                    .focused($isFindFieldFocused)
+            }
+            .padding(.horizontal, 8)
+            .padding(.vertical, 4)
+            .frame(width: 170)
+            .background(RoundedRectangle(cornerRadius: 6).fill(Color.primary.opacity(0.06)))
+
+            HStack(spacing: 4) {
+                Image(systemName: "arrow.2.squarepath")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                TextField(L10n.tr("替换为…", "Replace…"), text: $replaceQuery)
+                    .textFieldStyle(.plain)
+                    .font(.caption)
+            }
+            .padding(.horizontal, 8)
+            .padding(.vertical, 4)
+            .frame(width: 160)
+            .background(RoundedRectangle(cornerRadius: 6).fill(Color.primary.opacity(0.06)))
+
+            Button {
+                caseSensitive.toggle()
+            } label: {
+                Text("Aa")
+                    .font(.caption.bold().monospaced())
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 3)
+                    .background(
+                        RoundedRectangle(cornerRadius: 5)
+                            .fill(caseSensitive ? Color.accentColor.opacity(0.2) : Color.primary.opacity(0.05))
+                    )
+                    .foregroundStyle(caseSensitive ? Color.accentColor : Color.secondary)
+            }
+            .buttonStyle(.plain)
+            .help(L10n.tr("区分大小写", "Case Sensitive"))
+            .accessibilityLabel(L10n.tr("区分大小写", "Case Sensitive"))
+
+            Text(
+                findQuery.isEmpty
+                    ? L10n.tr("0 个匹配", "0 matches")
+                    : L10n.tr("\(matchCount) 个匹配", "\(matchCount) match(es)")
+            )
+            .font(.caption2.monospacedDigit())
+            .foregroundStyle(.secondary)
+            .frame(minWidth: 74, alignment: .leading)
+
+            Button(L10n.tr("替换", "Replace")) {
+                replaceFirstMatch()
+            }
+            .controlSize(.small)
+            .disabled(findQuery.isEmpty || matchCount == 0)
+
+            Button(L10n.tr("全部替换", "Replace All")) {
+                replaceAllMatches()
+            }
+            .controlSize(.small)
+            .disabled(findQuery.isEmpty || matchCount == 0)
+
+            Spacer()
+
+            Button {
+                withAnimation(.easeInOut(duration: 0.15)) {
+                    showFindBar = false
+                }
+            } label: {
+                Image(systemName: "xmark.circle.fill")
+                    .foregroundStyle(.secondary)
+            }
+            .buttonStyle(.plain)
+            .accessibilityLabel(L10n.tr("隐藏查找栏", "Hide Find Bar"))
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 8)
+        .background(Color.primary.opacity(0.025))
+    }
+
+    private var editorFooterBar: some View {
+        HStack(spacing: 12) {
+            HStack(spacing: 6) {
+                Text(L10n.tr("字符编码：", "Encoding:"))
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                Picker(L10n.tr("字符编码", "Encoding"), selection: $selectedEncoding) {
+                    ForEach(TextFileEncoding.allCases) { encoding in
+                        Text(encoding.localizedTitle).tag(encoding)
+                    }
+                }
+                .labelsHidden()
+                .controlSize(.small)
+                .frame(width: 195)
+                .accessibilityLabel(L10n.tr("文件编码", "Text File Encoding"))
+            }
+
+            Spacer()
+
+            Text(L10n.tr("\(lineCount) 行 · \(text.count) 个字符", "\(lineCount) lines · \(text.count) chars"))
+                .font(.caption2.monospacedDigit())
+                .foregroundStyle(.secondary)
+        }
+        .padding(.horizontal, 14)
+        .padding(.vertical, 8)
+        .background(.ultraThinMaterial)
+    }
+
+    private func attemptClose() {
+        if isDirty {
+            showUnsavedCloseConfirm = true
+        } else {
+            workspace.editingFile = nil
+        }
+    }
+
+    private func replaceFirstMatch() {
+        guard !findQuery.isEmpty,
+              let range = text.range(of: findQuery, options: compareOptions) else { return }
+        text.replaceSubrange(range, with: replaceQuery)
+    }
+
+    private func replaceAllMatches() {
+        guard !findQuery.isEmpty else { return }
+        text = text.replacingOccurrences(of: findQuery, with: replaceQuery, options: compareOptions)
     }
 }
 

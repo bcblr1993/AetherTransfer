@@ -7,6 +7,7 @@ import AetherTransferCore
 struct ActivityQueueDrawer: View {
     @ObservedObject var workspace: Workspace
     @ObservedObject private var store: RulesAndTranscriptStore
+    @ObservedObject private var v3Store: TransmitV3UIStore
 
     @State private var selectedFilter: TransferFilter = .all
     @State private var selectedTranscriptCategory: TranscriptCategory? = nil
@@ -16,6 +17,7 @@ struct ActivityQueueDrawer: View {
     init(workspace: Workspace) {
         self.workspace = workspace
         self._store = ObservedObject(wrappedValue: workspace.rulesAndTranscriptStore)
+        self._v3Store = ObservedObject(wrappedValue: workspace.v3UIStore)
     }
 
     private var visibleQueueFilters: [TransferFilter] {
@@ -102,6 +104,33 @@ struct ActivityQueueDrawer: View {
         }
         .toggleStyle(.checkbox)
         .help(L10n.tr("上传完成后自动将文件 URL 复制到剪贴板", "Automatically copy remote file URL after upload completes"))
+
+        Menu {
+            ForEach(TransferMode.allCases) { mode in
+                Button {
+                    workspace.setActiveTransferMode(mode)
+                } label: {
+                    HStack {
+                        Text(mode.localizedTitle)
+                        if v3Store.activeTransferMode == mode {
+                            Image(systemName: "checkmark")
+                        }
+                    }
+                }
+            }
+        } label: {
+            HStack(spacing: 4) {
+                Image(systemName: "arrow.left.arrow.right.square")
+                Text(v3Store.activeTransferMode.localizedTitle)
+            }
+            .font(.caption)
+            .padding(.horizontal, 7)
+            .padding(.vertical, 2)
+            .background(Capsule().fill(Color.primary.opacity(0.06)))
+        }
+        .menuStyle(.borderlessButton)
+        .help(L10n.tr("传输模式 (自动 / ASCII / 二进制)", "Transfer Mode (Auto / ASCII / Binary)"))
+        .accessibilityLabel(L10n.tr("传输模式", "Transfer Mode"))
 
         Menu {
             Button(L10n.tr("不限速", "Unlimited")) { workspace.setSpeedLimit(nil) }
