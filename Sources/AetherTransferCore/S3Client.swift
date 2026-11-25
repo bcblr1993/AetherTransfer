@@ -99,7 +99,8 @@ public struct S3Client: RemoteTransport, Sendable {
             .map { "\(Self.awsURIEnode($0.0, encodeSlash: true))=\(Self.awsURIEnode($0.1, encodeSlash: true))" }
             .joined(separator: "&")
 
-        let canonicalURI = Self.canonicalURIPath(from: baseURL.path)
+        let resolvedPath = URLComponents(url: baseURL, resolvingAgainstBaseURL: false)?.path ?? baseURL.path
+        let canonicalURI = Self.canonicalURIPath(from: resolvedPath)
         let canonicalHeaders = "host:\(hostHeader)\n"
         let canonicalRequest = [
             "GET",
@@ -719,7 +720,8 @@ public struct S3Client: RemoteTransport, Sendable {
         let canonicalHeaders = sortedHeaderKeys.map { "\($0):\(headersToSign[$0]!)\n" }.joined()
         let signedHeaders = sortedHeaderKeys.joined(separator: ";")
 
-        let canonicalURI = Self.canonicalURIPath(from: url.path)
+        let resolvedPath = URLComponents(url: url, resolvingAgainstBaseURL: false)?.path ?? url.path
+        let canonicalURI = Self.canonicalURIPath(from: resolvedPath)
         let canonicalQuery = Self.canonicalQueryString(from: url)
 
         let canonicalRequest = [
