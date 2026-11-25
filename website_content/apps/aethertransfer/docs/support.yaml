@@ -16,7 +16,7 @@ sections:
         en: Implicit/Explicit FTPS and HTTPS protocols (WebDAV HTTPS, S3, R2, Backblaze B2, Azure Blob, OpenStack Swift) validate TLS certificates; self-signed or expired certificates are refused.
       - zh: 首次在当前位置打开终端时，macOS 会请求控制 ApexTerm 或「终端」的权限。
         en: The first time you open a terminal at the current location, macOS asks for permission to control ApexTerm or Terminal.
-  - heading: { zh: 视图、规则、日志与自动化, en: Views, rules, transcripts, and automation }
+  - heading: { zh: "视图、规则、日志与自动化", en: "Views, rules, transcripts, and automation" }
     list:
       - zh: 工具栏可在列表、级联分栏、缩略图网格与画廊视图间切换，并可切换聚焦模式或双栏本地/远程来源；在 Launchpad 中可配置文件夹关联与颜色标签。
         en: Switch between List, cascading Miller Columns, Thumbnail Grid, and Gallery Split views, toggle Focus Mode or dual-pane sources, and configure Folder Linking and color tags in the Servers Launchpad.
