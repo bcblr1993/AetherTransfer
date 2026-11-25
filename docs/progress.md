@@ -60,3 +60,14 @@
 - 官网：Release 自动同步版本记录；产品页、隐私政策、使用帮助与新图标上线，状态为可下载。
 - 公开验证：GitHub 与官网下载的 DMG SHA-256 均为 `2ae24ee1…`，带隔离属性的 Gatekeeper 评估通过；`releases/latest/download/appcast.json` 可访问且与 ZIP 校验值一致。尚未在干净账户中实机安装验证。
 - 后续：官网界面截图；`feat/transfer-workflows`（WebDAV / S3 / SSH agent 等）留待后续版本合并。
+
+2026-11-25：完成 v0.2.0 Transmit 5 深度对齐开发、本地全协议集成验收与 Developer ID 发布预备：
+- 协议与云存储扩展：在原有 FTP / 隐式 FTPS / SFTP 基础上新增显式 FTPS (`AUTH TLS`)、WebDAV / WebDAV HTTPS、Amazon S3 / Cloudflare R2 / MinIO（原生 AWS SigV4、分段上传、对象元数据与 Presigned URL）、Backblaze B2 Native API、Microsoft Azure Blob（`SharedKey` + SAS URL）与 OpenStack Swift（Auth v1/v3 令牌与临时签名 URL），并修复 `S3Client` 通过 `URLComponents.path` 保留目录尾斜杠以通过真实 SigV4 签名校验。
+- 浏览器、启动台与三标签检查器：实现级联 Miller 分栏（`MillerColumnBrowserView`）、画廊分屏预览（`GalleryPreviewCanvas`）、可调缩略图网格与异步降采样、聚焦模式与本地⇄本地 / 服务器⇄服务器双栏切换；新增 `ServersLaunchpadView`（颜色标签、文件夹关联 `linkedLocalPath`）与自定义常用位置（`CustomPlacesStore`）；文件检查器（`⌘I`）升级为常规（文件夹大小、64 KiB 分块 SHA-256/MD5）、权限（递归 chmod）与云端/链接三标签。
+- 规则、日志与自动化工作流：实现 `FileRulesStore`（Skip Rules 谓词规则 + ASCII 扩展名编辑器）、带 `TranscriptRedactor` 严格脱敏与搜索导出的协议日志抽屉、传输队列置顶/一键重试/实时 ETA/上传后复制链接、Finder Droplet `.app` 导出与 `aethertransfer://` / `sftp://` / `ftp://` / `ftps://` URL Scheme、SSH 密钥管理器（`Ed25519` / `RSA-4096`）与 `KnownHostsManager`、外部编辑器保存自动回传（`ExternalEditorManager`）+ ApexTerm / `Terminal.app` 联动、`.aethersync`（`HKDF-SHA256` + `AES-GCM-256`）零知识加密书签保险箱及菜单栏微件（`MenuBarDropletView`）。
+- 门禁与验证（2026-11-25）：
+  - `./scripts/test_core.sh`：XCTest 72 项执行（17 项夹具门禁跳过，0 失败）；Swift Testing 44 项全部通过（0 失败）。
+  - `./scripts/test_protocols.sh`：17 项真实本地回环集成测试全部通过（0 失败），覆盖全部 8 大协议家族（FTP、隐式 FTPS、显式 FTPS、SFTP + 符号链接/chmod/主机密钥拒绝、WebDAV/HTTPS、S3、Backblaze B2、Azure Blob、OpenStack Swift），夹具无残留进程。
+  - `NOTARY_PROFILE=AetherRoute-Notary VERSION=0.2.0 BUILD_NUMBER=2026112501 ./scripts/build_app.sh`：Release 构建与独立 arm64 打包通过，Developer ID Application（`5984KQD4D7`）签名、Apple 公证（Accepted）与票据装订（`xcrun stapler validate`）均通过；`spctl -a -vvv` 对 DMG（`-t install`）与 `.app`（`-t exec`）均显示 `Notarized Developer ID`；`codesign --verify --deep --strict` 通过，`otool -L` 校验主程序及 12 个内嵌 dylib 均无 `/opt/homebrew` 或 `/usr/local` 依赖；捆绑 `cacert.pem`、`AppIcon.icns`、许可证文本及 `CFBundleURLTypes`；`SHA256SUMS.txt` 校验通过（DMG `e3905a5a...`，ZIP `2c48f313...`）。
+  - 运行态检查：启动已公证的 `outputs/AetherTransfer.app` 后主窗口（`1280x820`）正常上屏且无崩溃日志，AppleScript 正常退出；非交互式代理 Shell 未获 macOS 屏幕录制/辅助功能 TCC 权限，窗口截图留待维护者补充。
+- 正式发布：合并 `feat/transmit-parity` 至 `main` 并打标签 `v0.2.0` 推送，发布 GitHub Release `v0.2.0`（附 DMG、ZIP、`SHA256SUMS.txt`、`appcast.json`），同步更新官网产品页与版本记录并完成发布后磁盘清理。

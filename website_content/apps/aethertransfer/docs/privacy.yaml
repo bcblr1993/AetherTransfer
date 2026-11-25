@@ -1,17 +1,17 @@
 title: { zh: 隐私政策, en: Privacy policy }
 heading: { zh: AetherTransfer 隐私政策, en: AetherTransfer privacy policy }
-meta: { zh: 更新于 2026-10-21 · 适用于 0.1.0, en: Updated 2026-10-21 · Applies to 0.1.0 }
+meta: { zh: 更新于 2026-11-25 · 适用于 0.2.0, en: Updated 2026-11-25 · Applies to 0.2.0 }
 lead: { zh: 文件与连接资料由你掌控。, en: Your files and connections remain under your control. }
 sections:
-  - heading: { zh: 本地配置与凭据, en: Local configuration and credentials }
+  - heading: { zh: 本地配置、凭据与加密备份, en: Local configuration, credentials, and encrypted backup }
     body:
-      - { zh: 连接资料保存在本机。选择保存的密码与私钥口令存入系统 Keychain，不写入连接配置文件；日志不记录凭据。, en: Connection profiles remain on your Mac. Saved passwords and private-key passphrases use system Keychain and are not written to profile files or logs. }
-  - heading: { zh: 文件传输, en: File transfers }
+      - { zh: 连接资料、自定义常用位置与规则保存在本机。选择保存的密码、私钥口令与云存储密钥存入系统 Keychain，不写入连接配置文件。使用 `.aethersync` 导出书签备份时，内容会在本地经 HKDF-SHA256 与 AES-GCM-256 加密，主密码与加密文件均由你自行保管，不会上传至任何同步服务器。, en: "Connection profiles, Custom Places, and rules remain on your Mac. Saved passwords, private-key passphrases, and cloud storage secrets use the system Keychain and are never written to profile files. When exporting `.aethersync` bookmark backups, data is encrypted locally with HKDF-SHA256 and AES-GCM-256; both the master password and vault file stay under your control without any cloud sync server." }
+  - heading: { zh: 协议日志脱敏与文件传输, en: Redacted transcripts and file transfers }
     body:
-      - { zh: 应用按你的操作连接指定服务器，并向它上传或从它下载文件。服务器提供者可能记录连接和文件操作，应同时参考其隐私政策。, en: The app connects to servers you select and transfers files at your direction. Server providers may log connections and file operations; their privacy policies also apply. }
+      - { zh: 应用按你的操作连接指定服务器或对象存储（FTP / FTPS / SFTP / WebDAV / S3 / R2 / Backblaze B2 / Azure Blob / OpenStack Swift），并按你的指令传输或编辑文件。协议日志（Transcript）仅在本地展示与导出，并自动脱敏密码、Token、签名参数、Authorization 请求头与 URL 凭据信息。目标服务器提供者可能记录连接与文件操作，应同时参考其隐私政策。, en: "The app connects to servers and object storage endpoints you select (FTP, FTPS, SFTP, WebDAV, S3, R2, Backblaze B2, Azure Blob, and OpenStack Swift) and transfers or edits files at your direction. Transcript logs remain local and automatically redact passwords, tokens, signature query parameters, Authorization headers, and URL userinfo. Target server providers may log connections and file operations; their privacy policies also apply." }
   - heading: { zh: 检查更新, en: Update checks }
     body:
-      - { zh: 自动或手动检查更新时，应用会向 GitHub 请求最新版本信息并下载更新包。请求不包含你的连接资料或文件信息，GitHub 可能按其隐私政策记录访问。可在设置中关闭自动检查。, en: "When checking for updates automatically or manually, the app requests the latest version information from GitHub and downloads the update package. Requests contain no connection profiles or file information; GitHub may log access under its privacy policy. Automatic checks can be turned off in Settings." }
+      - { zh: 自动或手动检查更新时，应用会向 GitHub 请求最新版本信息并下载更新包。请求不包含你的连接资料、日志或文件信息，GitHub 可能按其隐私政策记录访问。可在设置中关闭自动检查。, en: "When checking for updates automatically or manually, the app requests the latest version information from GitHub and downloads the update package. Requests contain no connection profiles, logs, or file information; GitHub may log access under its privacy policy. Automatic checks can be turned off in Settings." }
   - heading: { zh: 无追踪, en: No tracking }
     body:
-      - { zh: 应用没有分析埋点、广告或云端账户要求。未来增加配置同步或其他服务时会更新此政策。, en: "The app has no analytics, ads or cloud account requirement. This policy will be updated when configuration sync or other services are added." }
+      - { zh: 应用没有分析埋点、广告或云端账户要求，也不会后台上传任何使用数据或配置。, en: "The app has no analytics, ads, or cloud account requirement, and never uploads usage telemetry or configuration in the background." }

@@ -91,6 +91,7 @@ ATRequest *at_create(const char *url, const char *user, const char *password,
     curl_easy_setopt(r->curl, CURLOPT_XFERINFODATA, r);
     curl_easy_setopt(r->curl, CURLOPT_PROTOCOLS_STR, "ftp,ftps,sftp");
     curl_easy_setopt(r->curl, CURLOPT_PROXY, "");
+    curl_easy_setopt(r->curl, CURLOPT_FILETIME, 1L);
     if (strncmp(url, "sftp:", 5) == 0) {
         curl_easy_setopt(r->curl, CURLOPT_SSH_HOSTKEYFUNCTION, hostkey);
         curl_easy_setopt(r->curl, CURLOPT_SSH_HOSTKEYDATA, r);
@@ -131,6 +132,23 @@ int at_set_speed_limit(ATRequest *r, int64_t bytes_per_sec) {
     CURLcode c1 = curl_easy_setopt(r->curl, CURLOPT_MAX_SEND_SPEED_LARGE, (curl_off_t)bytes_per_sec);
     if (c1 != CURLE_OK) return c1;
     return curl_easy_setopt(r->curl, CURLOPT_MAX_RECV_SPEED_LARGE, (curl_off_t)bytes_per_sec);
+}
+int at_set_ssh_agent(ATRequest *r, int enabled) {
+    if (!r) return CURLE_BAD_FUNCTION_ARGUMENT;
+    if (enabled) {
+        return curl_easy_setopt(r->curl, CURLOPT_SSH_AUTH_TYPES,
+                                (long)(CURLSSH_AUTH_AGENT | CURLSSH_AUTH_PUBLICKEY | CURLSSH_AUTH_PASSWORD));
+    }
+    return CURLE_OK;
+}
+int at_set_ftps_explicit(ATRequest *r, int enabled) {
+    if (!r) return CURLE_BAD_FUNCTION_ARGUMENT;
+    if (enabled != 0) {
+        CURLcode c1 = curl_easy_setopt(r->curl, CURLOPT_USE_SSL, (long)CURLUSESSL_ALL);
+        if (c1 != CURLE_OK) return c1;
+        return curl_easy_setopt(r->curl, CURLOPT_FTPSSLAUTH, (long)CURLFTPAUTH_TLS);
+    }
+    return CURLE_OK;
 }
 int64_t at_file_size(ATRequest *r) {
     if (!r) return -1;

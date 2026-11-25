@@ -55,4 +55,34 @@ public enum L10n {
     public static func tr(_ zh: String, _ en: String) -> String {
         isEnglish ? en : zh
     }
+
+    public static func count(_ value: Int, zhUnit: String, enSingular: String, enPlural: String? = nil) -> String {
+        if isEnglish {
+            let unit = value == 1 ? enSingular : (enPlural ?? "\(enSingular)s")
+            return "\(value) \(unit)"
+        }
+        return "\(value) \(zhUnit)"
+    }
+
+    public static func itemsCount(_ value: Int) -> String {
+        count(value, zhUnit: "项", enSingular: "item", enPlural: "items")
+    }
+
+    public static func formatByteCount(_ bytes: Int64) -> String {
+        ByteCountFormatter.string(fromByteCount: max(0, bytes), countStyle: .file)
+    }
+
+    public static func formatDateTime(_ date: Date?) -> String {
+        guard let date else { return "—" }
+        return date.formatted(date: .numeric, time: .shortened)
+    }
+
+    public static func formatTimestamp(_ date: Date) -> String {
+        date.formatted(
+            .dateTime
+                .hour(.twoDigits(amPM: .omitted))
+                .minute(.twoDigits)
+                .second(.twoDigits)
+        )
+    }
 }

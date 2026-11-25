@@ -11,6 +11,8 @@ void at_cancel(ATRequest *request);
 int at_set_ca_bundle(ATRequest *request, const char *path);
 int at_transfer_window(ATRequest *request, int64_t offset, int64_t end, int64_t total);
 int at_set_speed_limit(ATRequest *request, int64_t bytes_per_sec);
+int at_set_ssh_agent(ATRequest *request, int enabled);
+int at_set_ftps_explicit(ATRequest *request, int enabled);
 int64_t at_file_size(ATRequest *request);
 int64_t at_file_time(ATRequest *request);
 // mode: 0 listing, 1 download, 2 upload, 3 quote commands

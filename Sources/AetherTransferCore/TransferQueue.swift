@@ -30,6 +30,26 @@ public enum TransferState: String, Codable, Sendable {
     }
 }
 
+public enum TransferFilter: String, CaseIterable, Identifiable, Sendable {
+    case all
+    case active
+    case completed
+    case failed
+    case cancelled
+
+    public var id: String { rawValue }
+
+    public var localizedTitle: String {
+        switch self {
+        case .all: return L10n.tr("全部", "All")
+        case .active: return L10n.tr("进行中", "Active")
+        case .completed: return L10n.tr("已完成", "Completed")
+        case .failed: return L10n.tr("失败", "Failed")
+        case .cancelled: return L10n.tr("已取消", "Cancelled")
+        }
+    }
+}
+
 public struct TransferTaskItem: Identifiable, Sendable {
     public let id: UUID
     public let name: String
@@ -39,12 +59,16 @@ public struct TransferTaskItem: Identifiable, Sendable {
     public var completedBytes: Int64
     public var totalBytes: Int64
     public var speedBytesPerSec: Double
+    public var etaSeconds: Double?
+    public var copyURLOnComplete: Bool
+    public var remoteURLString: String?
     public var error: String?
     public let createdDate: Date
 
     public init(id: UUID = UUID(), name: String, direction: TransferDirection, state: TransferState = .queued,
                 progress: Double = 0, completedBytes: Int64 = 0, totalBytes: Int64 = 0,
-                speedBytesPerSec: Double = 0, error: String? = nil, createdDate: Date = Date()) {
+                speedBytesPerSec: Double = 0, error: String? = nil, createdDate: Date = Date(),
+                etaSeconds: Double? = nil, copyURLOnComplete: Bool = false, remoteURLString: String? = nil) {
         self.id = id
         self.name = name
         self.direction = direction
@@ -53,6 +77,9 @@ public struct TransferTaskItem: Identifiable, Sendable {
         self.completedBytes = completedBytes
         self.totalBytes = totalBytes
         self.speedBytesPerSec = speedBytesPerSec
+        self.etaSeconds = etaSeconds
+        self.copyURLOnComplete = copyURLOnComplete
+        self.remoteURLString = remoteURLString
         self.error = error
         self.createdDate = createdDate
     }
@@ -66,6 +93,7 @@ public final class TransferQueueManager: @unchecked Sendable {
     private var maxConcurrent: Int
     private let lock = NSLock()
     private var taskItems: [TransferTaskItem] = []
+    private var queuedOrder: [UUID] = []
     private var operations: [UUID: TransferOperation] = [:]
     private var finishHandlers: [UUID: TransferFinishHandler] = [:]
     private var runningTasks: [UUID: Task<Void, Never>] = [:]
@@ -145,13 +173,41 @@ public final class TransferQueueManager: @unchecked Sendable {
         return taskItems.filter { $0.state == .inProgress }.reduce(0.0) { $0 + $1.speedBytesPerSec }
     }
 
+    public func filteredItems(_ filter: TransferFilter) -> [TransferTaskItem] {
+        lock.lock()
+        let snapshot = taskItems
+        lock.unlock()
+        switch filter {
+        case .all:
+            return snapshot
+        case .active:
+            return snapshot.filter { $0.state == .queued || $0.state == .inProgress }
+        case .completed:
+            return snapshot.filter { $0.state == .completed }
+        case .failed:
+            return snapshot.filter { $0.state == .failed }
+        case .cancelled:
+            return snapshot.filter { $0.state == .cancelled }
+        }
+    }
+
     @discardableResult
-    public func enqueue(name: String, direction: TransferDirection, operation: @escaping TransferOperation,
+    public func enqueue(name: String, direction: TransferDirection,
+                        copyURLOnComplete: Bool = false, remoteURLString: String? = nil,
+                        operation: @escaping TransferOperation,
                         onFinish: TransferFinishHandler? = nil) -> UUID {
         let id = UUID()
-        let item = TransferTaskItem(id: id, name: name, direction: direction, state: .queued)
+        let item = TransferTaskItem(
+            id: id,
+            name: name,
+            direction: direction,
+            state: .queued,
+            copyURLOnComplete: copyURLOnComplete,
+            remoteURLString: remoteURLString
+        )
         lock.lock()
         taskItems.insert(item, at: 0)
+        queuedOrder.append(id)
         operations[id] = operation
         finishHandlers[id] = onFinish
         lock.unlock()
@@ -160,9 +216,25 @@ public final class TransferQueueManager: @unchecked Sendable {
         return id
     }
 
+    public func moveToTop(id: UUID) {
+        lock.lock()
+        guard let index = taskItems.firstIndex(where: { $0.id == id }),
+              taskItems[index].state == .queued else {
+            lock.unlock()
+            return
+        }
+        let item = taskItems.remove(at: index)
+        taskItems.insert(item, at: 0)
+        queuedOrder.removeAll { $0 == id }
+        queuedOrder.insert(id, at: 0)
+        lock.unlock()
+        notify()
+    }
+
     public func cancel(id: UUID) {
         var handler: TransferFinishHandler?
         lock.lock()
+        queuedOrder.removeAll { $0 == id }
         if let task = runningTasks[id] {
             task.cancel()
         } else if let index = taskItems.firstIndex(where: { $0.id == id && $0.state == .queued }) {
@@ -187,10 +259,39 @@ public final class TransferQueueManager: @unchecked Sendable {
         taskItems[index].progress = 0
         taskItems[index].completedBytes = 0
         taskItems[index].speedBytesPerSec = 0
+        taskItems[index].etaSeconds = nil
         taskItems[index].error = nil
+        queuedOrder.removeAll { $0 == id }
+        queuedOrder.append(id)
         lock.unlock()
         notify()
         processNext()
+    }
+
+    @discardableResult
+    public func retryAllFailed() -> Int {
+        lock.lock()
+        var retriedCount = 0
+        for index in taskItems.indices.reversed() {
+            let id = taskItems[index].id
+            if taskItems[index].state == .failed, operations[id] != nil {
+                taskItems[index].state = .queued
+                taskItems[index].progress = 0
+                taskItems[index].completedBytes = 0
+                taskItems[index].speedBytesPerSec = 0
+                taskItems[index].etaSeconds = nil
+                taskItems[index].error = nil
+                queuedOrder.removeAll { $0 == id }
+                queuedOrder.append(id)
+                retriedCount += 1
+            }
+        }
+        lock.unlock()
+        if retriedCount > 0 {
+            notify()
+            processNext()
+        }
+        return retriedCount
     }
 
     public func clearCompleted() {
@@ -205,6 +306,7 @@ public final class TransferQueueManager: @unchecked Sendable {
         for (_, task) in runningTasks {
             task.cancel()
         }
+        queuedOrder.removeAll()
         var handlers: [TransferFinishHandler] = []
         for i in 0..<taskItems.count {
             if taskItems[i].state == .queued {
@@ -231,15 +333,20 @@ public final class TransferQueueManager: @unchecked Sendable {
         }
 
         var toStart: [(UUID, TransferOperation)] = []
-        // Look from the oldest queued item to preserve FIFO queue behavior
-        for index in taskItems.indices.reversed() {
-            guard availableSlots > 0 else { break }
-            if taskItems[index].state == .queued, let op = operations[taskItems[index].id] {
+        var remainingQueue: [UUID] = []
+        for id in queuedOrder {
+            if availableSlots > 0,
+               let index = taskItems.firstIndex(where: { $0.id == id && $0.state == .queued }),
+               let op = operations[id] {
                 taskItems[index].state = .inProgress
-                toStart.append((taskItems[index].id, op))
+                speedTrackers[id] = (Date(), 0)
+                toStart.append((id, op))
                 availableSlots -= 1
+            } else if taskItems.contains(where: { $0.id == id && $0.state == .queued }) {
+                remainingQueue.append(id)
             }
         }
+        queuedOrder = remainingQueue
         lock.unlock()
 
         guard !toStart.isEmpty else { return }
@@ -267,14 +374,18 @@ public final class TransferQueueManager: @unchecked Sendable {
 
         lock.lock()
         runningTasks[id] = task
-        speedTrackers[id] = (Date(), 0)
+        if speedTrackers[id] == nil {
+            speedTrackers[id] = (Date(), 0)
+        }
         lock.unlock()
     }
 
     private func handleProgress(id: UUID, progress: TransferProgress) {
         lock.lock()
-        defer { lock.unlock() }
-        guard let index = taskItems.firstIndex(where: { $0.id == id && $0.state == .inProgress }) else { return }
+        guard let index = taskItems.firstIndex(where: { $0.id == id && $0.state == .inProgress }) else {
+            lock.unlock()
+            return
+        }
         taskItems[index].completedBytes = progress.completed
         taskItems[index].totalBytes = progress.total
         taskItems[index].progress = progress.total > 0 ? min(1.0, Double(progress.completed) / Double(progress.total)) : 0
@@ -288,19 +399,32 @@ public final class TransferQueueManager: @unchecked Sendable {
                 let speed = max(0, Double(bytesDelta) / elapsed)
                 taskItems[index].speedBytesPerSec = speed
                 speedTrackers[id] = (now, progress.completed)
+            } else if taskItems[index].speedBytesPerSec <= 0, elapsed >= 0.0001, progress.completed > 0 {
+                taskItems[index].speedBytesPerSec = max(0, Double(progress.completed) / elapsed)
             }
         } else {
             speedTrackers[id] = (now, progress.completed)
         }
+
+        let currentSpeed = taskItems[index].speedBytesPerSec
+        if currentSpeed > 0, progress.total > 0 {
+            let remainingBytes = max(0, progress.total - progress.completed)
+            taskItems[index].etaSeconds = Double(remainingBytes) / currentSpeed
+        } else {
+            taskItems[index].etaSeconds = nil
+        }
+        lock.unlock()
         notify()
     }
 
     private func finishTask(id: UUID, state: TransferState, error: String?) {
         lock.lock()
+        queuedOrder.removeAll { $0 == id }
         if let index = taskItems.firstIndex(where: { $0.id == id }) {
             taskItems[index].state = state
             taskItems[index].error = error
             taskItems[index].speedBytesPerSec = 0
+            taskItems[index].etaSeconds = nil
             if state == .completed {
                 taskItems[index].progress = 1.0
             }
@@ -329,5 +453,17 @@ public final class TransferQueueManager: @unchecked Sendable {
         }
         let mb = bytesPerSec / (1024.0 * 1024.0)
         return mb.truncatingRemainder(dividingBy: 1) == 0 ? "\(Int(mb)) MB/s" : String(format: "%.1f MB/s", mb)
+    }
+
+    public static func formatETA(_ seconds: Double?) -> String {
+        guard let seconds, seconds.isFinite, seconds >= 0 else { return "--" }
+        let total = Int(seconds.rounded(.up))
+        if total < 60 { return "\(total)s" }
+        let mins = total / 60
+        let secs = total % 60
+        if mins < 60 { return String(format: "%dm %02ds", mins, secs) }
+        let hours = mins / 60
+        let remMins = mins % 60
+        return String(format: "%dh %02dm", hours, remMins)
     }
 }
