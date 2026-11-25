@@ -17,7 +17,7 @@ private final class RequestBox: @unchecked Sendable {
     func cancel() { at_cancel(pointer) }
 }
 
-public struct RemoteClient: Sendable {
+public struct RemoteClient: RemoteTransport, Sendable {
     public let profile: ServerProfile
     public let credentials: Credentials
     public let speedLimitBytesPerSec: Int64?
@@ -95,6 +95,8 @@ public struct RemoteClient: Sendable {
             return try await S3Client(profile: profile, credentials: credentials).list(path)
         case .sftp, .ftp, .ftps:
             return try DirectoryListing.parse(await perform(path: path, directory: true, mode: 0), parent: RemotePath.normalize(path))
+        case .ftpsExplicit, .b2, .azureBlob, .openstackSwift:
+            throw unsupportedProtocolError()
         }
     }
     public func download(_ remote: String, to destination: URL, overwrite: Bool = false,
@@ -111,6 +113,8 @@ public struct RemoteClient: Sendable {
             return
         case .sftp, .ftp, .ftps:
             break
+        case .ftpsExplicit, .b2, .azureBlob, .openstackSwift:
+            throw unsupportedProtocolError()
         }
         let fm = FileManager.default
         if fm.fileExists(atPath: destination.path) && !overwrite { throw TransferError.conflict(destination.lastPathComponent) }
@@ -136,6 +140,8 @@ public struct RemoteClient: Sendable {
             return
         case .sftp, .ftp, .ftps:
             break
+        case .ftpsExplicit, .b2, .azureBlob, .openstackSwift:
+            throw unsupportedProtocolError()
         }
         let parent = RemotePath.parent(remote)
         let name = URL(fileURLWithPath: remote).lastPathComponent
@@ -173,6 +179,8 @@ public struct RemoteClient: Sendable {
             try await S3Client(profile: profile, credentials: credentials).mkdir(path)
         case .sftp, .ftp, .ftps:
             try await command(sftp: "mkdir \(RemotePath.quoted(path))", ftp: "MKD \(path)")
+        case .ftpsExplicit, .b2, .azureBlob, .openstackSwift:
+            throw unsupportedProtocolError()
         }
     }
     public func mkdirRecursive(_ path: String) async throws {
@@ -208,6 +216,8 @@ public struct RemoteClient: Sendable {
             try await S3Client(profile: profile, credentials: credentials).rename(source, to: destination)
         case .sftp, .ftp, .ftps:
             try await command(sftp: "rename \(RemotePath.quoted(source)) \(RemotePath.quoted(destination))", ftp: "RNFR \(source)\nRNTO \(destination)")
+        case .ftpsExplicit, .b2, .azureBlob, .openstackSwift:
+            throw unsupportedProtocolError()
         }
     }
     public func remove(_ path: String, directory: Bool) async throws {
@@ -218,6 +228,8 @@ public struct RemoteClient: Sendable {
             try await S3Client(profile: profile, credentials: credentials).remove(path, directory: directory)
         case .sftp, .ftp, .ftps:
             try await command(sftp: "\(directory ? "rmdir" : "rm") \(RemotePath.quoted(path))", ftp: "\(directory ? "RMD" : "DELE") \(path)")
+        case .ftpsExplicit, .b2, .azureBlob, .openstackSwift:
+            throw unsupportedProtocolError()
         }
     }
     public func chmod(_ path: String, permissions: POSIXPermissions) async throws {
@@ -229,6 +241,21 @@ public struct RemoteClient: Sendable {
         let octal3 = String(octal.suffix(3))
         try await command(sftp: "chmod \(octal) \(RemotePath.quoted(path))", ftp: "SITE CHMOD \(octal3) \(path)")
     }
+    public func statMetadata(_ remotePath: String) async throws -> RemoteObjectMetadata {
+        let normalized = RemotePath.normalize(remotePath)
+        let parent = RemotePath.parent(normalized)
+        let entries = try await list(parent)
+        guard let entry = entries.first(where: { $0.path == normalized }) else {
+            throw TransferError.remote(L10n.tr("未找到远程对象：\(normalized)", "Remote object not found: \(normalized)"))
+        }
+        return RemoteObjectMetadata(size: entry.size, modified: entry.modified)
+    }
+    public func updateMetadata(_ remotePath: String, metadata: RemoteObjectMetadata) async throws {
+        throw TransferError.remote(L10n.tr("协议 \(profile.protocolKind.title) 暂不支持修改对象元数据。", "Metadata updates are not yet supported for \(profile.protocolKind.title)."))
+    }
+    public func presignedURL(for remotePath: String, expiresIn seconds: Int = 3600) async throws -> URL {
+        try presignedDownloadURL(for: remotePath, expiresIn: seconds)
+    }
     public func presignedDownloadURL(for remotePath: String, expiresIn seconds: Int = 3600) throws -> URL {
         guard profile.protocolKind == .s3 else {
             guard let url = URL(string: try profile.url(path: remotePath)) else {
@@ -237,6 +264,9 @@ public struct RemoteClient: Sendable {
             return url
         }
         return try S3Client(profile: profile, credentials: credentials).presignedDownloadURL(for: remotePath, expiresIn: seconds)
+    }
+    private func unsupportedProtocolError() -> TransferError {
+        TransferError.remote(L10n.tr("协议 \(profile.protocolKind.title) 正在实现中。", "\(profile.protocolKind.title) transport is not yet wired."))
     }
     private func command(sftp: String, ftp: String) async throws {
         _ = try await perform(path: "/", directory: true, mode: 3, commands: profile.protocolKind == .sftp ? sftp : ftp)

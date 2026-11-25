@@ -52,8 +52,60 @@ public enum CredentialStore {
     public static func store(_ credentials: Credentials, id: UUID, remember: Bool) throws {
         try save(remember ? credentials.password : "", id: id)
         try save(remember ? credentials.passphrase : "", id: id, kind: "passphrase")
+        try save(remember ? credentials.sessionToken : "", id: id, kind: "sessionToken")
     }
     public static func loadCredentials(id: UUID) throws -> Credentials {
-        Credentials(password: try load(id: id), passphrase: try load(id: id, kind: "passphrase"))
+        Credentials(
+            password: try load(id: id),
+            passphrase: try load(id: id, kind: "passphrase"),
+            sessionToken: try load(id: id, kind: "sessionToken")
+        )
+    }
+}
+
+public struct CustomPlaceItem: Identifiable, Codable, Hashable, Sendable {
+    public var id: UUID
+    public var name: String
+    public var path: String
+    public var isRemote: Bool
+    public var profileId: UUID?
+    public var systemImage: String
+
+    public init(
+        id: UUID = UUID(),
+        name: String,
+        path: String,
+        isRemote: Bool = false,
+        profileId: UUID? = nil,
+        systemImage: String = "folder.fill"
+    ) {
+        self.id = id
+        self.name = name
+        self.path = path
+        self.isRemote = isRemote
+        self.profileId = profileId
+        self.systemImage = systemImage
+    }
+}
+
+public struct CustomPlacesStore: Sendable {
+    public let file: URL
+
+    public init(file: URL? = nil) {
+        self.file = file ?? FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask)[0]
+            .appendingPathComponent("AetherTransfer/places.json")
+    }
+
+    public func load() throws -> [CustomPlaceItem] {
+        guard FileManager.default.fileExists(atPath: file.path) else { return [] }
+        return try JSONDecoder().decode([CustomPlaceItem].self, from: Data(contentsOf: file))
+    }
+
+    public func save(_ places: [CustomPlaceItem]) throws {
+        try FileManager.default.createDirectory(at: file.deletingLastPathComponent(), withIntermediateDirectories: true)
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        try encoder.encode(places).write(to: file, options: .atomic)
+        try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: file.path)
     }
 }

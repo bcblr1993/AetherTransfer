@@ -1,14 +1,38 @@
 import Foundation
 
 public enum TransferProtocol: String, Codable, CaseIterable, Sendable {
-    case sftp, ftp, ftps, webdav, webdavs, s3
+    case sftp, ftp, ftps, ftpsExplicit, webdav, webdavs, s3, b2, azureBlob, openstackSwift
+
+    public init(from decoder: Decoder) throws {
+        let container = try decoder.singleValueContainer()
+        let raw = try container.decode(String.self)
+        if let exact = TransferProtocol(rawValue: raw) {
+            self = exact
+            return
+        }
+        switch raw.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() {
+        case "sftp": self = .sftp
+        case "ftp": self = .ftp
+        case "ftps", "ftps_implicit", "ftps-implicit": self = .ftps
+        case "ftpsexplicit", "ftps_explicit", "ftps-explicit", "ftpes": self = .ftpsExplicit
+        case "webdav", "dav": self = .webdav
+        case "webdavs", "webdav_https", "webdav-https", "davs": self = .webdavs
+        case "s3", "r2": self = .s3
+        case "b2", "backblaze", "backblaze_b2", "backblaze-b2": self = .b2
+        case "azureblob", "azure_blob", "azure-blob", "azure": self = .azureBlob
+        case "openstackswift", "openstack_swift", "openstack-swift", "swift": self = .openstackSwift
+        default:
+            throw DecodingError.dataCorruptedError(in: container, debugDescription: "Unsupported TransferProtocol: \(raw)")
+        }
+    }
+
     public var defaultPort: Int {
         switch self {
         case .sftp: return 22
-        case .ftp: return 21
+        case .ftp, .ftpsExplicit: return 21
         case .ftps: return 990
         case .webdav: return 80
-        case .webdavs, .s3: return 443
+        case .webdavs, .s3, .b2, .azureBlob, .openstackSwift: return 443
         }
     }
     public var title: String {
@@ -16,16 +40,21 @@ public enum TransferProtocol: String, Codable, CaseIterable, Sendable {
         case .sftp: return "SFTP"
         case .ftp: return "FTP"
         case .ftps: return "FTPS"
+        case .ftpsExplicit: return "FTPS (Explicit TLS)"
         case .webdav: return "WebDAV"
         case .webdavs: return "WebDAV HTTPS"
         case .s3: return "S3 / R2"
+        case .b2: return "Backblaze B2"
+        case .azureBlob: return "Azure Blob"
+        case .openstackSwift: return "OpenStack Swift"
         }
     }
     public var httpScheme: String {
         switch self {
         case .webdav: return "http"
-        case .webdavs, .s3: return "https"
-        default: return rawValue
+        case .webdavs, .s3, .b2, .azureBlob, .openstackSwift: return "https"
+        case .ftpsExplicit: return "ftp"
+        case .sftp, .ftp, .ftps: return rawValue
         }
     }
 }
@@ -45,20 +74,49 @@ public struct ServerProfile: Identifiable, Codable, Hashable, Sendable {
     public var s3Bucket: String
     public var s3Region: String
     public var s3PathStyle: Bool
+    public var defaultLocalPath: String
+    public var siteURL: String
+    public var colorTag: String
+    public var s3StorageClass: String
+    public var s3UseSessionToken: Bool
+    public var b2BucketName: String
+    public var b2BucketId: String
+    public var azureAccountName: String
+    public var azureContainer: String
+    public var azureUseSAS: Bool
+    public var swiftAuthURL: String
+    public var swiftContainer: String
+    public var swiftTenantOrProject: String
+    public var preserveModificationDate: Bool
 
-    public init(id: UUID = UUID(), name: String = "", group: String = "", host: String = "", port: Int = 22,
+    public init(id: UUID = UUID(), name: String = "", group: String = "", host: String = "", port: Int? = nil,
                 username: String = "", protocolKind: TransferProtocol = .sftp, initialPath: String = "/",
                 privateKeyPath: String = "", trustedHostKey: String? = nil,
-                useSSHAgent: Bool = false, s3Bucket: String = "", s3Region: String = "us-east-1", s3PathStyle: Bool = false) {
-        self.id = id; self.name = name; self.group = group; self.host = host; self.port = port
+                useSSHAgent: Bool = false, s3Bucket: String = "", s3Region: String = "us-east-1", s3PathStyle: Bool = false,
+                defaultLocalPath: String = "", siteURL: String = "", colorTag: String = "",
+                s3StorageClass: String = "STANDARD", s3UseSessionToken: Bool = false,
+                b2BucketName: String = "", b2BucketId: String = "",
+                azureAccountName: String = "", azureContainer: String = "", azureUseSAS: Bool = false,
+                swiftAuthURL: String = "", swiftContainer: String = "", swiftTenantOrProject: String = "",
+                preserveModificationDate: Bool = true) {
+        self.id = id; self.name = name; self.group = group; self.host = host; self.port = port ?? protocolKind.defaultPort
         self.username = username; self.protocolKind = protocolKind; self.initialPath = initialPath
         self.privateKeyPath = privateKeyPath; self.trustedHostKey = trustedHostKey
         self.useSSHAgent = useSSHAgent; self.s3Bucket = s3Bucket; self.s3Region = s3Region; self.s3PathStyle = s3PathStyle
+        self.defaultLocalPath = defaultLocalPath; self.siteURL = siteURL; self.colorTag = colorTag
+        self.s3StorageClass = s3StorageClass; self.s3UseSessionToken = s3UseSessionToken
+        self.b2BucketName = b2BucketName; self.b2BucketId = b2BucketId
+        self.azureAccountName = azureAccountName; self.azureContainer = azureContainer; self.azureUseSAS = azureUseSAS
+        self.swiftAuthURL = swiftAuthURL; self.swiftContainer = swiftContainer; self.swiftTenantOrProject = swiftTenantOrProject
+        self.preserveModificationDate = preserveModificationDate
     }
 
     enum CodingKeys: String, CodingKey {
         case id, name, group, host, port, username, protocolKind, initialPath, privateKeyPath, trustedHostKey
         case useSSHAgent, s3Bucket, s3Region, s3PathStyle
+        case defaultLocalPath, siteURL, colorTag, s3StorageClass, s3UseSessionToken
+        case b2BucketName, b2BucketId, azureAccountName, azureContainer, azureUseSAS
+        case swiftAuthURL, swiftContainer, swiftTenantOrProject, preserveModificationDate
     }
 
     public init(from decoder: Decoder) throws {
@@ -78,36 +136,111 @@ public struct ServerProfile: Identifiable, Codable, Hashable, Sendable {
         s3Bucket = try c.decodeIfPresent(String.self, forKey: .s3Bucket) ?? ""
         s3Region = try c.decodeIfPresent(String.self, forKey: .s3Region) ?? "us-east-1"
         s3PathStyle = try c.decodeIfPresent(Bool.self, forKey: .s3PathStyle) ?? false
+        defaultLocalPath = try c.decodeIfPresent(String.self, forKey: .defaultLocalPath) ?? ""
+        siteURL = try c.decodeIfPresent(String.self, forKey: .siteURL) ?? ""
+        colorTag = try c.decodeIfPresent(String.self, forKey: .colorTag) ?? ""
+        s3StorageClass = try c.decodeIfPresent(String.self, forKey: .s3StorageClass) ?? "STANDARD"
+        s3UseSessionToken = try c.decodeIfPresent(Bool.self, forKey: .s3UseSessionToken) ?? false
+        b2BucketName = try c.decodeIfPresent(String.self, forKey: .b2BucketName) ?? ""
+        b2BucketId = try c.decodeIfPresent(String.self, forKey: .b2BucketId) ?? ""
+        azureAccountName = try c.decodeIfPresent(String.self, forKey: .azureAccountName) ?? ""
+        azureContainer = try c.decodeIfPresent(String.self, forKey: .azureContainer) ?? ""
+        azureUseSAS = try c.decodeIfPresent(Bool.self, forKey: .azureUseSAS) ?? false
+        swiftAuthURL = try c.decodeIfPresent(String.self, forKey: .swiftAuthURL) ?? ""
+        swiftContainer = try c.decodeIfPresent(String.self, forKey: .swiftContainer) ?? ""
+        swiftTenantOrProject = try c.decodeIfPresent(String.self, forKey: .swiftTenantOrProject) ?? ""
+        preserveModificationDate = try c.decodeIfPresent(Bool.self, forKey: .preserveModificationDate) ?? true
+    }
+
+    private var resolvedHost: String {
+        if !host.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return host
+        }
+        switch protocolKind {
+        case .s3:
+            return "s3.amazonaws.com"
+        case .b2:
+            return "api.backblazeb2.com"
+        case .azureBlob:
+            let account = azureAccountName.trimmingCharacters(in: .whitespacesAndNewlines)
+            return account.isEmpty ? "" : "\(account).blob.core.windows.net"
+        case .openstackSwift:
+            if let authURL = URL(string: swiftAuthURL.trimmingCharacters(in: .whitespacesAndNewlines)),
+               let urlHost = authURL.host, !urlHost.isEmpty {
+                return urlHost
+            }
+            return ""
+        case .sftp, .ftp, .ftps, .ftpsExplicit, .webdav, .webdavs:
+            return host
+        }
     }
 
     public func validate() throws {
-        let effectiveHost = (protocolKind == .s3 && host.trimmingCharacters(in: .whitespaces).isEmpty) ? "s3.amazonaws.com" : host
+        let effectiveHost = resolvedHost
+        let trimmedUser = username.trimmingCharacters(in: .whitespacesAndNewlines)
+        let hasIdentity: Bool
+        switch protocolKind {
+        case .azureBlob:
+            hasIdentity = !trimmedUser.isEmpty || !azureAccountName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || azureUseSAS
+        default:
+            hasIdentity = !trimmedUser.isEmpty
+        }
+
         guard !effectiveHost.isEmpty, !effectiveHost.contains(where: { $0.isWhitespace }), !effectiveHost.contains("/"),
               !effectiveHost.contains("@"), !effectiveHost.contains("?"), !effectiveHost.contains("#"), (1...65535).contains(port),
-              !username.isEmpty else { throw TransferError.invalidConnection }
-        if protocolKind == .s3 && s3Bucket.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            throw TransferError.invalidConnection
+              hasIdentity else { throw TransferError.invalidConnection }
+
+        switch protocolKind {
+        case .s3:
+            if s3Bucket.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                throw TransferError.invalidConnection
+            }
+        case .b2:
+            if b2BucketName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty &&
+               b2BucketId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                throw TransferError.invalidConnection
+            }
+        case .azureBlob:
+            if azureContainer.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                throw TransferError.invalidConnection
+            }
+        case .openstackSwift:
+            let authTrimmed = swiftAuthURL.trimmingCharacters(in: .whitespacesAndNewlines)
+            if !authTrimmed.isEmpty {
+                guard let url = URL(string: authTrimmed),
+                      let scheme = url.scheme?.lowercased(),
+                      (scheme == "http" || scheme == "https"),
+                      let urlHost = url.host, !urlHost.isEmpty else {
+                    throw TransferError.invalidConnection
+                }
+            }
+            if swiftContainer.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                throw TransferError.invalidConnection
+            }
+        case .sftp, .ftp, .ftps, .ftpsExplicit, .webdav, .webdavs:
+            break
         }
         try RemotePath.validate(initialPath)
     }
     /// 连接已保存书签时是否需要先询问密码：没有密码、也不能靠私钥/SSH Agent 认证，且不是匿名 FTP。
     public func needsPasswordPrompt(for credentials: Credentials) -> Bool {
         guard credentials.password.isEmpty else { return false }
+        if protocolKind == .azureBlob && azureUseSAS && !credentials.sessionToken.isEmpty { return false }
         if protocolKind == .sftp && (!privateKeyPath.isEmpty || useSSHAgent) { return false }
-        if (protocolKind == .ftp || protocolKind == .ftps) && username.lowercased() == "anonymous" { return false }
+        if (protocolKind == .ftp || protocolKind == .ftps || protocolKind == .ftpsExplicit) && username.lowercased() == "anonymous" { return false }
         return true
     }
     public func url(path: String, directory: Bool = false) throws -> String {
         try validate(); try RemotePath.validate(path)
         var components = URLComponents()
         components.scheme = protocolKind.httpScheme
-        components.host = (protocolKind == .s3 && host.trimmingCharacters(in: .whitespaces).isEmpty) ? "s3.amazonaws.com" : host
+        components.host = resolvedHost
         components.port = port
         let absolute = RemotePath.normalize(path)
         switch protocolKind {
-        case .sftp, .webdav, .webdavs, .s3:
+        case .sftp, .webdav, .webdavs, .s3, .b2, .azureBlob, .openstackSwift:
             components.path = absolute + (directory && absolute != "/" ? "/" : "")
-        case .ftp, .ftps:
+        case .ftp, .ftps, .ftpsExplicit:
             // FTP URLs need a second slash to address an absolute server path.
             components.path = "/" + absolute + (directory && absolute != "/" ? "/" : "")
         }
@@ -169,10 +302,15 @@ public struct PlaceItem: Identifiable, Hashable, Sendable {
     }
 }
 
-public struct Credentials: Sendable {
+public struct Credentials: Sendable, Equatable {
     public var password: String
     public var passphrase: String
-    public init(password: String = "", passphrase: String = "") { self.password = password; self.passphrase = passphrase }
+    public var sessionToken: String
+    public init(password: String = "", passphrase: String = "", sessionToken: String = "") {
+        self.password = password
+        self.passphrase = passphrase
+        self.sessionToken = sessionToken
+    }
 }
 
 public enum TransferError: Error, LocalizedError, Sendable {
