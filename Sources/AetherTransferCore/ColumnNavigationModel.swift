@@ -348,6 +348,14 @@ public extension RemoteClient {
             ))
         }
 
+        let normalizedLinkPath = RemotePath.normalize(linkPath)
+        let parent = RemotePath.parent(normalizedLinkPath)
+        let linkName = URL(fileURLWithPath: normalizedLinkPath).lastPathComponent
+        let beforeEntries = try await list(parent)
+        if beforeEntries.contains(where: { $0.name == linkName }) {
+            throw TransferError.conflict(linkName)
+        }
+
         let url = try profile.url(path: "/", directory: true)
         let request = url.withCString { urlPtr in
             profile.username.withCString { userPtr in
@@ -368,27 +376,41 @@ public extension RemoteClient {
         if profile.useSSHAgent {
             _ = at_set_ssh_agent(request, 1)
         }
-        let command = "symlink \(try RemotePath.quoted(target)) \(try RemotePath.quoted(linkPath))"
+        let command = "symlink \(try RemotePath.quoted(target)) \(try RemotePath.quoted(normalizedLinkPath))"
         let box = SymlinkRequestBox(pointer: request)
 
-        try await withTaskCancellationHandler {
-            try await Task.detached {
+        let outcome: (code: Int32, hostKey: String, errorMessage: String) = await withTaskCancellationHandler {
+            await Task.detached {
                 let code = "".withCString { emptyLocal in
                     command.withCString { cmdPtr in
                         at_perform(box.pointer, 3, emptyLocal, cmdPtr, { _, _, _ in }, nil)
                     }
                 }
-                if code == 42 { throw CancellationError() }
-                if code != 0 {
-                    let key = String(cString: at_host_key(box.pointer))
-                    if !key.isEmpty && key != profile.trustedHostKey {
-                        throw TransferError.hostKeyRequired(key: key, changed: profile.trustedHostKey != nil)
-                    }
-                    throw TransferError.remote(String(cString: at_error(box.pointer)))
-                }
+                let hostKey = String(cString: at_host_key(box.pointer))
+                let errorMessage = String(cString: at_error(box.pointer))
+                return (code, hostKey, errorMessage)
             }.value
         } onCancel: {
             box.cancel()
+        }
+
+        if outcome.code == 42 {
+            throw CancellationError()
+        }
+        if outcome.code != 0 {
+            if !outcome.hostKey.isEmpty && outcome.hostKey != profile.trustedHostKey {
+                throw TransferError.hostKeyRequired(key: outcome.hostKey, changed: profile.trustedHostKey != nil)
+            }
+            // Homebrew libssh2 1.11.1_7 (CVE-2025-15661.patch) reads SSH_FXP_STATUS before skipping
+            // the 4-byte request_id on sftp_symlink(), causing CURLE_QUOTE_ERROR (21) with
+            // "Unknown error in libssh2" even when the server created the symlink.
+            if outcome.code == 21 && outcome.errorMessage.contains("Unknown error in libssh2") {
+                let afterEntries = try await list(parent)
+                if afterEntries.contains(where: { $0.name == linkName && $0.isSymbolicLink }) {
+                    return
+                }
+            }
+            throw TransferError.remote(outcome.errorMessage)
         }
     }
 }
