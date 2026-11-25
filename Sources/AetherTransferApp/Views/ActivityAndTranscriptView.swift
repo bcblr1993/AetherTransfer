@@ -66,6 +66,7 @@ struct ActivityQueueDrawer: View {
             }
             .pickerStyle(.segmented)
             .labelsHidden()
+            .accessibilityLabel(L10n.tr("活动面板视图", "Activity Drawer Mode"))
             .frame(width: 210)
 
             if selectedTab == .queue {
@@ -196,6 +197,8 @@ struct ActivityQueueDrawer: View {
                         .foregroundStyle(.secondary)
                 }
                 .buttonStyle(.plain)
+                .help(L10n.tr("清除搜索", "Clear Search"))
+                .accessibilityLabel(L10n.tr("清除搜索", "Clear Search"))
             }
         }
         .padding(.horizontal, 8)
@@ -502,6 +505,7 @@ private struct TransferQueueRow: View {
                 }
                 .buttonStyle(.borderless)
                 .help(L10n.tr("移至队列顶部", "Move to Top"))
+                .accessibilityLabel(L10n.tr("移至队列顶部", "Move to Top"))
             }
 
             if item.state == .inProgress || item.state == .queued {
@@ -510,18 +514,21 @@ private struct TransferQueueRow: View {
                 }
                 .buttonStyle(.borderless)
                 .help(L10n.tr("取消传输", "Cancel Transfer"))
+                .accessibilityLabel(L10n.tr("取消传输", "Cancel Transfer"))
             } else if item.state == .failed || item.state == .cancelled {
                 Button(action: onRetry) {
                     Image(systemName: "arrow.clockwise.circle")
                 }
                 .buttonStyle(.borderless)
                 .help(L10n.tr("重试传输", "Retry Transfer"))
+                .accessibilityLabel(L10n.tr("重试传输", "Retry Transfer"))
             } else if item.state == .completed, item.direction == .upload, resolvedURL != nil {
                 Button(action: onCopyURL) {
                     Image(systemName: "link")
                 }
                 .buttonStyle(.borderless)
                 .help(L10n.tr("复制文件链接", "Copy Uploaded URL"))
+                .accessibilityLabel(L10n.tr("复制文件链接", "Copy Uploaded URL"))
             }
         }
         .padding(.vertical, 2)
@@ -755,6 +762,7 @@ struct MenuBarDropletView: View {
                                 }
                                 .buttonStyle(.borderless)
                                 .help(L10n.tr("导出为独立 Droplet 应用…", "Export Droplet…"))
+                                .accessibilityLabel(L10n.tr("导出为独立 Droplet 应用", "Export Droplet"))
 
                                 Button(L10n.tr("选择文件", "Upload…")) {
                                     let panel = NSOpenPanel()

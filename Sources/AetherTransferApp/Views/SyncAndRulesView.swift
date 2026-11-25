@@ -491,6 +491,7 @@ struct SyncSheet: View {
                             ))
                             .labelsHidden()
                             .toggleStyle(.checkbox)
+                            .accessibilityLabel(item.relativePath)
                             .disabled(item.actionType == .skipIdentical)
 
                             Image(systemName: item.actionType.iconName)
@@ -809,6 +810,7 @@ private struct RulesSettingsTab: View {
                         ))
                         .labelsHidden()
                         .toggleStyle(.checkbox)
+                        .accessibilityLabel(rule.name)
 
                         VStack(alignment: .leading, spacing: 2) {
                             HStack(spacing: 6) {
@@ -842,6 +844,7 @@ private struct RulesSettingsTab: View {
                         }
                         .buttonStyle(.borderless)
                         .help(L10n.tr("编辑规则", "Edit Rule"))
+                        .accessibilityLabel(L10n.tr("编辑规则 \(rule.name)", "Edit Rule \(rule.name)"))
 
                         Button(role: .destructive) {
                             store.deleteRule(rule.id)
@@ -851,6 +854,7 @@ private struct RulesSettingsTab: View {
                         }
                         .buttonStyle(.borderless)
                         .help(L10n.tr("删除规则", "Delete Rule"))
+                        .accessibilityLabel(L10n.tr("删除规则 \(rule.name)", "Delete Rule \(rule.name)"))
                     }
                     .padding(.vertical, 2)
                 }
@@ -907,6 +911,8 @@ private struct RulesSettingsTab: View {
                                         .foregroundStyle(.secondary)
                                 }
                                 .buttonStyle(.plain)
+                                .help(L10n.tr("移除扩展名 .\(ext)", "Remove Extension .\(ext)"))
+                                .accessibilityLabel(L10n.tr("移除扩展名 .\(ext)", "Remove Extension .\(ext)"))
                             }
                             .padding(.horizontal, 7)
                             .padding(.vertical, 4)
@@ -1060,13 +1066,14 @@ private struct SkipRuleEditorSheet: View {
 
     @ViewBuilder
     private func predicateRow(for predicate: RulePredicate) -> some View {
-        if let idx = rule.predicates.firstIndex(where: { $0.id == predicate.id }) {
-            let current = rule.predicates[idx]
+        let predicateId = predicate.id
+        if let current = rule.predicates.first(where: { $0.id == predicateId }) {
             let operators = allowedOperators(for: current.field, currentOp: current.op)
             HStack(spacing: 8) {
                 Picker("", selection: Binding(
-                    get: { rule.predicates[idx].field },
+                    get: { rule.predicates.first(where: { $0.id == predicateId })?.field ?? current.field },
                     set: { newField in
+                        guard let idx = rule.predicates.firstIndex(where: { $0.id == predicateId }) else { return }
                         rule.predicates[idx].field = newField
                         let validOps = allowedOperators(for: newField, currentOp: nil)
                         if !validOps.contains(rule.predicates[idx].op), let fallback = validOps.first {
@@ -1079,43 +1086,57 @@ private struct SkipRuleEditorSheet: View {
                     }
                 }
                 .labelsHidden()
+                .accessibilityLabel(L10n.tr("条件字段", "Predicate Field"))
                 .frame(width: 115)
 
                 Picker("", selection: Binding(
-                    get: { rule.predicates[idx].op },
-                    set: { rule.predicates[idx].op = $0 }
+                    get: { rule.predicates.first(where: { $0.id == predicateId })?.op ?? current.op },
+                    set: { newOp in
+                        guard let idx = rule.predicates.firstIndex(where: { $0.id == predicateId }) else { return }
+                        rule.predicates[idx].op = newOp
+                    }
                 )) {
                     ForEach(operators) { op in
                         Text(op.localizedTitle).tag(op)
                     }
                 }
                 .labelsHidden()
+                .accessibilityLabel(L10n.tr("匹配操作符", "Predicate Operator"))
                 .frame(width: 145)
 
                 TextField(valuePlaceholder(for: current.field), text: Binding(
-                    get: { rule.predicates[idx].value },
-                    set: { rule.predicates[idx].value = $0 }
+                    get: { rule.predicates.first(where: { $0.id == predicateId })?.value ?? current.value },
+                    set: { newValue in
+                        guard let idx = rule.predicates.firstIndex(where: { $0.id == predicateId }) else { return }
+                        rule.predicates[idx].value = newValue
+                    }
                 ))
                 .textFieldStyle(.roundedBorder)
 
                 if current.field == .name || current.field == .fileExtension || current.field == .path {
                     Toggle("Aa", isOn: Binding(
-                        get: { rule.predicates[idx].caseSensitive },
-                        set: { rule.predicates[idx].caseSensitive = $0 }
+                        get: { rule.predicates.first(where: { $0.id == predicateId })?.caseSensitive ?? current.caseSensitive },
+                        set: { newCaseSensitive in
+                            guard let idx = rule.predicates.firstIndex(where: { $0.id == predicateId }) else { return }
+                            rule.predicates[idx].caseSensitive = newCaseSensitive
+                        }
                     ))
                     .toggleStyle(.button)
                     .controlSize(.small)
                     .help(L10n.tr("区分大小写", "Case Sensitive"))
+                    .accessibilityLabel(L10n.tr("区分大小写", "Case Sensitive"))
                 }
 
                 if rule.predicates.count > 1 {
                     Button {
-                        rule.predicates.remove(at: idx)
+                        rule.predicates.removeAll { $0.id == predicateId }
                     } label: {
                         Image(systemName: "minus.circle.fill")
                             .foregroundStyle(.secondary)
                     }
                     .buttonStyle(.plain)
+                    .help(L10n.tr("删除此条件", "Remove Condition"))
+                    .accessibilityLabel(L10n.tr("删除此条件", "Remove Condition"))
                 }
             }
         }
